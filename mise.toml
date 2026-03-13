@@ -25,16 +25,27 @@ run = [
   "git push gitlab \"$(git branch --show-current)\"",
 ]
 
+[tasks.db]
+description = "Start PostgreSQL via docker-compose"
+run = ["docker compose up -d db"]
+
 [tasks.run]
-description = "Run the bot with automatic SOPS decryption"
+description = "Run the server"
 run = [
   "mkdir -p .cache/go-build .cache/go-mod",
-  "sops exec-env .env 'GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go run ./cmd/trackkr-backend'",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go run ./cmd/server",
+]
+
+[tasks.tidy]
+description = "Tidy Go module dependencies"
+run = [
+  "mkdir -p .cache/go-build .cache/go-mod",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go mod tidy",
 ]
 
 [tasks.build]
-description = "Build the bot binary"
+description = "Build the server binary"
 run = [
   "mkdir -p .cache/go-build .cache/go-mod",
-  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build -o trackkr-backend ./cmd/trackkr-backend",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build -o trackkr-backend ./cmd/server",
 ]
