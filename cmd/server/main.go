@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -10,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
 	"github.com/yelinaung/trackkr/internal/server"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
@@ -40,6 +42,21 @@ func main() {
 	}
 	defer pool.Close()
 
+	queries := db.NewQueries(pool)
+
+	// Handle subcommands
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "create-user":
+			runCreateUser(ctx, queries, logger)
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+			fmt.Fprintf(os.Stderr, "usage: trackkr-server [create-user]\n")
+			os.Exit(1)
+		}
+	}
+
 	srv := server.New(cfg, pool, logger)
 
 	httpServer := &http.Server{
@@ -60,4 +77,29 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Fatal().Err(err).Msg("server error")
 	}
+}
+
+func runCreateUser(ctx context.Context, queries *db.Queries, logger zerolog.Logger) {
+	if len(os.Args) < 4 {
+		fmt.Fprintf(os.Stderr, "usage: trackkr-server create-user <username> <password>\n")
+		os.Exit(1)
+	}
+
+	username := os.Args[2]
+	password := os.Args[3]
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to hash password")
+	}
+
+	user, err := queries.CreateUser(ctx, username, string(hash))
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to create user")
+	}
+
+	logger.Info().
+		Int64("id", user.ID).
+		Str("username", user.Username).
+		Msg("user created")
 }

@@ -23,8 +23,8 @@ CREATE TABLE activity_records (
     started_at  TIMESTAMPTZ NOT NULL,
     ended_at    TIMESTAMPTZ NOT NULL,
     duration_s  INTEGER NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (device_id, started_at)
 );
 
-CREATE INDEX idx_activity_records_device_started ON activity_records (device_id, started_at);
 CREATE INDEX idx_activity_records_started ON activity_records (started_at);

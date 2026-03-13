@@ -7,8 +7,10 @@ host = "localhost"
 port = 5432
 name = "trackkr"
 user = "trackkr"
-password = "trackkr"
+# password from env var TRACKKR_DB_PASSWORD
 sslmode = "disable"
 
 [auth]
-session_secret = "change-me-in-production"
+# session_secret from env var TRACKKR_SESSION_SECRET
+# allow_registration: set to true to enable web-based user signup
+allow_registration = false

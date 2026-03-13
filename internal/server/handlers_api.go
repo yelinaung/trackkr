@@ -73,25 +73,6 @@ func HandleIngestActivity(queries *db.Queries) http.HandlerFunc {
 	}
 }
 
-func HandleListDevices(queries *db.Queries) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		device := DeviceFromContext(r.Context())
-		if device == nil {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-
-		devices, err := queries.ListDevicesByUser(r.Context(), device.UserID)
-		if err != nil {
-			http.Error(w, `{"error":"failed to list devices"}`, http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(devices)
-	}
-}
-
 func HandleHeartbeat() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		device := DeviceFromContext(r.Context())

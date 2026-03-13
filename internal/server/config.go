@@ -28,8 +28,8 @@ type DatabaseConfig struct {
 }
 
 type AuthConfig struct {
-	AdminPasswordHash string `toml:"admin_password_hash"`
 	SessionSecret     string `toml:"session_secret"`
+	AllowRegistration bool   `toml:"allow_registration"`
 }
 
 func (s ServerConfig) Addr() string {
@@ -65,9 +65,6 @@ func LoadConfig(path string) (*Config, error) {
 	// Override secrets from environment variables
 	if v := os.Getenv("TRACKKR_DB_PASSWORD"); v != "" {
 		cfg.Database.Password = v
-	}
-	if v := os.Getenv("TRACKKR_ADMIN_PASSWORD_HASH"); v != "" {
-		cfg.Auth.AdminPasswordHash = v
 	}
 	if v := os.Getenv("TRACKKR_SESSION_SECRET"); v != "" {
 		cfg.Auth.SessionSecret = v

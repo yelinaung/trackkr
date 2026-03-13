@@ -36,11 +36,10 @@ func (s *Server) setupRoutes() {
 	s.router.Use(middleware.RealIP)
 	s.router.Use(middleware.Recoverer)
 
-	// API routes (API key auth)
+	// API routes (API key auth — ingest only, no device management)
 	s.router.Route("/api/v1", func(r chi.Router) {
 		r.Use(APIKeyAuth(s.queries))
 		r.Post("/activity", HandleIngestActivity(s.queries))
-		r.Get("/devices", HandleListDevices(s.queries))
 		r.Post("/heartbeat", HandleHeartbeat())
 	})
 }

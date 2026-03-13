@@ -21,7 +21,8 @@ func (q *Queries) InsertActivityRecords(ctx context.Context, records []ActivityR
 	for _, r := range records {
 		batch.Queue(
 			`INSERT INTO activity_records (device_id, app_name, title, url, started_at, ended_at, duration_s)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)
+			 ON CONFLICT (device_id, started_at) DO NOTHING`,
 			r.DeviceID, r.AppName, r.Title, r.URL, r.StartedAt, r.EndedAt, r.DurationS,
 		)
 	}
@@ -31,10 +32,13 @@ func (q *Queries) InsertActivityRecords(ctx context.Context, records []ActivityR
 
 	accepted := 0
 	for range records {
-		if _, err := br.Exec(); err != nil {
+		ct, err := br.Exec()
+		if err != nil {
 			return accepted, err
 		}
-		accepted++
+		if ct.RowsAffected() > 0 {
+			accepted++
+		}
 	}
 	return accepted, nil
 }
@@ -72,24 +76,26 @@ func (q *Queries) ListDevicesByUser(ctx context.Context, userID int64) ([]Device
 	return devices, rows.Err()
 }
 
-func (q *Queries) GetActivityRecords(ctx context.Context, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
+func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
 	var rows pgx.Rows
 	var err error
 
 	if deviceID != nil {
 		rows, err = q.pool.Query(ctx,
-			`SELECT id, device_id, app_name, title, url, started_at, ended_at, duration_s, created_at
-			 FROM activity_records
-			 WHERE started_at >= $1 AND started_at < $2 AND device_id = $3
-			 ORDER BY started_at`,
-			start, end, *deviceID)
+			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 WHERE d.user_id = $1 AND ar.started_at >= $2 AND ar.started_at < $3 AND ar.device_id = $4
+			 ORDER BY ar.started_at`,
+			userID, start, end, *deviceID)
 	} else {
 		rows, err = q.pool.Query(ctx,
-			`SELECT id, device_id, app_name, title, url, started_at, ended_at, duration_s, created_at
-			 FROM activity_records
-			 WHERE started_at >= $1 AND started_at < $2
-			 ORDER BY started_at`,
-			start, end)
+			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 WHERE d.user_id = $1 AND ar.started_at >= $2 AND ar.started_at < $3
+			 ORDER BY ar.started_at`,
+			userID, start, end)
 	}
 	if err != nil {
 		return nil, err
@@ -137,4 +143,18 @@ func (q *Queries) DeleteDevice(ctx context.Context, id int64, userID int64) erro
 	_, err := q.pool.Exec(ctx,
 		`DELETE FROM devices WHERE id = $1 AND user_id = $2`, id, userID)
 	return err
+}
+
+func (q *Queries) CreateUser(ctx context.Context, username, passwordHash string) (*UserRow, error) {
+	row := q.pool.QueryRow(ctx,
+		`INSERT INTO users (username, password)
+		 VALUES ($1, $2)
+		 RETURNING id, username, password, created_at`,
+		username, passwordHash)
+
+	var u UserRow
+	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
 }
