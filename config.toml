@@ -1,0 +1,14 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+
+[database]
+host = "localhost"
+port = 5432
+name = "trackkr"
+user = "trackkr"
+password = "trackkr"
+sslmode = "disable"
+
+[auth]
+session_secret = "change-me-in-production"

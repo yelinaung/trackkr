@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS activity_records;
+DROP TABLE IF EXISTS devices;
+DROP TABLE IF EXISTS users;

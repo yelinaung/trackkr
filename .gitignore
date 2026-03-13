@@ -1,0 +1,20 @@
+# Build output
+trackkr-backend
+bin/
+
+# Go caches
+.cache/
+
+# Environment / secrets
+.env
+*.sops.*
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
