@@ -6,7 +6,7 @@ run = [
 ]
 
 [tasks.test-race]
-descripton = "Run Go tests (with race)"
+description = "Run Go tests (with race)"
 run = [
   "mkdir -p .cache/go-build .cache/go-mod",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go test -v -race ./...",
