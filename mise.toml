@@ -30,6 +30,7 @@ run = [
   "git pull --rebase --autostash github \"$(git branch --show-current)\"",
   "git push github \"$(git branch --show-current)\"",
   "git push gitlab \"$(git branch --show-current)\"",
+  "git push forgejo \"$(git branch --show-current)\"",
 ]
 
 [tasks.db]
