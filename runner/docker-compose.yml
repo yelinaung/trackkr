@@ -1,0 +1,44 @@
+services:
+  runner1:
+    build: .
+    container_name: github-runner-trackkr-1
+    restart: always
+    environment:
+      REPO_URL: '${REPO_URL}'
+      ACCESS_TOKEN: '${ACCESS_TOKEN}'
+      RUNNER_NAME: trackkr-runner1
+      RUNNER_WORKDIR: /tmp/github-runner-trackkr
+      LABELS: 'playground-ubuntu,self-hosted'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock'
+      - 'runner1-work:/tmp/github-runner-trackkr'
+  runner2:
+    build: .
+    container_name: github-runner-trackkr-2
+    restart: always
+    environment:
+      REPO_URL: '${REPO_URL}'
+      ACCESS_TOKEN: '${ACCESS_TOKEN}'
+      RUNNER_NAME: trackkr-runner2
+      RUNNER_WORKDIR: /tmp/github-runner-trackkr
+      LABELS: 'playground-ubuntu,self-hosted'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock'
+      - 'runner2-work:/tmp/github-runner-trackkr'
+  runner3:
+    build: .
+    container_name: github-runner-trackkr-3
+    restart: always
+    environment:
+      REPO_URL: '${REPO_URL}'
+      ACCESS_TOKEN: '${ACCESS_TOKEN}'
+      RUNNER_NAME: trackkr-runner3
+      RUNNER_WORKDIR: /tmp/github-runner-trackkr
+      LABELS: 'playground-ubuntu,self-hosted'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock'
+      - 'runner3-work:/tmp/github-runner-trackkr'
+volumes:
+  runner1-work: null
+  runner2-work: null
+  runner3-work: null
