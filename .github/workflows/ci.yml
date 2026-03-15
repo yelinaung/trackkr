@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  # === SECURITY STAGE ===
+  secret-detection:
+    name: Secret Detection
+    runs-on: [self-hosted, Linux, X64, playground-ubuntu]
+    steps:
+      # - name: Harden the runner (Audit all outbound calls)
+      #   uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+      #   with:
+      #     egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # - name: Install gitleaks
+      #   run: |
+      #     if ! command -v gitleaks &>/dev/null; then
+      #       curl --proto "=https" --tlsv1.2 -sSf -L https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_8.30.0_linux_x64.tar.gz | \
+      #         tar -xz -C /usr/local/bin gitleaks
+      #     fi
+
+      - name: Gitleaks Secret Scan
+        run: gitleaks detect --source . --verbose
+
+  sast:
+    name: SAST (Semgrep)
+    runs-on: [self-hosted, Linux, X64, playground-ubuntu]
+    permissions:
+      contents: read
+      security-events: write
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      # - name: Harden the runner (Audit all outbound calls)
+      #   uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+      #   with:
+      #     egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Semgrep
+        run: |
+          if ! command -v semgrep &>/dev/null; then
+            pip install semgrep
+          fi
+
+      - name: Run Semgrep
+        run: semgrep scan --config auto --error --exclude-rule=generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key .
