@@ -4,7 +4,7 @@ port = 8080
 
 [database]
 host = "localhost"
-port = 5432
+port = 5455
 name = "trackkr"
 user = "trackkr"
 # password from env var TRACKKR_DB_PASSWORD

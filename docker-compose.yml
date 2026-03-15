@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: trackkr
       POSTGRES_PASSWORD: trackkr
     ports:
-      - "5432:5432"
+      - "5455:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
