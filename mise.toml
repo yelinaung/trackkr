@@ -28,7 +28,7 @@ run = [
 
 [tasks.format]
 description = "Format Go code"
-run = ["gofumpt -w ."]
+run = ["gofumpt -w ./cmd/ ./internal/"]
 
 [tasks.push-all]
 description = "Pull with rebase from github, then push current branch to all remotes"
@@ -63,4 +63,18 @@ description = "Build the server binary"
 run = [
   "mkdir -p .cache/go-build .cache/go-mod",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build -o trackkr-backend ./cmd/server",
+]
+
+[tasks.build-daemon]
+description = "Build the trackkrd daemon binary"
+run = [
+  "mkdir -p .cache/go-build .cache/go-mod",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build -o trackkrd ./cmd/trackkrd",
+]
+
+[tasks.run-daemon]
+description = "Run the trackkrd daemon"
+run = [
+  "mkdir -p .cache/go-build .cache/go-mod",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go run ./cmd/trackkrd",
 ]

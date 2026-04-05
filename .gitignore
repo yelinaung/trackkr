@@ -7,6 +7,7 @@ dist/
 *.so
 *.dylib
 trackkr-backend
+trackkrd
 
 # Test binary
 *.test

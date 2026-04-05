@@ -1,0 +1,13 @@
+[Unit]
+Description=trackkr activity tracking daemon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/trackkrd
+Restart=on-failure
+RestartSec=5
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=default.target
