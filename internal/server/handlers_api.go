@@ -25,7 +25,7 @@ type ingestResponse struct {
 	Accepted int `json:"accepted"`
 }
 
-func HandleIngestActivity(queries *db.Queries) http.HandlerFunc {
+func HandleIngestActivity(queries Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		device := DeviceFromContext(r.Context())
 		if device == nil {
@@ -69,7 +69,7 @@ func HandleIngestActivity(queries *db.Queries) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(ingestResponse{Accepted: accepted})
+		_ = json.NewEncoder(w).Encode(ingestResponse{Accepted: accepted})
 	}
 }
 
@@ -82,6 +82,6 @@ func HandleHeartbeat() http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}
 }

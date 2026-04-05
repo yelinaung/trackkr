@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
@@ -48,20 +49,21 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "create-user":
-			runCreateUser(ctx, queries, logger)
+			runCreateUser(ctx, queries, &logger)
 			return
 		default:
-			fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
-			fmt.Fprintf(os.Stderr, "usage: trackkr-server [create-user]\n")
-			os.Exit(1)
+			logger.Fatal().
+				Str("command", os.Args[1]).
+				Msg("unknown command; usage: trackkr-server [create-user]")
 		}
 	}
 
-	srv := server.New(cfg, pool, logger)
+	srv := server.New(cfg, pool, &logger)
 
 	httpServer := &http.Server{
-		Addr:    cfg.Server.Addr(),
-		Handler: srv,
+		Addr:              cfg.Server.Addr(),
+		Handler:           srv,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Graceful shutdown
@@ -70,7 +72,7 @@ func main() {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		sig := <-sigCh
 		logger.Info().Str("signal", sig.String()).Msg("shutting down")
-		httpServer.Shutdown(context.Background())
+		_ = httpServer.Shutdown(context.Background())
 	}()
 
 	logger.Info().Str("addr", cfg.Server.Addr()).Msg("starting server")
@@ -79,7 +81,7 @@ func main() {
 	}
 }
 
-func runCreateUser(ctx context.Context, queries *db.Queries, logger zerolog.Logger) {
+func runCreateUser(ctx context.Context, queries *db.Queries, logger *zerolog.Logger) {
 	if len(os.Args) < 4 {
 		fmt.Fprintf(os.Stderr, "usage: trackkr-server create-user <username> <password>\n")
 		os.Exit(1)

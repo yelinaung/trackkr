@@ -18,7 +18,8 @@ func NewQueries(pool *pgxpool.Pool) *Queries {
 
 func (q *Queries) InsertActivityRecords(ctx context.Context, records []ActivityRecordRow) (int, error) {
 	batch := &pgx.Batch{}
-	for _, r := range records {
+	for i := range records {
+		r := &records[i]
 		batch.Queue(
 			`INSERT INTO activity_records (device_id, app_name, title, url, started_at, ended_at, duration_s)
 			 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -28,7 +29,7 @@ func (q *Queries) InsertActivityRecords(ctx context.Context, records []ActivityR
 	}
 
 	br := q.pool.SendBatch(ctx, batch)
-	defer br.Close()
+	defer func() { _ = br.Close() }()
 
 	accepted := 0
 	for range records {
