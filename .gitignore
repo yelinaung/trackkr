@@ -1,20 +1,47 @@
-# Build output
-trackkr-backend
+# Binaries
 bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+trackkr-backend
 
-# Go caches
-.cache/
+# Test binary
+*.test
 
-# Environment / secrets
+# Output of go coverage
+*.out
+*.cover
+*.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# Environment variables
 .env
-*.sops.*
+.env.local
+.env.*
 
-# Editor
+# IDE
 .idea/
 .vscode/
 *.swp
+*.swo
 *~
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+
+.agents/*
+
+# Claude Code local settings
+.claude/
+CLAUDE.md
+.rtk
+
+tmp
+.cache/
