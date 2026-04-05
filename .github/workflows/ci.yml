@@ -54,3 +54,129 @@ jobs:
 
       - name: Run Semgrep
         run: semgrep scan --config auto --error --exclude-rule=generic.secrets.security.detected-sonarqube-docs-api-key.detected-sonarqube-docs-api-key .
+
+
+  # === TEST STAGE ===
+  test:
+    name: Test
+    runs-on: [self-hosted, Linux, X64, playground-ubuntu]
+    needs: [lint]
+    env:
+      POSTGRES_USER: trackkr
+      POSTGRES_PASSWORD: ${{ secrets.TEST_DB_PASSWORD || 'trackkr' }}
+      POSTGRES_DB: trackkr
+      POSTGRES_PORT: 5455
+    steps:
+      # - name: Harden the runner (Audit all outbound calls)
+      #   uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+      #   with:
+      #     egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Start PostgreSQL
+        run: |
+          set -euo pipefail
+          container_name="test-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Using PostgreSQL container: ${container_name}"
+          docker rm -f "${container_name}" 2>/dev/null || true
+          # Share the runner container's network so localhost:5455 is reachable
+          # from the test process. Fall back to --network host for bare-metal runners.
+          network_flag="--network container:$(hostname)"
+          if ! docker run --rm ${network_flag} alpine true 2>/dev/null; then
+            network_flag="--network host"
+          fi
+          echo "Network mode: ${network_flag}"
+          docker run -d --name "${container_name}" \
+            ${network_flag} \
+            --shm-size=256m \
+            -e POSTGRES_USER=${{ env.POSTGRES_USER }} \
+            -e POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }} \
+            -e POSTGRES_DB=${{ env.POSTGRES_DB }} \
+            postgres:18-alpine
+          echo "Waiting for PostgreSQL..."
+          ready=0
+          for i in $(seq 1 30); do
+            # Verify from the runner process (not docker exec) that TCP 5455 is reachable
+            if bash -c 'echo > /dev/tcp/localhost/5455' 2>/dev/null; then
+              echo "PostgreSQL is ready (TCP verified from runner)"
+              ready=1
+              break
+            fi
+            # Check the container hasn't exited
+            if ! docker inspect "${container_name}" --format='{{.State.Running}}' 2>/dev/null | grep -q true; then
+              echo "PostgreSQL container exited unexpectedly!"
+              docker logs "${container_name}" 2>&1 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "PostgreSQL failed to become ready within timeout."
+            docker logs "${container_name}" || true
+            exit 1
+          fi
+
+      - name: Run tests with coverage
+        env:
+          TRACKKR_TEST_DSN: postgres://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:${{ env.POSTGRES_PORT }}/${{ env.POSTGRES_DB }}?sslmode=disable
+        run: |
+          # Pre-compile test binaries first (this is the slow part)
+          go test -c -covermode=atomic ./... 2>/dev/null || true
+          # Verify DB is still reachable after compilation
+          container_name="test-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if ! bash -c 'echo > /dev/tcp/localhost/5455' 2>/dev/null; then
+            echo "PostgreSQL is NOT reachable before test run!"
+            docker inspect "${container_name}" --format='Status: {{.State.Status}}, Running: {{.State.Running}}, ExitCode: {{.State.ExitCode}}' 2>&1 || true
+            docker logs --tail 50 "${container_name}" 2>&1 || true
+            exit 1
+          fi
+          echo "PostgreSQL still healthy — starting tests"
+          mise test-coverage
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          THRESHOLD=50
+          echo "Coverage: ${COVERAGE}% (threshold: ${THRESHOLD}%)"
+          if [ "$(awk "BEGIN {print ($COVERAGE < $THRESHOLD)}")" = "1" ]; then
+            echo "Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%!"
+            exit 1
+          fi
+          echo "Coverage check passed!"
+
+      # - name: Upload coverage to Codecov
+      #   uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+      #   with:
+      #     files: ./coverage.out
+      #     fail_ci_if_error: false
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+      #
+      # - name: SonarQube Scan
+      #   uses: SonarSource/sonarqube-scan-action@a31c9398be7ace6bbfaf30c0bd5d415f843d45e9 # v7.0.0
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Stop PostgreSQL
+        if: always()
+        run: |
+          set -euo pipefail
+          container_name="test-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker rm -f "${container_name}" 2>/dev/null || true
+
+  test-race:
+    name: Race Detection
+    runs-on: [self-hosted, Linux, X64, playground-ubuntu]
+    needs: [lint]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc # v2.15.1
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Run race detector
+        run: mise test-race
