@@ -1,6 +1,6 @@
 # The base image drops to a non-root user via its own entrypoint;
 # root is only used here for build-time package installation.
-FROM myoung34/github-runner:ubuntu-jammy@sha256:d4843d653c889dc5eeac5566a7965534dcec741f404973d75752bf0f3ac12079
+FROM myoung34/github-runner:ubuntu-jammy@sha256:c38a03de663e4c121c433944238fd20cb97a8913a4cde167b6d13e9e7371cfde
 
 ARG GO_VERSION=1.26.1
 ARG GOFUMPT_VERSION=0.9.2
