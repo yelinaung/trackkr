@@ -1,6 +1,46 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "minimumReleaseAge": "14 days",
   "extends": [
-    "config:recommended"
-  ]
+    "config:best-practices"
+  ],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  },
+  "packageRules": [
+    {
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "myoung34/github-runner"
+      ],
+      "matchUpdateTypes": [
+        "digest"
+      ],
+      "schedule": ["on sunday"],
+      "minimumReleaseAge": "0 days",
+      "automerge": true,
+      "platformAutomerge": true
+    },
+    {
+      "matchManagers": [
+        "gomod"
+      ],
+      "minimumReleaseAge": "1 day",
+      "postUpdateOptions": [
+        "gomodTidy"
+      ]
+    },
+    {
+      "matchDepNames": ["node"],
+      "allowedVersions": "20.x"
+    },
+    {
+      "matchDepNames": ["node24"],
+      "allowedVersions": "24.x"
+    }
+  ],
 }
