@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -41,7 +40,7 @@ func main() {
 func run(logger *zerolog.Logger, configPath string) error {
 	cfg, err := tracker.LoadConfigOrDefault(configPath)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return err
 	}
 	if cfg.APIKey == "" {
 		return fmt.Errorf(
@@ -68,18 +67,22 @@ func run(logger *zerolog.Logger, configPath string) error {
 
 	logger.Info().
 		Str("server", cfg.ServerURL).
-		Str("device", cfg.DeviceName).
 		Dur("poll_interval", cfg.PollInterval.Duration).
 		Dur("idle_threshold", cfg.IdleThreshold.Duration).
 		Msg("starting trackkrd")
 
 	// Run blocks until ctx is cancelled, finalizing the in-flight
 	// record on the way out.
-	trackErr := trk.Run(ctx)
+	trk.Run(ctx)
+
+	// Cancel explicitly rather than relying on the deferred stop, so
+	// the reporter goroutine is guaranteed to be released before we
+	// wait on it.
+	stop()
 
 	// The reporter goroutine also stops on ctx.Done; wait for it
 	// before the final flush so both do not send at once.
 	wg.Wait()
 
-	return errors.Join(trackErr, reporter.Shutdown())
+	return reporter.Shutdown()
 }

@@ -22,8 +22,10 @@ func TestRunWithoutAPIKey(t *testing.T) {
 	}
 }
 
+// The config file is parsed before any env var is consulted, so this
+// test needs no t.Setenv and can run in parallel.
 func TestRunWithInvalidConfig(t *testing.T) {
-	t.Setenv("TRACKKR_API_KEY", "test_key")
+	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("not = valid toml ["), 0o600); err != nil {

@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const testServerURL = "https://trackkr.example.com"
+
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
@@ -63,8 +65,8 @@ flush_size = 50
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.ServerURL != "https://trackkr.example.com" {
-		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "https://trackkr.example.com")
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, testServerURL)
 	}
 	if cfg.APIKey != "test_key_123" {
 		t.Errorf("APIKey = %q, want %q", cfg.APIKey, "test_key_123")
@@ -175,6 +177,45 @@ func TestLoadConfigOrDefaultInvalidFile(t *testing.T) {
 
 	if _, err := LoadConfigOrDefault(path); err == nil {
 		t.Error("expected error for malformed config file")
+	}
+}
+
+// A trailing slash would make Reporter build ".../api/v1/activity"
+// as "...//api/v1/activity", which the server 404s on, so every
+// batch would requeue forever.
+func TestLoadConfigTrimsTrailingSlash(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+server_url = "https://trackkr.example.com///"
+api_key = "test_key"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want trailing slashes trimmed", cfg.ServerURL)
+	}
+}
+
+func TestLoadConfigOrDefaultTrimsTrailingSlashFromEnv(t *testing.T) {
+	clearTrackkrEnv(t)
+	t.Setenv("TRACKKR_SERVER_URL", "https://trackkr.example.com/")
+	t.Setenv("TRACKKR_API_KEY", "env_key")
+
+	cfg, err := LoadConfigOrDefault(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil {
+		t.Fatalf("LoadConfigOrDefault: %v", err)
+	}
+
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want trailing slash trimmed", cfg.ServerURL)
 	}
 }
 

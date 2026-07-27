@@ -247,7 +247,7 @@ func TestTrackerGracefulShutdown(t *testing.T) {
 		cancel()
 	}()
 
-	_ = trk.Run(ctx)
+	trk.Run(ctx)
 
 	// The current record should be finalized on shutdown.
 	// It may have 0 duration due to timing, so just check it ran

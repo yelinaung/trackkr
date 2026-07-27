@@ -3,8 +3,10 @@ package tracker
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -30,8 +32,11 @@ func (d Duration) MarshalText() ([]byte, error) {
 
 // Config holds the daemon's configuration.
 type Config struct {
-	ServerURL     string   `toml:"server_url"`
-	APIKey        string   `toml:"api_key"`
+	ServerURL string `toml:"server_url"`
+	APIKey    string `toml:"api_key"`
+	// DeviceName is informational only. The server identifies the
+	// device from the API key, so changing this does not affect
+	// where records land.
 	DeviceName    string   `toml:"device_name"`
 	PollInterval  Duration `toml:"poll_interval"`
 	IdleThreshold Duration `toml:"idle_threshold"`
@@ -62,9 +67,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("loading config %s: %w", path, err)
 	}
 
-	applyEnvOverrides(cfg)
-
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.finalize(); err != nil {
 		return nil, fmt.Errorf("invalid config %s: %w", path, err)
 	}
 
@@ -75,16 +78,28 @@ func LoadConfig(path string) (*Config, error) {
 // defaults plus env var overrides when the file does not exist. This
 // lets the daemon run from environment variables alone.
 func LoadConfigOrDefault(path string) (*Config, error) {
-	if _, err := os.Stat(path); err != nil {
-		if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("reading config %s: %w", path, err)
+	cfg, err := LoadConfig(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		cfg = DefaultConfig()
+		if err := cfg.finalize(); err != nil {
+			return nil, fmt.Errorf("invalid config: %w", err)
 		}
-		cfg := DefaultConfig()
-		applyEnvOverrides(cfg)
 		return cfg, nil
 	}
 
-	return LoadConfig(path)
+	return cfg, err
+}
+
+// finalize applies env var overrides, normalizes values, and
+// validates the result.
+func (c *Config) finalize() error {
+	applyEnvOverrides(c)
+
+	// Reporter builds request URLs by concatenation, so a trailing
+	// slash would produce a double slash the server 404s on.
+	c.ServerURL = strings.TrimRight(c.ServerURL, "/")
+
+	return c.Validate()
 }
 
 // Validate rejects configurations the daemon cannot run with. The
