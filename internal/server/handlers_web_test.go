@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -835,5 +836,81 @@ func TestStaticDirectoryListingIsBlocked(t *testing.T) {
 		if strings.Contains(rec.Body.String(), "style.css") {
 			t.Errorf("%s leaked a directory listing", path)
 		}
+	}
+}
+
+// len() counts bytes, so a byte-based minimum lets four three-byte CJK
+// characters pass as "12" -- shorter than the form's minlength and than
+// the message the server itself returns.
+func TestRegisterCountsPasswordCharactersNotBytes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		password string
+		wantCode int
+	}{
+		{"four CJK characters, twelve bytes", "密码密码", http.StatusBadRequest},
+		{"eleven ascii characters", "elevenchars", http.StatusBadRequest},
+		{"twelve ascii characters", "twelvechars!", http.StatusSeeOther},
+		{"twelve CJK characters", "密码密码密码密码密码密码", http.StatusSeeOther},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakeWeb()
+			srv := webServer(t, fake, true)
+			_, csrf := signIn(t, srv, 1)
+
+			form := url.Values{
+				testUsernameField: {"user-" + tt.name},
+				testPasswordField: {tt.password},
+				csrfFieldName:     {csrf.Value},
+			}
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+
+			if rec.Code != tt.wantCode {
+				t.Errorf("password %q (%d chars, %d bytes): status = %d, want %d",
+					tt.password, utf8.RuneCountInString(tt.password), len(tt.password),
+					rec.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+// A new account should not start out one attempt from a lockout because
+// of earlier failures from the same address.
+func TestRegisterClearsThrottleBucketOnSuccess(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	srv := webServer(t, fake, true)
+	_, csrf := signIn(t, srv, 1)
+
+	// Burn most of the bucket with failed logins from this host.
+	bad := url.Values{testUsernameField: {"nobody"}, testPasswordField: {testBadPass}, csrfFieldName: {csrf.Value}}
+	for range loginAttemptLimit - 1 {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, formPost(t, testLoginPath, bad, csrf))
+	}
+	if left := srv.limiter.remaining("10.1.2.3", time.Now()); left != 1 {
+		t.Fatalf("setup: remaining = %d, want 1", left)
+	}
+
+	form := url.Values{
+		testUsernameField: {testNewUser},
+		testPasswordField: {testGoodPassword},
+		csrfFieldName:     {csrf.Value},
+	}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	if left := srv.limiter.remaining("10.1.2.3", time.Now()); left != loginAttemptLimit {
+		t.Errorf("remaining = %d, want %d; the new account is still near a lockout",
+			left, loginAttemptLimit)
 	}
 }

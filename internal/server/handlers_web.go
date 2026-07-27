@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -17,11 +18,14 @@ import (
 )
 
 const (
-	// minPasswordBytes is the shortest password registration accepts.
-	minPasswordBytes = 12
-	// maxPasswordBytes is bcrypt's hard limit. Longer input makes
-	// GenerateFromPassword fail, and a passphrase of accented or
-	// non-Latin characters reaches it well before 72 characters.
+	// minPasswordChars is the shortest password registration accepts,
+	// counted in characters to match the form's minlength and the
+	// message shown on rejection. Counting bytes instead would let
+	// four CJK characters through as "12".
+	minPasswordChars = 12
+	// maxPasswordBytes is bcrypt's hard limit, which is genuinely a
+	// byte count: a passphrase of accented or non-Latin characters
+	// reaches it well before 72 characters.
 	maxPasswordBytes = 72
 
 	// uniqueViolation is PostgreSQL's SQLSTATE for a duplicate key.
@@ -209,9 +213,9 @@ func (h *webHandlers) handleRegister() http.HandlerFunc {
 		username := r.PostFormValue("username")
 		password := r.PostFormValue("password")
 
-		if username == "" || len(password) < minPasswordBytes {
+		if username == "" || utf8.RuneCountInString(password) < minPasswordChars {
 			h.renderRegisterError(w, r, fmt.Sprintf(
-				"Pick a username and a password of at least %d characters.", minPasswordBytes,
+				"Pick a username and a password of at least %d characters.", minPasswordChars,
 			))
 			return
 		}
@@ -247,7 +251,10 @@ func (h *webHandlers) handleRegister() http.HandlerFunc {
 			return
 		}
 
-		h.limiter.release(host)
+		// Clear the whole bucket, as a successful login does: releasing
+		// only this reservation would leave earlier failures counting
+		// against a brand-new account.
+		h.limiter.reset(host)
 		if _, err := h.codec.issueCSRF(w); err != nil {
 			h.fail(w, err, "rotating csrf token")
 			return
