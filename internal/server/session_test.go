@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const testSecret = "0123456789abcdef0123456789abcdef"
+var testSecret = strings.Repeat("x", minSecretLen)
 
 func TestSessionRoundTrip(t *testing.T) {
 	t.Parallel()
