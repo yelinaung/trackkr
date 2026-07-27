@@ -5,6 +5,9 @@
  * form primitives. Everything visual below is ours: Bootstrap defaults
  * are deliberately overridden rather than shipped as-is.
  *
+ * One light theme on a plain white background, by request: no gradients
+ * and no prefers-color-scheme switching.
+ *
  * No page emits inline CSS. Timeline geometry arrives as SVG x/width
  * attributes, so the strict style-src 'self' policy holds even for
  * htmx-swapped partials, where a nonce could not.
@@ -35,11 +38,11 @@
 /* ---------- tokens ---------- */
 
 :root {
-  --ink: #10231f;
-  --ink-soft: #4a625d;
-  --paper: #f4f1ea;
-  --paper-raised: #fffdf8;
-  --edge: #d9d2c4;
+  --ink: #16191d;
+  --ink-soft: #5b6470;
+  --paper: #ffffff;
+  --paper-raised: #ffffff;
+  --edge: #e4e6e9;
   --accent: #0f6f5c;
   --accent-warm: #c2603a;
   --danger: #9b2c2c;
@@ -68,32 +71,12 @@
   --bs-body-font-family: var(--font-body);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e8e4d9;
-    --ink-soft: #a0aeaa;
-    --paper: #0d1614;
-    --paper-raised: #14211e;
-    --edge: #263733;
-    --accent: #4fd1b0;
-    --accent-warm: #f0a071;
-    --danger: #f08a8a;
-  }
-}
-
 /* ---------- page shell ---------- */
 
 body {
   font-family: var(--font-body);
   color: var(--ink);
   background-color: var(--paper);
-  /* Layered rather than flat: two soft washes plus a hairline grid. */
-  background-image:
-    radial-gradient(ellipse 80% 50% at 12% -10%, color-mix(in oklab, var(--accent) 18%, transparent), transparent),
-    radial-gradient(ellipse 60% 40% at 95% 0%, color-mix(in oklab, var(--accent-warm) 14%, transparent), transparent),
-    linear-gradient(var(--edge) 1px, transparent 1px);
-  background-size: auto, auto, 100% 3rem;
-  background-attachment: fixed, fixed, scroll;
   min-height: 100vh;
 }
 
@@ -104,7 +87,7 @@ body {
 
 .site-header {
   border-bottom: 1px solid var(--edge);
-  background-color: color-mix(in oklab, var(--paper-raised) 88%, transparent);
+  background-color: var(--paper);
   margin-bottom: 2rem;
 }
 
@@ -368,7 +351,7 @@ button:focus-visible {
 .lane__bars {
   flex: 1 1 auto;
   height: var(--lane-height);
-  background-color: color-mix(in oklab, var(--paper-raised) 70%, transparent);
+  background-color: #fafbfc;
   border: 1px solid var(--edge);
   border-radius: 6px;
 }

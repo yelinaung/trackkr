@@ -401,16 +401,16 @@ around them rather than discover them one at a time:
   a JS component and is not available.
 - Dismissible alerts: flash messages render as plain, non-dismissible alerts.
 - Dropdowns, offcanvas, toasts, collapse, scrollspy, carousel: not used.
-- Color modes: Bootstrap 5.3 ships dark mode as a JS-toggled
-  `data-bs-theme` attribute. Without JS, `style.css` maps the `--bs-*`
-  tokens under `prefers-color-scheme: dark` instead. A user-chosen override
-  would need a server-side cookie and is deferred.
+- Color modes: none. The dashboard is a single light theme on a white
+  background, by request. Bootstrap 5.3 ships dark mode as a JS-toggled
+  `data-bs-theme` attribute anyway, so without JS it would have to be a
+  `prefers-color-scheme` mapping; that is deferred with the rest.
 
 The style layer treats Bootstrap as a reset, grid, and form primitive, then
-sets its own tokens on top: an explicit palette (no purple-on-white,
-legible in both schemes), a display/text/mono font trio self-hosted as woff2
-under `static/fonts` with the OFL alongside, a layered rather than flat
-background, and motion limited to a timeline-bar reveal on load plus a
+sets its own tokens on top: an explicit palette on a plain white
+background, Inter and IBM Plex Mono self-hosted as woff2 under
+`static/fonts` with their licenses alongside, and motion limited to a
+timeline-bar reveal on load plus a
 crossfade on HTMX swap. The reveal staggers by coarse `nth-child` buckets --
 twelve cycling rules in `style.css`, not a per-bar `animation-delay`. A true
 per-bar delay would need a `style` attribute on every rect, which is the
