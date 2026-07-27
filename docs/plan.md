@@ -278,9 +278,9 @@ Secrets (`database.password`, `auth.admin_password_hash`, `auth.session_secret`)
 5. End-to-end test: daemon → server → DB
 
 ### Phase 3: Web Dashboard MVP
-No heavy web-framework
+0. No heavy web-framework
 1. Login page + session auth
-2. Dashboard page with CSS timeline (getbootstrap.com)
+2. Dashboard page with CSS timeline (Use Bootstrap getbootstrap.com)
 3. HTMX date/device filtering
 4. Device management page (create device + API key)
 5. Embed templates/static with Go embed
