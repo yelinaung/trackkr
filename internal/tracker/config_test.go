@@ -31,8 +31,18 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+// clearTrackkrEnv unsets the TRACKKR_* overrides so a test asserting
+// on file values is not affected by the caller's environment. It uses
+// t.Setenv, so callers must not be parallel.
+func clearTrackkrEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("TRACKKR_SERVER_URL", "")
+	t.Setenv("TRACKKR_API_KEY", "")
+	t.Setenv("TRACKKR_DEVICE_NAME", "")
+}
+
 func TestLoadConfig(t *testing.T) {
-	t.Parallel()
+	clearTrackkrEnv(t)
 	content := `
 server_url = "https://trackkr.example.com"
 api_key = "test_key_123"
@@ -114,6 +124,7 @@ func TestLoadConfigMissing(t *testing.T) {
 }
 
 func TestLoadConfigOrDefaultMissingFile(t *testing.T) {
+	clearTrackkrEnv(t)
 	t.Setenv("TRACKKR_API_KEY", "env_key")
 
 	cfg, err := LoadConfigOrDefault(filepath.Join(t.TempDir(), "absent.toml"))
@@ -130,7 +141,7 @@ func TestLoadConfigOrDefaultMissingFile(t *testing.T) {
 }
 
 func TestLoadConfigOrDefaultExistingFile(t *testing.T) {
-	t.Parallel()
+	clearTrackkrEnv(t)
 	content := `
 server_url = "https://from-file.example.com"
 api_key = "from_file_key"
@@ -164,6 +175,59 @@ func TestLoadConfigOrDefaultInvalidFile(t *testing.T) {
 
 	if _, err := LoadConfigOrDefault(path); err == nil {
 		t.Error("expected error for malformed config file")
+	}
+}
+
+func TestValidate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{"defaults", func(*Config) {}, false},
+		{"empty server url", func(c *Config) { c.ServerURL = "" }, true},
+		{"zero poll interval", func(c *Config) { c.PollInterval = Duration{} }, true},
+		{"negative poll interval", func(c *Config) { c.PollInterval = Duration{-time.Second} }, true},
+		{"zero idle threshold", func(c *Config) { c.IdleThreshold = Duration{} }, true},
+		{"zero flush interval", func(c *Config) { c.FlushInterval = Duration{} }, true},
+		{"negative flush interval", func(c *Config) { c.FlushInterval = Duration{-time.Minute} }, true},
+		{"zero flush size", func(c *Config) { c.FlushSize = 0 }, true},
+		{"negative flush size", func(c *Config) { c.FlushSize = -1 }, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			tt.mutate(cfg)
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+// A non-positive interval reaches time.NewTicker and panics, so it
+// must be rejected at load time.
+func TestLoadConfigRejectsNonPositiveIntervals(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+api_key = "test_key"
+poll_interval = "0s"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadConfigOrDefault(path); err == nil {
+		t.Error("expected error for zero poll_interval")
 	}
 }
 

@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +64,10 @@ func LoadConfig(path string) (*Config, error) {
 
 	applyEnvOverrides(cfg)
 
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+
 	return cfg, nil
 }
 
@@ -80,6 +85,29 @@ func LoadConfigOrDefault(path string) (*Config, error) {
 	}
 
 	return LoadConfig(path)
+}
+
+// Validate rejects configurations the daemon cannot run with. The
+// intervals feed time.NewTicker, which panics on non-positive
+// durations, so a typo like poll_interval = "0s" must fail at load
+// time rather than at the first tick.
+func (c *Config) Validate() error {
+	if c.ServerURL == "" {
+		return errors.New("server_url must not be empty")
+	}
+	if c.PollInterval.Duration <= 0 {
+		return fmt.Errorf("poll_interval must be positive, got %s", c.PollInterval)
+	}
+	if c.IdleThreshold.Duration <= 0 {
+		return fmt.Errorf("idle_threshold must be positive, got %s", c.IdleThreshold)
+	}
+	if c.FlushInterval.Duration <= 0 {
+		return fmt.Errorf("flush_interval must be positive, got %s", c.FlushInterval)
+	}
+	if c.FlushSize <= 0 {
+		return fmt.Errorf("flush_size must be positive, got %d", c.FlushSize)
+	}
+	return nil
 }
 
 func applyEnvOverrides(cfg *Config) {
