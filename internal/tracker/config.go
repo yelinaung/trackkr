@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -18,6 +19,9 @@ const (
 
 	// defaultServerURL is the local dev server from docker-compose.
 	defaultServerURL = "http://localhost:8080"
+
+	// defaultExtensionAddr binds the browser listener to loopback only.
+	defaultExtensionAddr = "127.0.0.1:7600"
 )
 
 // Duration wraps time.Duration for TOML unmarshalling.
@@ -49,6 +53,17 @@ type Config struct {
 	FlushInterval Duration `toml:"flush_interval"`
 	FlushSize     int      `toml:"flush_size"`
 	DataDir       string   `toml:"data_dir"`
+
+	// ExtensionEnabled turns on the loopback listener the browser
+	// extension reports to. Off by default: a daemon on a headless box
+	// has no browser talking to it.
+	ExtensionEnabled bool   `toml:"extension_enabled"`
+	ExtensionAddr    string `toml:"extension_addr"`
+	// ExtensionToken authenticates the extension. Generate one with
+	// "trackkrd -print-extension-token"; it never rotates on its own,
+	// so restarting the daemon does not invalidate what is already
+	// pasted into the extension.
+	ExtensionToken string `toml:"extension_token"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -61,6 +76,7 @@ func DefaultConfig() *Config {
 		FlushInterval: Duration{30 * time.Second},
 		FlushSize:     20,
 		DataDir:       DefaultDataDir(),
+		ExtensionAddr: defaultExtensionAddr,
 	}
 }
 
@@ -109,6 +125,8 @@ func (c *Config) finalize() error {
 	// then be rejected by the server on every flush.
 	c.APIKey = strings.TrimSpace(c.APIKey)
 	c.DeviceName = strings.TrimSpace(c.DeviceName)
+	c.ExtensionToken = strings.TrimSpace(c.ExtensionToken)
+	c.ExtensionAddr = strings.TrimSpace(c.ExtensionAddr)
 
 	return c.Validate()
 }
@@ -125,7 +143,7 @@ func validateServerURL(raw string) error {
 	if err != nil {
 		return fmt.Errorf("server_url %q is not a valid URL: %w", raw, err)
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		return fmt.Errorf("server_url %q must use http or https", raw)
 	}
 	if u.Host == "" {
@@ -158,7 +176,43 @@ func (c *Config) Validate() error {
 	if c.FlushSize <= 0 {
 		return fmt.Errorf("flush_size must be positive, got %d", c.FlushSize)
 	}
+	if c.ExtensionEnabled {
+		if err := validateExtension(c); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// validateExtension checks the listener can only be reached from this
+// machine and is actually authenticated.
+func validateExtension(c *Config) error {
+	if c.ExtensionToken == "" {
+		return errors.New(
+			"extension_token must be set when extension_enabled is true; " +
+				"generate one with: trackkrd -print-extension-token",
+		)
+	}
+
+	host, port, err := net.SplitHostPort(c.ExtensionAddr)
+	if err != nil {
+		return fmt.Errorf("extension_addr %q must be host:port: %w", c.ExtensionAddr, err)
+	}
+	if port == "" {
+		return fmt.Errorf("extension_addr %q needs a port", c.ExtensionAddr)
+	}
+
+	// An unauthenticated-by-accident write endpoint on the LAN is a
+	// typo away, so a non-loopback bind fails at startup rather than at
+	// the first request. ParseIP returns nil for "localhost", which is
+	// why the name is checked separately.
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("extension_addr %q must bind to loopback (127.0.0.1, ::1, or localhost)", c.ExtensionAddr)
 }
 
 func applyEnvOverrides(cfg *Config) {
@@ -170,6 +224,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("TRACKKR_DEVICE_NAME"); v != "" {
 		cfg.DeviceName = v
+	}
+	if v := os.Getenv("TRACKKR_EXTENSION_TOKEN"); v != "" {
+		cfg.ExtensionToken = v
 	}
 }
 

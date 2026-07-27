@@ -191,3 +191,68 @@ flush_interval = "50ms"`)
 		t.Errorf("X-API-Key = %q, want test_key", key)
 	}
 }
+
+// The browser listener and window detection are independent sources: on
+// a platform with no detector the extension can still report tabs, so
+// the daemon must run rather than refuse to start.
+func TestRunWithoutWindowDetectorButWithExtension(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	token, err := tracker.GenerateExtensionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := writeConfig(t, srv.URL, fmt.Sprintf(`poll_interval = "10ms"
+flush_interval = "20ms"
+extension_enabled = true
+extension_addr = "127.0.0.1:0"
+extension_token = %q`, token))
+
+	d := detectors{
+		newWindow: func() (tracker.WindowDetector, error) {
+			return nil, tracker.ErrNoActiveWindow
+		},
+		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	logger := zerolog.Nop()
+	go func() { done <- run(ctx, &logger, path, d) }()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("run returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of cancellation")
+	}
+}
+
+// Without the extension listener a missing detector leaves nothing to
+// do, so it stays fatal.
+func TestRunWithoutWindowDetectorOrExtensionFails(t *testing.T) {
+	logger := zerolog.Nop()
+	d := detectors{
+		newWindow: func() (tracker.WindowDetector, error) {
+			return nil, tracker.ErrNoActiveWindow
+		},
+		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+	}
+
+	err := run(context.Background(), &logger, writeConfig(t, "http://127.0.0.1:1", ""), d)
+	if err == nil {
+		t.Fatal("expected an error when nothing can be tracked")
+	}
+	if !strings.Contains(err.Error(), "window detection unavailable") {
+		t.Errorf("error = %v, want it to mention window detection", err)
+	}
+}

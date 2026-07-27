@@ -8,7 +8,12 @@ import (
 	"time"
 )
 
-const testServerURL = "https://trackkr.example.com"
+const (
+	testServerURL   = "https://trackkr.example.com"
+	testToken       = "tok"
+	schemeHTTPTest  = "http"
+	schemeHTTPSTest = "https"
+)
 
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
@@ -230,8 +235,8 @@ func TestValidateServerURL(t *testing.T) {
 		url     string
 		wantErr bool
 	}{
-		{"http", defaultServerURL, false},
-		{"https", "https://trackkr.example.com", false},
+		{schemeHTTPTest, defaultServerURL, false},
+		{schemeHTTPSTest, testServerURL, false},
 		{"with path prefix", "https://example.com/trackkr", false},
 		{"empty", "", true},
 		{"whitespace", "   ", true},
@@ -415,5 +420,111 @@ func TestDefaultDataDir(t *testing.T) {
 	}
 	if filepath.Base(dir) != "trackkr" {
 		t.Errorf("DefaultDataDir = %q, want trackkr basename", dir)
+	}
+}
+
+// A typo of 0.0.0.0 would publish a write endpoint to the local network,
+// so a non-loopback bind must fail at startup rather than at the first
+// request.
+func TestValidateExtensionListener(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{"disabled needs nothing", func(c *Config) { c.ExtensionEnabled = false }, false},
+		{
+			"enabled with token and loopback",
+			func(c *Config) { c.ExtensionEnabled = true; c.ExtensionToken = testToken },
+			false,
+		},
+		{
+			"localhost by name",
+			func(c *Config) {
+				c.ExtensionEnabled = true
+				c.ExtensionToken = testToken
+				c.ExtensionAddr = "localhost:7600"
+			},
+			false,
+		},
+		{
+			"ipv6 loopback",
+			func(c *Config) {
+				c.ExtensionEnabled = true
+				c.ExtensionToken = testToken
+				c.ExtensionAddr = "[::1]:7600"
+			},
+			false,
+		},
+		{
+			"enabled without a token",
+			func(c *Config) { c.ExtensionEnabled = true },
+			true,
+		},
+		{
+			"all interfaces",
+			func(c *Config) {
+				c.ExtensionEnabled = true
+				c.ExtensionToken = testToken
+				c.ExtensionAddr = "0.0.0.0:7600"
+			},
+			true,
+		},
+		{
+			"routable address",
+			func(c *Config) {
+				c.ExtensionEnabled = true
+				c.ExtensionToken = testToken
+				c.ExtensionAddr = "192.168.1.10:7600"
+			},
+			true,
+		},
+		{
+			"missing port",
+			func(c *Config) {
+				c.ExtensionEnabled = true
+				c.ExtensionToken = testToken
+				c.ExtensionAddr = "127.0.0.1"
+			},
+			true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			tt.mutate(cfg)
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected a validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestGenerateExtensionToken(t *testing.T) {
+	t.Parallel()
+
+	first, err := GenerateExtensionToken()
+	if err != nil {
+		t.Fatalf("GenerateExtensionToken: %v", err)
+	}
+	if len(first) != 64 {
+		t.Errorf("token is %d hex chars, want 64 (32 bytes)", len(first))
+	}
+
+	second, err := GenerateExtensionToken()
+	if err != nil {
+		t.Fatalf("GenerateExtensionToken: %v", err)
+	}
+	if first == second {
+		t.Error("two calls produced the same token")
 	}
 }

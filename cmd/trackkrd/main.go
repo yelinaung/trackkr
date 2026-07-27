@@ -34,7 +34,22 @@ func platformDetectors() detectors {
 func main() {
 	configPath := flag.String("config", tracker.DefaultConfigPath(), "path to config file")
 	debug := flag.Bool("debug", false, "enable debug logging")
+	printToken := flag.Bool("print-extension-token", false,
+		"print a new browser-extension token and exit")
 	flag.Parse()
+
+	// Generation is its own command because the daemon refuses to start
+	// with the listener enabled and no token: a daemon that will not
+	// start could never generate one.
+	if *printToken {
+		token, err := tracker.GenerateExtensionToken()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "generating token: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(token)
+		return
+	}
 
 	level := zerolog.InfoLevel
 	if *debug {
@@ -71,15 +86,26 @@ func run(
 		)
 	}
 
+	// Window detection and the browser listener are independent sources.
+	// On a platform without a window detector the extension can still
+	// report tabs, so a missing detector is only fatal when it is the
+	// daemon's sole reason to exist.
 	window, err := d.newWindow()
 	if err != nil {
-		return fmt.Errorf("window detection unavailable: %w", err)
+		if !cfg.ExtensionEnabled {
+			return fmt.Errorf("window detection unavailable: %w", err)
+		}
+		logger.Warn().Err(err).
+			Msg("window detection unavailable; reporting browser activity only")
 	}
-	idle := d.newIdle(logger)
 
 	client := &http.Client{Timeout: httpTimeout}
 	reporter := tracker.NewReporter(cfg, client, logger)
-	trk := tracker.NewTracker(cfg, window, idle, reporter, logger)
+
+	var trk *tracker.Tracker
+	if window != nil {
+		trk = tracker.NewTracker(cfg, window, d.newIdle(logger), reporter, logger)
+	}
 
 	// Own a child context so the reporter goroutine can be released
 	// as soon as the tracker returns, whatever cancelled the parent.
@@ -89,6 +115,15 @@ func run(
 	var wg sync.WaitGroup
 	wg.Go(func() { reporter.Run(ctx) })
 
+	if cfg.ExtensionEnabled {
+		ext := tracker.NewExtensionServer(cfg, reporter, logger)
+		wg.Go(func() {
+			if err := ext.Run(ctx); err != nil {
+				logger.Error().Err(err).Msg("extension listener stopped")
+			}
+		})
+	}
+
 	logger.Info().
 		Str("server", cfg.ServerURL).
 		Dur("poll_interval", cfg.PollInterval.Duration).
@@ -96,8 +131,13 @@ func run(
 		Msg("starting trackkrd")
 
 	// Run blocks until ctx is cancelled, finalizing the in-flight
-	// record on the way out.
-	trk.Run(ctx)
+	// record on the way out. With no window detector there is nothing to
+	// poll, so wait on the context directly and let the listener work.
+	if trk != nil {
+		trk.Run(ctx)
+	} else {
+		<-ctx.Done()
+	}
 	cancel()
 
 	// Wait for the reporter goroutine before the final flush so both
