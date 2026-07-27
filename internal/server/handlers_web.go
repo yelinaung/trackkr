@@ -297,6 +297,7 @@ func (h *webHandlers) handleTimeline() http.HandlerFunc {
 			return
 		}
 
+		data.Partial = true
 		if err := h.templates.renderPartial(w, "timeline", data); err != nil {
 			h.fail(w, err, "rendering timeline")
 		}

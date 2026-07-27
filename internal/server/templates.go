@@ -32,6 +32,10 @@ type pageData struct {
 	TotalSeconds   int64
 	Truncated      bool
 	RecordLimit    int
+
+	// Partial marks an htmx fragment render, which emits the
+	// out-of-band heading update a full page render must not.
+	Partial bool
 }
 
 // TotalView is one row of the per-app summary, carrying the same colour

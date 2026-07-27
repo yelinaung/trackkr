@@ -12,24 +12,16 @@
 
 /* ---------- fonts (self-hosted; no CDN, see CSP) ---------- */
 
+/*
+ * Inter, from Google Fonts, vendored rather than linked: font-src allows
+ * only 'self'. Google serves it as a variable font, so one file covers
+ * every weight the design uses.
+ */
 @font-face {
-  font-family: "Space Grotesk";
-  src: url("/static/fonts/space-grotesk-latin-600-normal.woff2") format("woff2");
-  font-weight: 600;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "IBM Plex Sans";
-  src: url("/static/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
-  font-weight: 400;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "IBM Plex Sans";
-  src: url("/static/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
-  font-weight: 600;
+  font-family: "Inter";
+  src: url("/static/fonts/inter-latin-variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
   font-display: swap;
 }
 
@@ -52,12 +44,19 @@
   --accent-warm: #c2603a;
   --danger: #9b2c2c;
 
-  --font-display: "Space Grotesk", "IBM Plex Sans", sans-serif;
-  --font-body: "IBM Plex Sans", sans-serif;
+  /* Inter for text and headings, IBM Plex Mono for clock values and
+     keys, where a fixed advance width matters. */
+  --font-body: "Inter", system-ui, sans-serif;
+  --font-display: var(--font-body);
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
   --radius: 10px;
   --lane-height: 26px;
+  /* The axis and the lanes must reserve the same widths, or the hour
+     marks drift away from the bars once the minimums bind. */
+  --lane-label: 6.25rem;
+  --lane-gap: 0.75rem;
+  --chart-min: 33rem;
 
   /* Bootstrap reads these; overriding them retints its components. */
   --bs-body-bg: var(--paper);
@@ -120,8 +119,9 @@ body {
 
 .brand {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: 1.4rem;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   color: var(--ink);
   text-decoration: none;
 }
@@ -167,8 +167,9 @@ body {
 
 .page-title {
   font-family: var(--font-display);
+  font-weight: 600;
   font-size: clamp(1.6rem, 1.2rem + 1.6vw, 2.4rem);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
   margin-bottom: 0.25rem;
 }
 
@@ -192,6 +193,8 @@ body {
 
 .auth-card__title {
   font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.02em;
   font-size: 1.6rem;
   margin-bottom: 0.25rem;
 }
@@ -327,8 +330,8 @@ button:focus-visible {
 
 .timeline__axis {
   display: flex;
-  min-width: 40rem;
-  margin-left: 7rem;
+  min-width: var(--chart-min);
+  margin-left: calc(var(--lane-label) + var(--lane-gap));
   color: var(--ink-soft);
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -345,13 +348,13 @@ button:focus-visible {
 .lane {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  min-width: 40rem;
+  gap: var(--lane-gap);
+  min-width: calc(var(--chart-min) + var(--lane-label) + var(--lane-gap));
   margin-block: 0.4rem;
 }
 
 .lane__name {
-  flex: 0 0 6.25rem;
+  flex: 0 0 var(--lane-label);
   margin: 0;
   font-size: 0.8rem;
   font-weight: 600;
@@ -434,6 +437,8 @@ button:focus-visible {
 
 .totals__title {
   font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
   font-size: 1.1rem;
 }
 

@@ -2,11 +2,13 @@ package server
 
 import (
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/web"
 )
 
 func mustTemplates(t *testing.T) *templates {
@@ -283,5 +285,82 @@ func sampleDevicesData() *pageData {
 			APIKey:     "secret-key-value",
 			CreatedAt:  time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC),
 		}},
+	}
+}
+
+// The date heading lives outside the swap target, so a filter change
+// would leave it naming the previous day without an out-of-band update.
+func TestTimelinePartialUpdatesHeadingOutOfBand(t *testing.T) {
+	t.Parallel()
+
+	data := sampleTimelineData()
+	data.Partial = true
+	html := renderPartial(t, "timeline", data)
+
+	if !strings.Contains(html, `hx-swap-oob="true"`) {
+		t.Error("partial does not update the heading out of band")
+	}
+	if !strings.Contains(html, `id="page-title"`) {
+		t.Error("out-of-band heading has no matching id")
+	}
+	if !strings.Contains(html, data.DateLabel) {
+		t.Error("out-of-band heading does not carry the selected date")
+	}
+}
+
+// The full page emits the heading itself; repeating it in the embedded
+// partial would render the date twice.
+func TestFullPageRenderHasOneHeading(t *testing.T) {
+	t.Parallel()
+	html := renderPage(t, pageDashboard, sampleTimelineData())
+
+	if got := strings.Count(html, `id="page-title"`); got != 1 {
+		t.Errorf("page-title appears %d times, want 1", got)
+	}
+	if strings.Contains(html, "hx-swap-oob") {
+		t.Error("full page render emitted an out-of-band swap")
+	}
+}
+
+// Every asset the stylesheet pulls must be local, or font-src 'self'
+// silently drops it and the page falls back to system fonts.
+func TestStylesheetReferencesOnlyLocalAssets(t *testing.T) {
+	t.Parallel()
+
+	css, err := web.Static.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("reading style.css: %v", err)
+	}
+
+	refs := regexp.MustCompile(`url\(["']?([^"')]+)`).FindAllStringSubmatch(string(css), -1)
+	if len(refs) == 0 {
+		t.Fatal("no url() references found; the test is not looking at the right file")
+	}
+	for _, m := range refs {
+		if !strings.HasPrefix(m[1], "/static/") {
+			t.Errorf("stylesheet references %q, which is not served from /static/", m[1])
+		}
+	}
+}
+
+// The fonts named in the tokens must be the ones actually vendored.
+func TestVendoredFontsMatchStylesheet(t *testing.T) {
+	t.Parallel()
+
+	css, err := web.Static.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("reading style.css: %v", err)
+	}
+
+	for _, want := range []string{
+		"static/fonts/inter-latin-variable.woff2",
+		"static/fonts/ibm-plex-mono-latin-400-normal.woff2",
+	} {
+		if _, err := web.Static.ReadFile(want); err != nil {
+			t.Errorf("%s is referenced but not embedded: %v", want, err)
+		}
+		if !strings.Contains(string(css), "/"+want) {
+			t.Errorf("%s is embedded but not referenced by the stylesheet", want)
+		}
 	}
 }

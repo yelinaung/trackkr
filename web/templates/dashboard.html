@@ -1,7 +1,7 @@
 {{define "title"}}Timeline &middot; trackkr{{end}}
 
 {{define "content"}}
-<h1 class="page-title">{{.DateLabel}}</h1>
+<h1 class="page-title" id="page-title">{{.DateLabel}}</h1>
 
 <form class="filters" hx-get="/timeline" hx-target="#timeline" hx-swap="innerHTML"
       hx-trigger="change" hx-indicator="#timeline-loading">
