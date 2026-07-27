@@ -5,7 +5,7 @@ FROM myoung34/github-runner:ubuntu-jammy@sha256:0f913e32df159864e2269b3daeaf2eef
 # renovate: datasource=golang-version depName=go versioning=semver
 ARG GO_VERSION=1.26.5
 # renovate: datasource=go depName=mvdan.cc/gofumpt versioning=semver extractVersion=^v(?<version>.*)$
-ARG GOFUMPT_VERSION=0.9.2
+ARG GOFUMPT_VERSION=0.10.0
 # renovate: datasource=go depName=golang.org/x/vuln versioning=semver extractVersion=^v(?<version>.*)$
 ARG GOVULNCHECK_VERSION=1.6.0
 # renovate: datasource=go depName=github.com/securego/gosec/v2 versioning=semver extractVersion=^v(?<version>.*)$
