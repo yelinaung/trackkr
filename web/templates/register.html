@@ -1,0 +1,23 @@
+{{define "title"}}Create account &middot; trackkr{{end}}
+
+{{define "content"}}
+<div class="auth-card">
+  <h1 class="auth-card__title">Create account</h1>
+  <p class="auth-card__lede">One account, every device you track.</p>
+
+  <form method="post" action="/register" class="stack">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" required autofocus>
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="new-password"
+           minlength="12" required>
+    <p class="field-hint">At least 12 characters.</p>
+
+    <button type="submit" class="btn-primary">Create account</button>
+  </form>
+
+  <p class="auth-card__aside">Already have one? <a href="/login">Sign in</a>.</p>
+</div>
+{{end}}

@@ -37,7 +37,7 @@ func newFakeWeb() *fakeWeb {
 	}
 }
 
-func (f *fakeWeb) addUser(t *testing.T, username, password string) *db.UserRow { //nolint:unparam // username varies across callers by design; keep the fake general.
+func (f *fakeWeb) addUser(t *testing.T, username, password string) *db.UserRow {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
 	if err != nil {
@@ -583,32 +583,58 @@ func TestLogoutClearsSession(t *testing.T) {
 	}
 }
 
-func TestDashboardMarksTruncatedDays(t *testing.T) {
+// A day holding exactly the limit fits: the query fetches one extra row
+// as a probe, so only its presence means anything was cut.
+func TestDashboardTruncationBoundary(t *testing.T) {
 	t.Parallel()
-	fake := newFakeWeb()
-	user := fake.addUser(t, "ye", "pw")
-	day := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
 
-	for i := range db.ActivityRecordLimit {
-		fake.records = append(fake.records, db.ActivityRecordRow{
-			DeviceID:  7,
-			AppName:   fmt.Sprintf("app-%d", i%5),
-			StartedAt: day.Add(time.Duration(i) * time.Second),
-			EndedAt:   day.Add(time.Duration(i)*time.Second + time.Second),
-		})
+	tests := []struct {
+		name      string
+		records   int
+		wantNotic bool
+	}{
+		{"one under the limit", db.ActivityRecordLimit - 1, false},
+		{"exactly the limit", db.ActivityRecordLimit, false},
+		{"one over the limit", db.ActivityRecordLimit + 1, true},
 	}
-	fake.devices = []db.DeviceRow{{ID: 7, UserID: user.ID, Name: testLaptop}}
 
-	srv := webServer(t, fake, false)
-	session, csrf := signIn(t, srv, user.ID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakeWeb()
+			user := fake.addUser(t, "boundary-"+tt.name, testPassword)
+			day := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
 
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?date=2026-05-04", nil)
-	r.AddCookie(session)
-	r.AddCookie(csrf)
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, r)
+			fake.records = make([]db.ActivityRecordRow, 0, tt.records)
+			for i := range tt.records {
+				fake.records = append(fake.records, db.ActivityRecordRow{
+					DeviceID:  7,
+					AppName:   fmt.Sprintf("app-%d", i%5),
+					StartedAt: day.Add(time.Duration(i) * time.Second),
+					EndedAt:   day.Add(time.Duration(i)*time.Second + time.Second),
+				})
+			}
+			fake.devices = []db.DeviceRow{{ID: 7, UserID: user.ID, Name: testLaptop}}
 
-	if !strings.Contains(rec.Body.String(), "totals below cover the whole day") {
-		t.Error("no truncation notice on a capped day")
+			srv := webServer(t, fake, false)
+			session, csrf := signIn(t, srv, user.ID)
+
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?date=2026-05-04", nil)
+			r.AddCookie(session)
+			r.AddCookie(csrf)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, r)
+
+			body := rec.Body.String()
+			gotNotice := strings.Contains(body, "totals below cover the whole day")
+			if gotNotice != tt.wantNotic {
+				t.Errorf("truncation notice = %v, want %v", gotNotice, tt.wantNotic)
+			}
+
+			// The probe row must never be drawn.
+			if bars := strings.Count(body, "<rect"); bars > db.ActivityRecordLimit {
+				t.Errorf("rendered %d bars, want at most %d", bars, db.ActivityRecordLimit)
+			}
+		})
 	}
 }

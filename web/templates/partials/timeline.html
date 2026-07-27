@@ -1,0 +1,55 @@
+{{define "timeline"}}
+{{$chart := .Chart}}
+
+{{if .Truncated}}
+<p class="notice" role="status">
+  Showing the first {{.RecordLimit}} records of this day, so the chart stops
+  early. The totals below cover the whole day.
+</p>
+{{end}}
+
+{{if $chart.Lanes}}
+<section class="timeline" aria-label="Activity timeline">
+  <div class="timeline__scroll">
+    <div class="timeline__axis" aria-hidden="true">
+      {{range $chart.HourMarks}}<span class="timeline__hour">{{.Label}}</span>{{end}}
+    </div>
+
+    {{range $chart.Lanes}}
+    <div class="lane">
+      <p class="lane__name">{{.DeviceName}}</p>
+      <svg class="lane__bars" viewBox="0 0 {{$chart.SpanMin}} 24"
+           preserveAspectRatio="none" role="img"
+           aria-label="Activity for {{.DeviceName}}">
+        {{range .Bars}}
+        <rect class="bar bar--{{.Bucket}}" x="{{.X}}" y="0"
+              width="{{.Width}}" height="24" fill="{{.Fill}}">
+          <title>{{.AppName}} &middot; {{.TimeRange}}{{if .Title}} &middot; {{.Title}}{{end}}</title>
+        </rect>
+        {{end}}
+      </svg>
+    </div>
+    {{end}}
+  </div>
+</section>
+
+<section class="totals" aria-label="Time per application">
+  <h2 class="totals__title">Where the day went</h2>
+  <p class="totals__sum">{{duration .TotalSeconds}} tracked</p>
+  <ol class="totals__list">
+    {{range .Totals}}
+    <li class="totals__item">
+      <span class="totals__swatch" data-app="{{.AppName}}"></span>
+      <span class="totals__app">{{.AppName}}</span>
+      <span class="totals__time">{{duration .Seconds}}</span>
+    </li>
+    {{end}}
+  </ol>
+</section>
+{{else}}
+<p class="empty">
+  Nothing tracked on this day. Once <code>trackkrd</code> reports activity for
+  one of your devices, it shows up here.
+</p>
+{{end}}
+{{end}}

@@ -78,8 +78,11 @@ func (q *Queries) ListDevicesByUser(ctx context.Context, userID int64) ([]Device
 }
 
 // ActivityRecordLimit caps how many records one timeline page renders.
-// The cap truncates the end of the day rather than sampling it; callers
-// compare the returned length against this to tell the user.
+// The cap truncates the end of the day rather than sampling it.
+//
+// GetActivityRecords fetches one row beyond the limit so the caller can
+// tell "exactly full" from "truncated": comparing len(records) against
+// the limit alone reports a truncated chart for a day that fit exactly.
 const ActivityRecordLimit = 5000
 
 // GetActivityRecords returns records overlapping [start, end). Selecting
@@ -97,7 +100,7 @@ func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, e
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
 			 ORDER BY ar.started_at, ar.device_id, ar.id
 			 LIMIT $5`,
-			userID, start, end, *deviceID, ActivityRecordLimit)
+			userID, start, end, *deviceID, ActivityRecordLimit+1)
 	} else {
 		rows, err = q.pool.Query(ctx,
 			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
@@ -106,7 +109,7 @@ func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, e
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
 			 ORDER BY ar.started_at, ar.device_id, ar.id
 			 LIMIT $4`,
-			userID, start, end, ActivityRecordLimit)
+			userID, start, end, ActivityRecordLimit+1)
 	}
 	if err != nil {
 		return nil, err

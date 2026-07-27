@@ -1,0 +1,29 @@
+{{define "title"}}Timeline &middot; trackkr{{end}}
+
+{{define "content"}}
+<h1 class="page-title">{{.DateLabel}}</h1>
+
+<form class="filters" hx-get="/timeline" hx-target="#timeline" hx-swap="innerHTML"
+      hx-trigger="change" hx-indicator="#timeline-loading">
+  <div class="filters__field">
+    <label for="date">Date</label>
+    <input id="date" name="date" type="date" value="{{.Date}}" max="{{.Today}}">
+  </div>
+
+  <div class="filters__field">
+    <label for="device">Device</label>
+    <select id="device" name="device">
+      <option value="">All devices</option>
+      {{range .Devices}}
+      <option value="{{.ID}}" {{if eq $.SelectedDevice .ID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </div>
+
+  <span id="timeline-loading" class="htmx-indicator" aria-hidden="true">updating</span>
+</form>
+
+<div id="timeline">
+  {{template "timeline" .}}
+</div>
+{{end}}

@@ -17,6 +17,10 @@ dist/
 *.out
 *.cover
 *.html
+# The dashboard templates are source, not coverage output, and go:embed
+# fails to compile without them.
+!web/templates/*.html
+!web/templates/partials/*.html
 
 # Go workspace
 go.work

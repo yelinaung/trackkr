@@ -127,20 +127,31 @@ func newAttemptLimiter(limit int, window time.Duration) *attemptLimiter {
 	}
 }
 
-// allow reports whether host may attempt again, sweeping expired entries
-// so the map cannot grow without bound.
-func (l *attemptLimiter) allow(host string, now time.Time) bool {
+// reserve claims one attempt for host, reporting false when the host is
+// already at the limit.
+//
+// Checking and recording must happen under one lock. Splitting them lets
+// a burst of concurrent requests all pass the check before any of them
+// records, so an attacker gets an unbounded number of bcrypt comparisons
+// out of a ten-attempt limit -- both a bypass and a CPU amplifier.
+func (l *attemptLimiter) reserve(host string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sweep(now)
-	return len(l.attempts[host]) < l.limit
+
+	if len(l.attempts[host]) >= l.limit {
+		return false
+	}
+	l.attempts[host] = append(l.attempts[host], now)
+	return true
 }
 
-func (l *attemptLimiter) record(host string, now time.Time) {
+// remaining reports how many attempts host has left (for tests).
+func (l *attemptLimiter) remaining(host string, now time.Time) int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.sweep(now)
-	l.attempts[host] = append(l.attempts[host], now)
+	return l.limit - len(l.attempts[host])
 }
 
 // reset clears a host's history after a successful login.

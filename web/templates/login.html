@@ -1,0 +1,23 @@
+{{define "title"}}Sign in &middot; trackkr{{end}}
+
+{{define "content"}}
+<div class="auth-card">
+  <h1 class="auth-card__title">Sign in</h1>
+  <p class="auth-card__lede">Your day, as your machines saw it.</p>
+
+  <form method="post" action="/login" class="stack">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" required autofocus>
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+    <button type="submit" class="btn-primary">Sign in</button>
+  </form>
+
+  {{if .AllowRegistration}}
+  <p class="auth-card__aside">No account yet? <a href="/register">Create one</a>.</p>
+  {{end}}
+</div>
+{{end}}

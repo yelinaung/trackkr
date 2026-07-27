@@ -1,0 +1,30 @@
+{{define "title"}}Devices &middot; trackkr{{end}}
+
+{{define "content"}}
+<h1 class="page-title">Devices</h1>
+<p class="page-lede">
+  Each device reports with its own key. Put it in
+  <code>~/.config/trackkr/config.toml</code> as <code>api_key</code>.
+</p>
+
+<form method="post" action="/devices" class="device-form">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <div class="device-form__field">
+    <label for="name">Device name</label>
+    <input id="name" name="name" placeholder="work-laptop" required>
+  </div>
+  <div class="device-form__field">
+    <label for="device_type">Type</label>
+    <select id="device_type" name="device_type">
+      <option value="desktop">desktop</option>
+      <option value="laptop">laptop</option>
+      <option value="phone">phone</option>
+    </select>
+  </div>
+  <button type="submit" class="btn-primary">Add device</button>
+</form>
+
+<div id="device-list">
+  {{template "device_rows" .}}
+</div>
+{{end}}

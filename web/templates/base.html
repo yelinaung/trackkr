@@ -1,0 +1,41 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{block "title" .}}trackkr{{end}}</title>
+{{/* htmx injects a <style> block for its indicators unless told not to,
+     which would violate style-src 'self' on every page. */}}
+<meta name="htmx-config"
+      content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}'>
+<link rel="stylesheet" href="/static/bootstrap.min.css">
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="site-header">
+  <div class="container site-header__inner">
+    <a class="brand" href="/">trackkr</a>
+    {{if .User}}
+    <nav class="site-nav">
+      <a href="/">Timeline</a>
+      <a href="/devices">Devices</a>
+      <form method="post" action="/logout">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button type="submit" class="linkish">Sign out</button>
+      </form>
+    </nav>
+    {{end}}
+  </div>
+</header>
+
+<main class="container">
+  {{if .Flash}}<p class="flash flash--{{.FlashKind}}" role="status">{{.Flash}}</p>{{end}}
+  {{block "content" .}}{{end}}
+</main>
+
+<footer class="container site-footer">
+  <p>{{if .User}}Signed in as {{.User.Username}} &middot; {{end}}times shown in {{.Timezone}}</p>
+</footer>
+</body>
+</html>{{end}}

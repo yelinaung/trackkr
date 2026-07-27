@@ -1,0 +1,31 @@
+{{define "device_rows"}}
+{{if .Devices}}
+<table class="devices">
+  <thead>
+    <tr><th>Name</th><th>Type</th><th>API key</th><th>Added</th><th></th></tr>
+  </thead>
+  <tbody>
+    {{range .Devices}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td class="devices__type">{{.DeviceType}}</td>
+      <td><code class="devices__key">{{.APIKey}}</code></td>
+      <td class="devices__added">{{date .CreatedAt}}</td>
+      <td>
+        <button class="btn-danger"
+                hx-delete="/devices/{{.ID}}"
+                hx-target="#device-list"
+                hx-swap="innerHTML"
+                hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+                hx-confirm="Delete {{.Name}}? Its recorded activity goes too.">
+          Delete
+        </button>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No devices yet. Add one above, then point a daemon at its key.</p>
+{{end}}
+{{end}}

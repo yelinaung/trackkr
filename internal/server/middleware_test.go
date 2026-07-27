@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,24 +209,52 @@ func TestAttemptLimiter(t *testing.T) {
 	l := newAttemptLimiter(10, 15*time.Minute)
 
 	for i := range 10 {
-		if !l.allow(testLimiterIP, now) {
+		if !l.reserve(testLimiterIP, now) {
 			t.Fatalf("attempt %d blocked too early", i+1)
 		}
-		l.record(testLimiterIP, now)
 	}
-	if l.allow(testLimiterIP, now) {
+	if l.reserve(testLimiterIP, now) {
 		t.Error("11th attempt allowed, want throttled")
 	}
 
 	// Another host is unaffected.
-	if !l.allow("10.0.0.2", now) {
+	if !l.reserve("10.0.0.2", now) {
 		t.Error("unrelated host throttled")
 	}
 
 	// A success clears the bucket.
 	l.reset(testLimiterIP)
-	if !l.allow(testLimiterIP, now) {
+	if !l.reserve(testLimiterIP, now) {
 		t.Error("bucket not cleared after reset")
+	}
+}
+
+// Checking and recording must be one atomic step. With a separate
+// allow-then-record, a concurrent burst all passes the check before any
+// of them records, so the limit is bypassed and every request still pays
+// for a bcrypt comparison.
+func TestAttemptLimiterIsAtomicUnderConcurrency(t *testing.T) {
+	t.Parallel()
+	const limit = 10
+	now := time.Now()
+	l := newAttemptLimiter(limit, 15*time.Minute)
+
+	var granted atomic.Int64
+	var wg sync.WaitGroup
+	for range 200 {
+		wg.Go(func() {
+			if l.reserve(testLimiterIP, now) {
+				granted.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+
+	if got := granted.Load(); got != limit {
+		t.Errorf("granted = %d attempts, want exactly %d", got, limit)
+	}
+	if left := l.remaining(testLimiterIP, now); left != 0 {
+		t.Errorf("remaining = %d, want 0", left)
 	}
 }
 
@@ -233,17 +263,17 @@ func TestAttemptLimiterWindowExpiresAndEvicts(t *testing.T) {
 	now := time.Now()
 	l := newAttemptLimiter(2, time.Minute)
 
-	l.record(testLimiterIP, now)
-	l.record(testLimiterIP, now)
-	if l.allow(testLimiterIP, now) {
+	l.reserve(testLimiterIP, now)
+	l.reserve(testLimiterIP, now)
+	if l.reserve(testLimiterIP, now) {
 		t.Fatal("expected throttling at the limit")
 	}
 
 	later := now.Add(2 * time.Minute)
-	if !l.allow(testLimiterIP, later) {
+	if !l.reserve(testLimiterIP, later) {
 		t.Error("window did not drain")
 	}
-	if len(l.attempts) != 0 {
+	if len(l.attempts) != 1 {
 		t.Errorf("stale hosts not evicted: %d entries", len(l.attempts))
 	}
 }

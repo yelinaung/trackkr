@@ -82,7 +82,10 @@ func (h *webHandlers) handleLogin() http.HandlerFunc {
 		host := clientHost(r)
 		now := time.Now()
 
-		if !h.limiter.allow(host, now) {
+		// Claim the attempt before doing any work: reserving up front
+		// is what stops a concurrent burst from getting more bcrypt
+		// comparisons than the limit allows. A success releases it.
+		if !h.limiter.reserve(host, now) {
 			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
 			return
 		}
@@ -92,13 +95,11 @@ func (h *webHandlers) handleLogin() http.HandlerFunc {
 		if err != nil {
 			// Spend the same time as a real comparison.
 			_ = bcrypt.CompareHashAndPassword([]byte(bcryptDummyHash), []byte(r.PostFormValue("password")))
-			h.limiter.record(host, now)
 			h.renderLoginError(w, r)
 			return
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(r.PostFormValue("password"))); err != nil {
-			h.limiter.record(host, now)
 			h.renderLoginError(w, r)
 			return
 		}
@@ -272,6 +273,15 @@ func (h *webHandlers) timelineData(r *http.Request) (*pageData, error) {
 		data.TotalSeconds += t.Seconds
 	}
 
+	// The query fetches one row past the limit purely as a probe: its
+	// presence means there was more, while a day of exactly the limit
+	// fits and must not be reported as truncated. The extra row is
+	// dropped before rendering.
+	truncated := len(records) > db.ActivityRecordLimit
+	if truncated {
+		records = records[:db.ActivityRecordLimit]
+	}
+
 	data.Devices = devices
 	data.Totals = totals
 	data.Chart = layout(records, devices, day)
@@ -279,8 +289,8 @@ func (h *webHandlers) timelineData(r *http.Request) (*pageData, error) {
 	data.Today = time.Now().In(h.loc).Format("2006-01-02")
 	data.DateLabel = start.Format("Monday, 2 January 2006")
 	// The cap truncates the end of the day; totals still cover all of it.
-	data.Truncated = len(records) >= db.ActivityRecordLimit
-	data.Chart.Truncated = data.Truncated
+	data.Truncated = truncated
+	data.Chart.Truncated = truncated
 
 	return data, nil
 }
