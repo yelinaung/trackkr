@@ -1,0 +1,546 @@
+/*
+ * trackkr dashboard styles.
+ *
+ * Loaded after Bootstrap 5.3 compiled CSS, which supplies the reset and
+ * form primitives. Everything visual below is ours: Bootstrap defaults
+ * are deliberately overridden rather than shipped as-is.
+ *
+ * No page emits inline CSS. Timeline geometry arrives as SVG x/width
+ * attributes, so the strict style-src 'self' policy holds even for
+ * htmx-swapped partials, where a nonce could not.
+ */
+
+/* ---------- fonts (self-hosted; no CDN, see CSP) ---------- */
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/static/fonts/space-grotesk-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("/static/fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("/static/fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/static/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+/* ---------- tokens ---------- */
+
+:root {
+  --ink: #10231f;
+  --ink-soft: #4a625d;
+  --paper: #f4f1ea;
+  --paper-raised: #fffdf8;
+  --edge: #d9d2c4;
+  --accent: #0f6f5c;
+  --accent-warm: #c2603a;
+  --danger: #9b2c2c;
+
+  --font-display: "Space Grotesk", "IBM Plex Sans", sans-serif;
+  --font-body: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --radius: 10px;
+  --lane-height: 26px;
+
+  /* Bootstrap reads these; overriding them retints its components. */
+  --bs-body-bg: var(--paper);
+  --bs-body-color: var(--ink);
+  --bs-border-color: var(--edge);
+  --bs-link-color: var(--accent);
+  --bs-link-hover-color: var(--accent-warm);
+  --bs-font-sans-serif: var(--font-body);
+  --bs-body-font-family: var(--font-body);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8e4d9;
+    --ink-soft: #a0aeaa;
+    --paper: #0d1614;
+    --paper-raised: #14211e;
+    --edge: #263733;
+    --accent: #4fd1b0;
+    --accent-warm: #f0a071;
+    --danger: #f08a8a;
+  }
+}
+
+/* ---------- page shell ---------- */
+
+body {
+  font-family: var(--font-body);
+  color: var(--ink);
+  background-color: var(--paper);
+  /* Layered rather than flat: two soft washes plus a hairline grid. */
+  background-image:
+    radial-gradient(ellipse 80% 50% at 12% -10%, color-mix(in oklab, var(--accent) 18%, transparent), transparent),
+    radial-gradient(ellipse 60% 40% at 95% 0%, color-mix(in oklab, var(--accent-warm) 14%, transparent), transparent),
+    linear-gradient(var(--edge) 1px, transparent 1px);
+  background-size: auto, auto, 100% 3rem;
+  background-attachment: fixed, fixed, scroll;
+  min-height: 100vh;
+}
+
+.container {
+  width: min(72rem, 100% - 2rem);
+  margin-inline: auto;
+}
+
+.site-header {
+  border-bottom: 1px solid var(--edge);
+  background-color: color-mix(in oklab, var(--paper-raised) 88%, transparent);
+  margin-bottom: 2rem;
+}
+
+.site-header__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-block: 1rem;
+}
+
+.brand {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.brand::after {
+  content: "";
+  display: block;
+  height: 3px;
+  width: 2.2rem;
+  margin-top: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-warm));
+}
+
+/* Flex nav that wraps, because no Bootstrap JS means no collapse toggler. */
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.site-nav a,
+.linkish {
+  font-size: 0.95rem;
+  color: var(--ink-soft);
+  text-decoration: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.site-nav a:hover,
+.linkish:hover {
+  color: var(--accent);
+}
+
+.site-footer {
+  margin-block: 3rem 2rem;
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.page-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 1.2rem + 1.6vw, 2.4rem);
+  letter-spacing: -0.02em;
+  margin-bottom: 0.25rem;
+}
+
+.page-lede,
+.field-hint {
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+}
+
+/* ---------- auth ---------- */
+
+.auth-card {
+  max-width: 24rem;
+  margin: 3rem auto;
+  padding: 2rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background-color: var(--paper-raised);
+  animation: rise 420ms ease-out both;
+}
+
+.auth-card__title {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  margin-bottom: 0.25rem;
+}
+
+.auth-card__lede {
+  color: var(--ink-soft);
+  margin-bottom: 1.5rem;
+}
+
+.auth-card__aside {
+  margin-top: 1.25rem;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.stack {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.stack label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-top: 0.5rem;
+}
+
+input,
+select {
+  font: inherit;
+  padding: 0.5rem 0.65rem;
+  color: var(--ink);
+  background-color: var(--paper);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn-primary,
+.btn-danger {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.btn-primary {
+  margin-top: 1rem;
+  color: var(--paper-raised);
+  background-color: var(--accent);
+}
+
+.btn-danger {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  color: var(--danger);
+  background-color: transparent;
+  border: 1px solid var(--edge);
+}
+
+.btn-danger:hover {
+  border-color: var(--danger);
+}
+
+.flash {
+  padding: 0.7rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--edge);
+  background-color: var(--paper-raised);
+}
+
+.flash--error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.notice,
+.empty {
+  padding: 1rem 1.25rem;
+  border: 1px dashed var(--edge);
+  border-radius: var(--radius);
+  color: var(--ink-soft);
+}
+
+/* ---------- filters ---------- */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+  margin-block: 1.5rem;
+}
+
+.filters__field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.filters__field label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+/* htmx-config disables htmx's own injected indicator styles, so the
+   indicator is styled here instead. */
+.htmx-indicator {
+  opacity: 0;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  transition: opacity 150ms ease-in;
+}
+
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+/* ---------- timeline ---------- */
+
+.timeline__scroll {
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+}
+
+.timeline__axis {
+  display: flex;
+  min-width: 40rem;
+  margin-left: 7rem;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+/* One flex cell per hour: a 23- or 25-hour DST day gets the right count
+   from the server, and equal cells still line up with the bars. */
+.timeline__hour {
+  flex: 1 1 0;
+  border-left: 1px solid var(--edge);
+  padding-left: 2px;
+}
+
+.lane {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 40rem;
+  margin-block: 0.4rem;
+}
+
+.lane__name {
+  flex: 0 0 6.25rem;
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-align: right;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lane__bars {
+  flex: 1 1 auto;
+  height: var(--lane-height);
+  background-color: color-mix(in oklab, var(--paper-raised) 70%, transparent);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+}
+
+.bar {
+  opacity: 0;
+  animation: bar-in 320ms ease-out forwards;
+}
+
+.bar:hover {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+/*
+ * Staggered reveal without a per-bar animation-delay, which would need a
+ * style attribute on every rect and break style-src 'self'. Twelve
+ * cycling buckets are assigned server-side.
+ */
+.bar--0  { animation-delay: 0ms; }
+.bar--1  { animation-delay: 25ms; }
+.bar--2  { animation-delay: 50ms; }
+.bar--3  { animation-delay: 75ms; }
+.bar--4  { animation-delay: 100ms; }
+.bar--5  { animation-delay: 125ms; }
+.bar--6  { animation-delay: 150ms; }
+.bar--7  { animation-delay: 175ms; }
+.bar--8  { animation-delay: 200ms; }
+.bar--9  { animation-delay: 225ms; }
+.bar--10 { animation-delay: 250ms; }
+.bar--11 { animation-delay: 275ms; }
+
+@keyframes bar-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+#timeline {
+  animation: fade-swap 220ms ease-out;
+}
+
+@keyframes fade-swap {
+  from { opacity: 0.35; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar,
+  .auth-card,
+  #timeline {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* ---------- totals ---------- */
+
+.totals {
+  margin-top: 2.5rem;
+}
+
+.totals__title {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+}
+
+.totals__sum {
+  font-family: var(--font-mono);
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.totals__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.totals__item {
+  display: grid;
+  grid-template-columns: 0.75rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background-color: var(--paper-raised);
+}
+
+.totals__swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 3px;
+  background-color: var(--ink-soft);
+}
+
+.totals__time {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+/* ---------- devices ---------- */
+
+.device-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+  margin-block: 1.5rem;
+}
+
+.device-form__field {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.device-form__field label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.devices {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.devices th,
+.devices td {
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--edge);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.devices th {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+}
+
+.devices__key {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.devices__type,
+.devices__added {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 40rem) {
+  .devices thead {
+    display: none;
+  }
+
+  .devices tr {
+    display: grid;
+    gap: 0.2rem;
+    padding-block: 0.6rem;
+    border-bottom: 1px solid var(--edge);
+  }
+
+  .devices td {
+    border: 0;
+    padding: 0.1rem 0;
+  }
+}

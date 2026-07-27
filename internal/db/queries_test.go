@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -385,5 +387,154 @@ func TestGetActivityRecords(t *testing.T) {
 	}
 	if got[1].URL != nil {
 		t.Errorf("URL = %v, want nil", got[1].URL)
+	}
+}
+
+func TestGetUserByID(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	username := fmt.Sprintf("testuser_%d", time.Now().UnixNano())
+	created, err := q.CreateUser(ctx, username, "$2a$10$fakehash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, pool, created.ID) })
+
+	got, err := q.GetUserByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetUserByID: %v", err)
+	}
+	if got.Username != username {
+		t.Errorf("username = %q, want %q", got.Username, username)
+	}
+
+	if _, err := q.GetUserByID(ctx, -1); err == nil {
+		t.Error("expected an error for a missing user")
+	}
+}
+
+// A record spanning midnight must appear on both days, clamped by the
+// caller. Selecting on started_at alone would hide it on the later day.
+func TestGetActivityRecordsSelectsOverlap(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+
+	day := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+	prevEvening := day.Add(-10 * time.Minute)
+	insertRecord(t, q, device.ID, "firefox", prevEvening, day.Add(20*time.Minute))
+
+	for _, tc := range []struct {
+		name  string
+		start time.Time
+	}{
+		{"day the record started", day.AddDate(0, 0, -1)},
+		{"day the record ended", day},
+	} {
+		records, err := q.GetActivityRecords(ctx, user.ID, tc.start, tc.start.AddDate(0, 0, 1), nil)
+		if err != nil {
+			t.Fatalf("%s: GetActivityRecords: %v", tc.name, err)
+		}
+		if len(records) != 1 {
+			t.Errorf("%s: records = %d, want 1", tc.name, len(records))
+		}
+	}
+}
+
+// Summing duration_s over overlapping rows would count a boundary record
+// in full on both days; only the overlapping slice belongs to each.
+func TestGetAppTotalsCountsOnlyOverlap(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+
+	day := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	// 10 minutes before midnight, 20 minutes after.
+	insertRecord(t, q, device.ID, testFirefoxApp, day.Add(-10*time.Minute), day.Add(20*time.Minute))
+
+	totals, err := q.GetAppTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetAppTotals: %v", err)
+	}
+	if len(totals) != 1 {
+		t.Fatalf("totals = %+v, want one app", totals)
+	}
+	if totals[0].Seconds != 1200 {
+		t.Errorf("seconds = %d, want 1200 (only the part inside the day)", totals[0].Seconds)
+	}
+
+	prev, err := q.GetAppTotals(ctx, user.ID, day.AddDate(0, 0, -1), day, nil)
+	if err != nil {
+		t.Fatalf("GetAppTotals (previous day): %v", err)
+	}
+	if len(prev) != 1 || prev[0].Seconds != 600 {
+		t.Errorf("previous day = %+v, want 600 seconds", prev)
+	}
+}
+
+// Migration 002 adds ON DELETE CASCADE; without it this fails with a
+// foreign key violation, which is exactly the bug the migration fixes.
+func TestDeleteDeviceCascadesRecords(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+
+	start := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	insertRecord(t, q, device.ID, testFirefoxApp, start, start.Add(time.Hour))
+
+	if err := q.DeleteDevice(ctx, device.ID, user.ID); err != nil {
+		t.Fatalf("DeleteDevice with records: %v", err)
+	}
+
+	var remaining int
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM activity_records WHERE device_id = $1`, device.ID).Scan(&remaining)
+	if err != nil {
+		t.Fatalf("counting records: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("records left after cascade = %d, want 0", remaining)
+	}
+}
+
+func seedUserAndDevice(t *testing.T, pool *pgxpool.Pool, q *Queries) (*UserRow, *DeviceRow) {
+	t.Helper()
+	ctx := context.Background()
+
+	username := fmt.Sprintf("testuser_%d", time.Now().UnixNano())
+	user, err := q.CreateUser(ctx, username, "$2a$10$fakehash")
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	t.Cleanup(func() { cleanupUser(t, pool, user.ID) })
+
+	apiKey := fmt.Sprintf("key_%d", time.Now().UnixNano())
+	device, err := q.CreateDevice(ctx, user.ID, "test-laptop", "desktop", apiKey)
+	if err != nil {
+		t.Fatalf("CreateDevice: %v", err)
+	}
+	return user, device
+}
+
+func insertRecord(t *testing.T, q *Queries, deviceID int64, app string, start, end time.Time) {
+	t.Helper()
+
+	_, err := q.InsertActivityRecords(context.Background(), []ActivityRecordRow{{
+		DeviceID:  deviceID,
+		AppName:   app,
+		StartedAt: start,
+		EndedAt:   end,
+		DurationS: int(end.Sub(start).Seconds()),
+	}})
+	if err != nil {
+		t.Fatalf("InsertActivityRecords: %v", err)
 	}
 }

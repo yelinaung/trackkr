@@ -25,7 +25,54 @@ type ingestResponse struct {
 	Accepted int `json:"accepted"`
 }
 
-func HandleIngestActivity(queries Querier) http.HandlerFunc {
+// deviceView is the API's device representation. It deliberately omits
+// APIKey: DeviceRow carries the plaintext key, so marshalling the row
+// would let one compromised device key harvest every other key on the
+// account. The session-authenticated /devices page shows keys on
+// purpose; that is a different trust level.
+type deviceView struct {
+	ID         int64     `json:"id"`
+	Name       string    `json:"name"`
+	DeviceType string    `json:"device_type"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type devicesResponse struct {
+	Devices []deviceView `json:"devices"`
+}
+
+// HandleListDevices lists the devices belonging to the same user as the
+// authenticated device.
+func HandleListDevices(queries APIQuerier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		device := DeviceFromContext(r.Context())
+		if device == nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
+		devices, err := queries.ListDevicesByUser(r.Context(), device.UserID)
+		if err != nil {
+			http.Error(w, `{"error":"failed to list devices"}`, http.StatusInternalServerError)
+			return
+		}
+
+		views := make([]deviceView, 0, len(devices))
+		for _, d := range devices {
+			views = append(views, deviceView{
+				ID:         d.ID,
+				Name:       d.Name,
+				DeviceType: d.DeviceType,
+				CreatedAt:  d.CreatedAt,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(devicesResponse{Devices: views})
+	}
+}
+
+func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		device := DeviceFromContext(r.Context())
 		if device == nil {

@@ -19,7 +19,7 @@ func DeviceFromContext(ctx context.Context) *db.DeviceRow {
 }
 
 // APIKeyAuth is middleware that validates the X-API-Key header against the devices table.
-func APIKeyAuth(queries Querier) func(http.Handler) http.Handler {
+func APIKeyAuth(queries APIQuerier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKey := r.Header.Get("X-API-Key")

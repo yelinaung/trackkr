@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,5 +284,51 @@ func TestIngestActivityWrongMethod(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+// DeviceRow carries the plaintext API key, so marshalling it directly
+// would let one compromised device key harvest every other key on the
+// account. The response must be a DTO.
+func TestListDevicesNeverExposesAPIKeys(t *testing.T) {
+	t.Parallel()
+	srv, mock := unitServer(t)
+	fix := createMockFixtures(t, mock)
+
+	req := newRequest(t, http.MethodGet, "/api/v1/devices", nil)
+	req.Header.Set("X-API-Key", fix.APIKey)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	body := rec.Body.String()
+	if strings.Contains(body, fix.APIKey) {
+		t.Errorf("response leaked an API key: %s", body)
+	}
+	if strings.Contains(body, "api_key") {
+		t.Errorf("response has an api_key field: %s", body)
+	}
+
+	var got devicesResponse
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(got.Devices) != 1 || got.Devices[0].Name != fix.Device.Name {
+		t.Errorf("devices = %+v, want the caller's device", got.Devices)
+	}
+}
+
+func TestListDevicesRequiresAPIKey(t *testing.T) {
+	t.Parallel()
+	srv, _ := unitServer(t)
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, newRequest(t, http.MethodGet, "/api/v1/devices", nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rec.Code)
 	}
 }

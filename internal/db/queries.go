@@ -77,6 +77,14 @@ func (q *Queries) ListDevicesByUser(ctx context.Context, userID int64) ([]Device
 	return devices, rows.Err()
 }
 
+// ActivityRecordLimit caps how many records one timeline page renders.
+// The cap truncates the end of the day rather than sampling it; callers
+// compare the returned length against this to tell the user.
+const ActivityRecordLimit = 5000
+
+// GetActivityRecords returns records overlapping [start, end). Selecting
+// on overlap rather than on started_at is what makes a record spanning
+// midnight visible on both days.
 func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
 	var rows pgx.Rows
 	var err error
@@ -86,17 +94,19 @@ func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, e
 			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
-			 WHERE d.user_id = $1 AND ar.started_at >= $2 AND ar.started_at < $3 AND ar.device_id = $4
-			 ORDER BY ar.started_at`,
-			userID, start, end, *deviceID)
+			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
+			 ORDER BY ar.started_at, ar.device_id, ar.id
+			 LIMIT $5`,
+			userID, start, end, *deviceID, ActivityRecordLimit)
 	} else {
 		rows, err = q.pool.Query(ctx,
 			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
-			 WHERE d.user_id = $1 AND ar.started_at >= $2 AND ar.started_at < $3
-			 ORDER BY ar.started_at`,
-			userID, start, end)
+			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
+			 ORDER BY ar.started_at, ar.device_id, ar.id
+			 LIMIT $4`,
+			userID, start, end, ActivityRecordLimit)
 	}
 	if err != nil {
 		return nil, err
@@ -113,6 +123,61 @@ func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, e
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+// GetAppTotals sums per-app time within [start, end). It sums the part
+// of each record that falls inside the window, so a record spanning
+// midnight is not counted in full on both days.
+func (q *Queries) GetAppTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]AppTotalRow, error) {
+	var rows pgx.Rows
+	var err error
+
+	if deviceID != nil {
+		rows, err = q.pool.Query(ctx,
+			`SELECT ar.app_name,
+			        SUM(EXTRACT(EPOCH FROM (LEAST(ar.ended_at, $3) - GREATEST(ar.started_at, $2))))::bigint
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
+			 GROUP BY ar.app_name
+			 ORDER BY 2 DESC, 1`,
+			userID, start, end, *deviceID)
+	} else {
+		rows, err = q.pool.Query(ctx,
+			`SELECT ar.app_name,
+			        SUM(EXTRACT(EPOCH FROM (LEAST(ar.ended_at, $3) - GREATEST(ar.started_at, $2))))::bigint
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
+			 GROUP BY ar.app_name
+			 ORDER BY 2 DESC, 1`,
+			userID, start, end)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var totals []AppTotalRow
+	for rows.Next() {
+		var t AppTotalRow
+		if err := rows.Scan(&t.AppName, &t.Seconds); err != nil {
+			return nil, err
+		}
+		totals = append(totals, t)
+	}
+	return totals, rows.Err()
+}
+
+func (q *Queries) GetUserByID(ctx context.Context, id int64) (*UserRow, error) {
+	row := q.pool.QueryRow(ctx,
+		`SELECT id, username, password, created_at FROM users WHERE id = $1`, id)
+
+	var u UserRow
+	if err := row.Scan(&u.ID, &u.Username, &u.Password, &u.CreatedAt); err != nil {
+		return nil, err
+	}
+	return &u, nil
 }
 
 func (q *Queries) GetUserByUsername(ctx context.Context, username string) (*UserRow, error) {

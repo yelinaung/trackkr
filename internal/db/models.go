@@ -25,6 +25,12 @@ type DeviceRow struct {
 	CreatedAt  time.Time
 }
 
+// AppTotalRow is one row of the per-app time summary for a window.
+type AppTotalRow struct {
+	AppName string
+	Seconds int64
+}
+
 type UserRow struct {
 	ID        int64
 	Username  string

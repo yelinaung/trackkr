@@ -58,7 +58,10 @@ func main() {
 		}
 	}
 
-	srv := server.New(cfg, pool, &logger)
+	srv, err := server.New(cfg, pool, &logger)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to start server")
+	}
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Addr(),

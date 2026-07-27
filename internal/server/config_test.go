@@ -57,8 +57,8 @@ allow_registration = true
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.Server.Host != "127.0.0.1" {
-		t.Errorf("Server.Host = %q, want %q", cfg.Server.Host, "127.0.0.1")
+	if cfg.Server.Host != testHost {
+		t.Errorf("Server.Host = %q, want %q", cfg.Server.Host, testHost)
 	}
 	if cfg.Server.Port != 9090 {
 		t.Errorf("Server.Port = %d, want %d", cfg.Server.Port, 9090)

@@ -297,6 +297,14 @@ step 5 useful, and enforce a minimum width of one minute so a short record
 stays visible and hoverable. Colour comes from an FNV-1a hash of `app_name`
 mapped to a hue.
 
+Two things changed while building this. The bar `<svg>` needs
+`preserveAspectRatio="none"` to stretch a minute-based `viewBox` across the
+container, and non-uniform scaling distorts any text inside it -- so the
+CSS-revealed `<text>` label described above became an SVG `<title>` per rect
+(native tooltip, accessible, no JS), and the hour axis moved out of the SVG
+into HTML flex cells, one per `HourMark`, which stay undistorted and still
+line up because hours within a day are equal.
+
 One lane per device, plus a merged "All devices" view driven by the existing
 `deviceID *int64` filter.
 

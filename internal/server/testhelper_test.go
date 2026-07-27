@@ -11,6 +11,23 @@ import (
 	"github.com/yelinaung/trackkr/internal/db"
 )
 
+// Shared test fixtures. Extracted so goconst stays quiet and the values
+// have one obvious home.
+const (
+	testHost          = "127.0.0.1"
+	testLoginPath     = "/login"
+	testCSRFValue     = "tok"
+	testLimiterIP     = "10.0.0.1"
+	testPassword      = "correct horse battery"
+	testBadPass       = "wrong"
+	testLaptop        = "laptop"
+	testDesktop       = "desktop"
+	testAppCode       = "code"
+	testFirefoxLower  = "firefox"
+	testPasswordField = "password"
+	testUsernameField = "username"
+)
+
 // mockQuerier implements Querier for unit tests without a database.
 type mockQuerier struct {
 	devices  map[string]*db.DeviceRow // keyed by API key
@@ -44,7 +61,20 @@ func (m *mockQuerier) addDevice(apiKey string, device *db.DeviceRow) {
 	m.devices[apiKey] = device
 }
 
+func (m *mockQuerier) ListDevicesByUser(_ context.Context, userID int64) ([]db.DeviceRow, error) {
+	var out []db.DeviceRow
+	for _, d := range m.devices {
+		if d.UserID == userID {
+			out = append(out, *d)
+		}
+	}
+	return out, nil
+}
+
 // unitServer creates a Server backed by a mockQuerier (no DB needed).
+// Only the api field is populated: these tests exercise /api/v1 routes,
+// and leaving sessions and web nil keeps the fake at three methods
+// instead of every query in the package.
 func unitServer(t *testing.T) (*Server, *mockQuerier) {
 	t.Helper()
 	mock := newMockQuerier()
@@ -52,11 +82,21 @@ func unitServer(t *testing.T) (*Server, *mockQuerier) {
 		Server: ServerConfig{Host: "127.0.0.1", Port: 0},
 	}
 	logger := zerolog.Nop()
+
+	tmpl, err := parseTemplates()
+	if err != nil {
+		t.Fatalf("parseTemplates: %v", err)
+	}
+
 	srv := &Server{
-		config:  cfg,
-		router:  nil,
-		queries: mock,
-		logger:  &logger,
+		config:    cfg,
+		router:    nil,
+		api:       mock,
+		logger:    &logger,
+		templates: tmpl,
+		codec:     newSessionCodec(testSecret, true),
+		limiter:   newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),
+		loc:       time.UTC,
 	}
 	srv.router = newRouter(srv)
 	return srv, mock
