@@ -364,3 +364,18 @@ func TestVendoredFontsMatchStylesheet(t *testing.T) {
 		}
 	}
 }
+
+// HTML minlength counts UTF-16 code units while the server counts
+// Unicode characters, so six emoji pass in the browser and fail on the
+// server. The form must not carry a second, differently-defined rule.
+func TestRegisterFormHasNoClientLengthRule(t *testing.T) {
+	t.Parallel()
+	html := renderPage(t, pageRegister, &pageData{CSRFToken: testCSRFValue})
+
+	if strings.Contains(html, "minlength") {
+		t.Error("register form has a minlength attribute that disagrees with the server")
+	}
+	if !strings.Contains(html, "At least 12 characters") {
+		t.Error("the policy is no longer stated to the visitor")
+	}
+}

@@ -913,3 +913,32 @@ func TestRegisterSuccessKeepsThrottleReservation(t *testing.T) {
 		t.Errorf("created %d accounts, want %d", len(fake.users), loginAttemptLimit)
 	}
 }
+
+// Six emoji are 12 UTF-16 code units but 6 characters. Whatever the
+// answer, the browser and the server must give the same one.
+func TestRegisterRejectsSixEmojiConsistently(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	srv := webServer(t, fake, true)
+	_, csrf := signIn(t, srv, 1)
+
+	emoji := "🙂🙂🙂🙂🙂🙂"
+	if utf8.RuneCountInString(emoji) != 6 {
+		t.Fatalf("fixture is %d characters, want 6", utf8.RuneCountInString(emoji))
+	}
+
+	form := url.Values{
+		testUsernameField: {testNewUser},
+		testPasswordField: {emoji},
+		csrfFieldName:     {csrf.Value},
+	}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: six characters is under the minimum", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "at least 12 characters") {
+		t.Error("rejection does not restate the policy")
+	}
+}

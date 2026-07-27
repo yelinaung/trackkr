@@ -11,8 +11,12 @@
     <input id="username" name="username" autocomplete="username" required autofocus>
 
     <label for="password">Password</label>
+    {{/* No minlength: HTML counts UTF-16 code units, so six emoji read
+         as 12 there and as 6 to the server, and the browser would wave
+         through a password the server then rejects. One rule, on the
+         server, counting Unicode characters. */}}
     <input id="password" name="password" type="password" autocomplete="new-password"
-           minlength="12" required>
+           required>
     <p class="field-hint">At least 12 characters.</p>
 
     <button type="submit" class="btn-primary">Create account</button>
