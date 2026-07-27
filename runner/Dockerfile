@@ -15,7 +15,7 @@ ARG GOLANGCI_LINT_VERSION=2.12.2
 # renovate: datasource=github-releases depName=goreleaser/goreleaser versioning=semver extractVersion=^v(?<version>.*)$
 ARG GORELEASER_VERSION=2.17.0
 # renovate: datasource=github-releases depName=gitleaks/gitleaks versioning=semver extractVersion=^v(?<version>.*)$
-ARG GITLEAKS_VERSION=8.30.0
+ARG GITLEAKS_VERSION=8.30.1
 # renovate: datasource=pypi depName=semgrep versioning=pep440
 ARG SEMGREP_VERSION=1.154.0
 
