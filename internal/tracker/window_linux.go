@@ -9,6 +9,18 @@ import (
 	"strings"
 )
 
+// NewWindowDetector returns the platform's window detector. On Linux
+// this is the X11 detector backed by xdotool and xprop.
+func NewWindowDetector() (WindowDetector, error) {
+	// Return an explicit nil interface on failure; returning the
+	// typed nil pointer directly would make the interface non-nil.
+	d, err := NewXWindowDetector()
+	if err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
 // XWindowDetector uses xdotool and xprop to detect active windows
 // on X11.
 type XWindowDetector struct {

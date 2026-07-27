@@ -3,9 +3,12 @@ package tracker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+const testServerURL = "https://trackkr.example.com"
 
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
@@ -23,16 +26,26 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.FlushSize != 20 {
 		t.Errorf("FlushSize = %d, want 20", cfg.FlushSize)
 	}
-	if cfg.ServerURL != "http://localhost:8080" {
-		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "http://localhost:8080")
+	if cfg.ServerURL != defaultServerURL {
+		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, defaultServerURL)
 	}
 	if cfg.DeviceName == "" {
 		t.Error("DeviceName is empty")
 	}
 }
 
+// clearTrackkrEnv unsets the TRACKKR_* overrides so a test asserting
+// on file values is not affected by the caller's environment. It uses
+// t.Setenv, so callers must not be parallel.
+func clearTrackkrEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("TRACKKR_SERVER_URL", "")
+	t.Setenv("TRACKKR_API_KEY", "")
+	t.Setenv("TRACKKR_DEVICE_NAME", "")
+}
+
 func TestLoadConfig(t *testing.T) {
-	t.Parallel()
+	clearTrackkrEnv(t)
 	content := `
 server_url = "https://trackkr.example.com"
 api_key = "test_key_123"
@@ -53,8 +66,8 @@ flush_size = 50
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.ServerURL != "https://trackkr.example.com" {
-		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "https://trackkr.example.com")
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, testServerURL)
 	}
 	if cfg.APIKey != "test_key_123" {
 		t.Errorf("APIKey = %q, want %q", cfg.APIKey, "test_key_123")
@@ -110,6 +123,243 @@ func TestLoadConfigMissing(t *testing.T) {
 	_, err := LoadConfig("/nonexistent/config.toml")
 	if err == nil {
 		t.Error("expected error for missing config file")
+	}
+}
+
+func TestLoadConfigOrDefaultMissingFile(t *testing.T) {
+	clearTrackkrEnv(t)
+	t.Setenv("TRACKKR_API_KEY", "env_key")
+
+	cfg, err := LoadConfigOrDefault(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil {
+		t.Fatalf("LoadConfigOrDefault: %v", err)
+	}
+
+	if cfg.APIKey != "env_key" {
+		t.Errorf("APIKey = %q, want env override", cfg.APIKey)
+	}
+	if cfg.PollInterval.Duration != 3*time.Second {
+		t.Errorf("PollInterval = %v, want default 3s", cfg.PollInterval)
+	}
+}
+
+func TestLoadConfigOrDefaultExistingFile(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+server_url = "https://from-file.example.com"
+api_key = "from_file_key"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfigOrDefault(path)
+	if err != nil {
+		t.Fatalf("LoadConfigOrDefault: %v", err)
+	}
+
+	if cfg.ServerURL != "https://from-file.example.com" {
+		t.Errorf("ServerURL = %q, want value from file", cfg.ServerURL)
+	}
+	if cfg.APIKey != "from_file_key" {
+		t.Errorf("APIKey = %q, want value from file", cfg.APIKey)
+	}
+}
+
+func TestLoadConfigOrDefaultInvalidFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("this is not = valid toml ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadConfigOrDefault(path); err == nil {
+		t.Error("expected error for malformed config file")
+	}
+}
+
+// A trailing slash would make Reporter build ".../api/v1/activity"
+// as "...//api/v1/activity", which the server 404s on, so every
+// batch would requeue forever.
+func TestLoadConfigTrimsTrailingSlash(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+server_url = "https://trackkr.example.com///"
+api_key = "test_key"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want trailing slashes trimmed", cfg.ServerURL)
+	}
+}
+
+func TestLoadConfigOrDefaultTrimsTrailingSlashFromEnv(t *testing.T) {
+	clearTrackkrEnv(t)
+	t.Setenv("TRACKKR_SERVER_URL", "https://trackkr.example.com/")
+	t.Setenv("TRACKKR_API_KEY", "env_key")
+
+	cfg, err := LoadConfigOrDefault(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil {
+		t.Fatalf("LoadConfigOrDefault: %v", err)
+	}
+
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want trailing slash trimmed", cfg.ServerURL)
+	}
+}
+
+// Reporter appends "/api/v1/activity" to server_url, so anything that
+// is not a plain http(s) origin either fails to send or hits the
+// wrong endpoint.
+func TestValidateServerURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"http", defaultServerURL, false},
+		{"https", "https://trackkr.example.com", false},
+		{"with path prefix", "https://example.com/trackkr", false},
+		{"empty", "", true},
+		{"whitespace", "   ", true},
+		{"scheme only", "https:", true},
+		{"no scheme", "trackkr.example.com", true},
+		{"wrong scheme", "ftp://example.com", true},
+		{"with query", "https://example.com?token=abc", true},
+		{"with fragment", "https://example.com#frag", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			// Mirror the trimming finalize does before validating.
+			cfg.ServerURL = strings.TrimRight(strings.TrimSpace(tt.url), "/")
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Errorf("Validate(%q) = nil, want error", tt.url)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Validate(%q) = %v, want nil", tt.url, err)
+			}
+		})
+	}
+}
+
+func TestFinalizeTrimsWhitespace(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+server_url = "  https://trackkr.example.com  "
+api_key = "  spaced_key  "
+device_name = "  laptop  "
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, testServerURL)
+	}
+	if cfg.APIKey != "spaced_key" {
+		t.Errorf("APIKey = %q, want trimmed", cfg.APIKey)
+	}
+	if cfg.DeviceName != "laptop" {
+		t.Errorf("DeviceName = %q, want trimmed", cfg.DeviceName)
+	}
+}
+
+// A whitespace-only key must not pass the daemon's emptiness check.
+func TestFinalizeBlanksWhitespaceOnlyAPIKey(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+server_url = "https://trackkr.example.com"
+api_key = "   "
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.APIKey != "" {
+		t.Errorf("APIKey = %q, want empty so startup rejects it", cfg.APIKey)
+	}
+}
+
+func TestValidate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr bool
+	}{
+		{"defaults", func(*Config) {}, false},
+		{"empty server url", func(c *Config) { c.ServerURL = "" }, true},
+		{"zero poll interval", func(c *Config) { c.PollInterval = Duration{} }, true},
+		{"negative poll interval", func(c *Config) { c.PollInterval = Duration{-time.Second} }, true},
+		{"zero idle threshold", func(c *Config) { c.IdleThreshold = Duration{} }, true},
+		{"zero flush interval", func(c *Config) { c.FlushInterval = Duration{} }, true},
+		{"negative flush interval", func(c *Config) { c.FlushInterval = Duration{-time.Minute} }, true},
+		{"zero flush size", func(c *Config) { c.FlushSize = 0 }, true},
+		{"negative flush size", func(c *Config) { c.FlushSize = -1 }, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			tt.mutate(cfg)
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+// A non-positive interval reaches time.NewTicker and panics, so it
+// must be rejected at load time.
+func TestLoadConfigRejectsNonPositiveIntervals(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+api_key = "test_key"
+poll_interval = "0s"
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadConfigOrDefault(path); err == nil {
+		t.Error("expected error for zero poll_interval")
 	}
 }
 

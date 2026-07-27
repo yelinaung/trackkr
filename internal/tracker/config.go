@@ -1,15 +1,24 @@
 package tracker
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
-const unknownApp = "unknown"
+const (
+	unknownApp = "unknown"
+
+	// defaultServerURL is the local dev server from docker-compose.
+	defaultServerURL = "http://localhost:8080"
+)
 
 // Duration wraps time.Duration for TOML unmarshalling.
 type Duration struct{ time.Duration }
@@ -29,8 +38,11 @@ func (d Duration) MarshalText() ([]byte, error) {
 
 // Config holds the daemon's configuration.
 type Config struct {
-	ServerURL     string   `toml:"server_url"`
-	APIKey        string   `toml:"api_key"`
+	ServerURL string `toml:"server_url"`
+	APIKey    string `toml:"api_key"`
+	// DeviceName is informational only. The server identifies the
+	// device from the API key, so changing this does not affect
+	// where records land.
 	DeviceName    string   `toml:"device_name"`
 	PollInterval  Duration `toml:"poll_interval"`
 	IdleThreshold Duration `toml:"idle_threshold"`
@@ -42,7 +54,7 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		ServerURL:     "http://localhost:8080",
+		ServerURL:     defaultServerURL,
 		DeviceName:    hostname(),
 		PollInterval:  Duration{3 * time.Second},
 		IdleThreshold: Duration{5 * time.Minute},
@@ -61,6 +73,95 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("loading config %s: %w", path, err)
 	}
 
+	if err := cfg.finalize(); err != nil {
+		return nil, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+
+	return cfg, nil
+}
+
+// LoadConfigOrDefault behaves like LoadConfig, but falls back to
+// defaults plus env var overrides when the file does not exist. This
+// lets the daemon run from environment variables alone.
+func LoadConfigOrDefault(path string) (*Config, error) {
+	cfg, err := LoadConfig(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		cfg = DefaultConfig()
+		if err := cfg.finalize(); err != nil {
+			return nil, fmt.Errorf("invalid config: %w", err)
+		}
+		return cfg, nil
+	}
+
+	return cfg, err
+}
+
+// finalize applies env var overrides, normalizes values, and
+// validates the result.
+func (c *Config) finalize() error {
+	applyEnvOverrides(c)
+
+	// Reporter builds request URLs by concatenation, so a trailing
+	// slash would produce a double slash the server 404s on.
+	c.ServerURL = strings.TrimRight(strings.TrimSpace(c.ServerURL), "/")
+
+	// A whitespace-only key would sail past the emptiness check and
+	// then be rejected by the server on every flush.
+	c.APIKey = strings.TrimSpace(c.APIKey)
+	c.DeviceName = strings.TrimSpace(c.DeviceName)
+
+	return c.Validate()
+}
+
+// validateServerURL checks that the URL is one Reporter can append
+// "/api/v1/activity" to. A query or fragment would end up before the
+// path, so they are rejected rather than silently mangled.
+func validateServerURL(raw string) error {
+	if raw == "" {
+		return errors.New("server_url must not be empty")
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("server_url %q is not a valid URL: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("server_url %q must use http or https", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("server_url %q must include a host", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("server_url %q must not contain a query or fragment", raw)
+	}
+
+	return nil
+}
+
+// Validate rejects configurations the daemon cannot run with. The
+// intervals feed time.NewTicker, which panics on non-positive
+// durations, so a typo like poll_interval = "0s" must fail at load
+// time rather than at the first tick.
+func (c *Config) Validate() error {
+	if err := validateServerURL(c.ServerURL); err != nil {
+		return err
+	}
+	if c.PollInterval.Duration <= 0 {
+		return fmt.Errorf("poll_interval must be positive, got %s", c.PollInterval)
+	}
+	if c.IdleThreshold.Duration <= 0 {
+		return fmt.Errorf("idle_threshold must be positive, got %s", c.IdleThreshold)
+	}
+	if c.FlushInterval.Duration <= 0 {
+		return fmt.Errorf("flush_interval must be positive, got %s", c.FlushInterval)
+	}
+	if c.FlushSize <= 0 {
+		return fmt.Errorf("flush_size must be positive, got %d", c.FlushSize)
+	}
+	return nil
+}
+
+func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("TRACKKR_SERVER_URL"); v != "" {
 		cfg.ServerURL = v
 	}
@@ -70,8 +171,6 @@ func LoadConfig(path string) (*Config, error) {
 	if v := os.Getenv("TRACKKR_DEVICE_NAME"); v != "" {
 		cfg.DeviceName = v
 	}
-
-	return cfg, nil
 }
 
 // DefaultConfigPath returns ~/.config/trackkr/config.toml.

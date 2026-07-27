@@ -50,8 +50,11 @@ func NewTracker(
 	}
 }
 
-// Run starts the tracking loop. It blocks until ctx is cancelled.
-func (t *Tracker) Run(ctx context.Context) error {
+// Run starts the tracking loop. It blocks until ctx is cancelled,
+// finalizing the in-flight record on the way out. Poll errors are
+// logged and retried on the next tick, so there is nothing for a
+// caller to handle.
+func (t *Tracker) Run(ctx context.Context) {
 	ticker := time.NewTicker(t.cfg.PollInterval.Duration)
 	defer ticker.Stop()
 
@@ -59,7 +62,7 @@ func (t *Tracker) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			t.finalizeIfActive(time.Now())
-			return nil
+			return
 		case <-ticker.C:
 			t.poll(ctx)
 		}
