@@ -39,7 +39,6 @@ func New(cfg *Config, pool *pgxpool.Pool, logger *zerolog.Logger) *Server {
 func newRouter(s *Server) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 
 	// API routes (API key auth — ingest only, no device management)
