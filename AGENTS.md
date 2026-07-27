@@ -3,8 +3,11 @@
 ## Build/Test/Lint Commands
 
 - **Go version**: 1.26+
-- **Build**: `mise build .` or `go run .`
-- **Test**: `mise test`
+- **Build**: `mise build` (server → `trackkr-backend`), `mise build-daemon`
+  (client → `trackkrd`)
+- **Run**: `mise run` (server), `mise run-daemon` (daemon), `mise db` (Postgres
+  via docker compose)
+- **Test**: `mise test`, `mise test-race`, `mise test-coverage`
 - **Lint**:
     - Run `mise lint` and fix the issues
 - **Format**: `mise format`
@@ -22,70 +25,62 @@
 - **Interfaces**: Define interfaces in consuming packages, keep them small and focused
 - **Structs**: Use struct embedding for composition, group related fields
 - **Constants**: Use typed constants with iota for enums, group in const blocks
-- **Testing**: Use testify's `require` package, parallel tests with `t.Parallel()`,
-  `t.SetEnv()` to set environment variables. Always use `t.Tempdir()` when in
-  need of a temporary directory. This directory does not need to be removed.
+- **Testing**: Standard library `testing` only — no testify. Use `t.Parallel()`,
+  `t.Setenv()`, and `t.TempDir()` (temp dirs are cleaned up automatically).
 - **JSON tags**: Use snake_case for JSON field names
 - **File permissions**: Use octal notation (0o755, 0o644) for file permissions
 - **Comments**: End comments in periods unless comments are at the end of the line.
 
-## Testing with Mock Providers
+## Testing
 
-When writing tests that involve provider configurations, use the mock providers to avoid API calls:
-
-```go
-func TestYourFunction(t *testing.T) {
-    // Enable mock providers for testing
-    originalUseMock := config.UseMockProviders
-    config.UseMockProviders = true
-    defer func() {
-        config.UseMockProviders = originalUseMock
-        config.ResetProviders()
-    }()
-
-    // Reset providers to ensure fresh mock data
-    config.ResetProviders()
-
-    // Your test code here - providers will now return mock data
-    providers := config.Providers()
-    // ... test logic
-}
-```
-ALWAYS RUN these `mise` commands:
-- test
-- test-race
-
-ENSURE that the test coverage stays at or above 50% (CI enforced).
-
-## Test Patterns
+ALWAYS run `mise test` and `mise test-race` before committing. Keep total
+coverage at or above 50% — CI fails below that.
 
 ### Unit Tests
-- Use `t.Parallel()` for tests that don't need database.
-- Use table-driven tests for pure functions.
-- Use `testify/require` for assertions.
-- Use `t.Helper()` in test setup functions.
+- Standard library `testing` only. Assert with `if got != want { t.Errorf(...) }`;
+  use `t.Fatal` when the test cannot continue. The repo has no assertion
+  library and should not grow one for a handful of tests.
+- Use `t.Parallel()` for anything that does not touch the database or the
+  environment.
+- Table-driven tests for pure functions (`parseWMClass`, `parseIdleMs`,
+  `Config.Validate`).
+- `t.Helper()` in setup helpers.
+
+### Environment Variables
+- `t.Setenv` and `t.Parallel` are mutually exclusive — `t.Setenv` panics in a
+  parallel test.
+- A test asserting on config-file values must neutralise the `TRACKKR_*`
+  overrides first, or it passes locally and fails in a shell that exports
+  them. `internal/tracker/config_test.go` has `clearTrackkrEnv(t)` for this.
+- Prefer restructuring so no env var is needed: a malformed config file, for
+  example, fails parsing before any override is read, so that test can stay
+  parallel.
 
 ### Database Tests
-- Use `database.TestDB(t)` which skips if `TEST_DATABASE_URL` not set.
-- Run with `-p 1` to avoid race conditions.
-- Do NOT use `t.Parallel()` for database tests.
+- Live in `internal/db`. `testPool(t)` (see `testhelper_test.go`) connects,
+  runs migrations, and calls `t.Skipf` when Postgres is unreachable — so
+  `mise test` passes on a machine with no database.
+- Override the DSN with `TRACKKR_TEST_DSN`; the default targets the
+  `mise db` compose service on port 5455.
+- Do NOT use `t.Parallel()` in database tests, and clean up rows you create
+  (`cleanupUser`).
 
-### Mocking External Dependencies
-- Use interfaces for external SDK calls (e.g., Gemini API).
-- Use adapter pattern to wrap SDK structs.
-- Create separate constructors for testing (e.g., `NewClientWithGenerator`).
-- See `internal/bot/mocks/` for Telegram bot mocks.
-
-### Handler Testing
-- Handlers take concrete `*bot.Bot` type, not interface.
-- Use wrapper functions to test handler logic without calling real handlers.
-- Callback handlers use `EditMessageText` instead of `SendMessage`.
+### Fakes and Interfaces
+- No mock framework. Define a small interface in the consuming package and
+  write a struct that implements it.
+- Existing examples: `mockQuerier` in `internal/server/testhelper_test.go`
+  (implements `Querier`), and `HTTPPoster`, `WindowDetector`, `IdleDetector`
+  in `internal/tracker` — all satisfied by hand-written test doubles.
+- Use `httptest.NewServer` for reporter/HTTP tests rather than faking the
+  transport when the real request path matters.
 
 ### Edge Cases to Test
-- nil/empty slices and maps.
-- Whitespace-only inputs.
-- Bot mention formats in commands.
-- Non-existent IDs for update/delete operations.
+- Zero and negative durations for anything reaching `time.NewTicker` — it
+  panics on non-positive intervals.
+- Empty and whitespace-only inputs; nil/empty slices and maps.
+- URLs with and without trailing slashes (the reporter concatenates paths).
+- Missing external binaries (`xdotool`, `xprintidle`) and unsupported
+  platforms.
 
 
 ## Formatting
@@ -99,8 +94,9 @@ ENSURE that the test coverage stays at or above 50% (CI enforced).
 
 ## Committing
 
-- ALWAYS run both unit and integraton tests before pushing
-    - Especially, the fail tests with `mise test-integration 2&>1 | grep -w 'FAIL:'`
+- ALWAYS run `mise test` and `mise test-race` before pushing. Database-backed
+  tests skip silently without Postgres, so start it with `mise db` when the
+  change touches `internal/db`.
 - ALWAYS use semantic commits (`fix:`, `feat:`, `chore:`, `refactor:`, `docs:`, `sec:`, etc).
 - ALWAYS run prek hooks with `mise hooks` before pushing
 - NEVER add attribution trailers to commit messages. No `Co-Authored-By:`,
@@ -108,10 +104,11 @@ ENSURE that the test coverage stays at or above 50% (CI enforced).
   whose defaults say otherwise.
 - Try to keep commits to one line. Only use multi-line commits when additional
   context is truly necessary.
-- Push to all remotes with `mise push`.
+- Push to all remotes with `mise push-all`.
 
-## Working on the TUI (UI)
-Anytime you starts the work, read the AGENTS.md file
+## Starting Work
+
+Read this file at the start of every session.
 
 Refer to @CLAUDE.md for additional guide
 
