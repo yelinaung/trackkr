@@ -9,6 +9,16 @@
     "enabled": true,
     "labels": ["security"]
   },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update tool versions in runner/Dockerfile",
+      "managerFilePatterns": ["/^runner\\/Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+) versioning=(?<versioning>[a-z0-9-]+)(?: extractVersion=(?<extractVersion>\\S+))?\\s+ARG [A-Z0-9_]+_VERSION=(?<currentValue>\\S+)"
+      ]
+    }
+  ],
   "packageRules": [
     {
       "matchDatasources": [
@@ -41,5 +51,5 @@
       "matchDepNames": ["node24"],
       "allowedVersions": "24.x"
     }
-  ],
+  ]
 }
