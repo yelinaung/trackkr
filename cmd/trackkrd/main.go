@@ -17,6 +17,20 @@ import (
 
 const httpTimeout = 30 * time.Second
 
+// detectors supplies the platform-specific pieces of the daemon so
+// tests can drive a full lifecycle without X11.
+type detectors struct {
+	newWindow func() (tracker.WindowDetector, error)
+	newIdle   func(*zerolog.Logger) tracker.IdleDetector
+}
+
+func platformDetectors() detectors {
+	return detectors{
+		newWindow: tracker.NewWindowDetector,
+		newIdle:   tracker.NewIdleDetectorOrNop,
+	}
+}
+
 func main() {
 	configPath := flag.String("config", tracker.DefaultConfigPath(), "path to config file")
 	debug := flag.Bool("debug", false, "enable debug logging")
@@ -30,14 +44,22 @@ func main() {
 		Level(level).
 		With().Timestamp().Logger()
 
-	if err := run(&logger, *configPath); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, &logger, *configPath, platformDetectors()); err != nil {
 		logger.Fatal().Err(err).Msg("trackkrd failed")
 	}
 
 	logger.Info().Msg("trackkrd stopped")
 }
 
-func run(logger *zerolog.Logger, configPath string) error {
+func run(
+	ctx context.Context,
+	logger *zerolog.Logger,
+	configPath string,
+	d detectors,
+) error {
 	cfg, err := tracker.LoadConfigOrDefault(configPath)
 	if err != nil {
 		return err
@@ -49,18 +71,20 @@ func run(logger *zerolog.Logger, configPath string) error {
 		)
 	}
 
-	window, err := tracker.NewWindowDetector()
+	window, err := d.newWindow()
 	if err != nil {
 		return fmt.Errorf("window detection unavailable: %w", err)
 	}
-	idle := tracker.NewIdleDetectorOrNop(logger)
+	idle := d.newIdle(logger)
 
 	client := &http.Client{Timeout: httpTimeout}
 	reporter := tracker.NewReporter(cfg, client, logger)
 	trk := tracker.NewTracker(cfg, window, idle, reporter, logger)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	// Own a child context so the reporter goroutine can be released
+	// as soon as the tracker returns, whatever cancelled the parent.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	var wg sync.WaitGroup
 	wg.Go(func() { reporter.Run(ctx) })
@@ -74,14 +98,10 @@ func run(logger *zerolog.Logger, configPath string) error {
 	// Run blocks until ctx is cancelled, finalizing the in-flight
 	// record on the way out.
 	trk.Run(ctx)
+	cancel()
 
-	// Cancel explicitly rather than relying on the deferred stop, so
-	// the reporter goroutine is guaranteed to be released before we
-	// wait on it.
-	stop()
-
-	// The reporter goroutine also stops on ctx.Done; wait for it
-	// before the final flush so both do not send at once.
+	// Wait for the reporter goroutine before the final flush so both
+	// do not send at once.
 	wg.Wait()
 
 	return reporter.Shutdown()

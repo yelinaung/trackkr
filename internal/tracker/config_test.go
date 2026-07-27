@@ -3,6 +3,7 @@ package tracker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,8 +26,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.FlushSize != 20 {
 		t.Errorf("FlushSize = %d, want 20", cfg.FlushSize)
 	}
-	if cfg.ServerURL != "http://localhost:8080" {
-		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, "http://localhost:8080")
+	if cfg.ServerURL != defaultServerURL {
+		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, defaultServerURL)
 	}
 	if cfg.DeviceName == "" {
 		t.Error("DeviceName is empty")
@@ -216,6 +217,96 @@ func TestLoadConfigOrDefaultTrimsTrailingSlashFromEnv(t *testing.T) {
 
 	if cfg.ServerURL != testServerURL {
 		t.Errorf("ServerURL = %q, want trailing slash trimmed", cfg.ServerURL)
+	}
+}
+
+// Reporter appends "/api/v1/activity" to server_url, so anything that
+// is not a plain http(s) origin either fails to send or hits the
+// wrong endpoint.
+func TestValidateServerURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"http", defaultServerURL, false},
+		{"https", "https://trackkr.example.com", false},
+		{"with path prefix", "https://example.com/trackkr", false},
+		{"empty", "", true},
+		{"whitespace", "   ", true},
+		{"scheme only", "https:", true},
+		{"no scheme", "trackkr.example.com", true},
+		{"wrong scheme", "ftp://example.com", true},
+		{"with query", "https://example.com?token=abc", true},
+		{"with fragment", "https://example.com#frag", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := DefaultConfig()
+			// Mirror the trimming finalize does before validating.
+			cfg.ServerURL = strings.TrimRight(strings.TrimSpace(tt.url), "/")
+
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Errorf("Validate(%q) = nil, want error", tt.url)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Validate(%q) = %v, want nil", tt.url, err)
+			}
+		})
+	}
+}
+
+func TestFinalizeTrimsWhitespace(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+server_url = "  https://trackkr.example.com  "
+api_key = "  spaced_key  "
+device_name = "  laptop  "
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.ServerURL != testServerURL {
+		t.Errorf("ServerURL = %q, want %q", cfg.ServerURL, testServerURL)
+	}
+	if cfg.APIKey != "spaced_key" {
+		t.Errorf("APIKey = %q, want trimmed", cfg.APIKey)
+	}
+	if cfg.DeviceName != "laptop" {
+		t.Errorf("DeviceName = %q, want trimmed", cfg.DeviceName)
+	}
+}
+
+// A whitespace-only key must not pass the daemon's emptiness check.
+func TestFinalizeBlanksWhitespaceOnlyAPIKey(t *testing.T) {
+	clearTrackkrEnv(t)
+	content := `
+server_url = "https://trackkr.example.com"
+api_key = "   "
+`
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.APIKey != "" {
+		t.Errorf("APIKey = %q, want empty so startup rejects it", cfg.APIKey)
 	}
 }
 

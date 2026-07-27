@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-const unknownApp = "unknown"
+const (
+	unknownApp = "unknown"
+
+	// defaultServerURL is the local dev server from docker-compose.
+	defaultServerURL = "http://localhost:8080"
+)
 
 // Duration wraps time.Duration for TOML unmarshalling.
 type Duration struct{ time.Duration }
@@ -48,7 +54,7 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		ServerURL:     "http://localhost:8080",
+		ServerURL:     defaultServerURL,
 		DeviceName:    hostname(),
 		PollInterval:  Duration{3 * time.Second},
 		IdleThreshold: Duration{5 * time.Minute},
@@ -97,9 +103,39 @@ func (c *Config) finalize() error {
 
 	// Reporter builds request URLs by concatenation, so a trailing
 	// slash would produce a double slash the server 404s on.
-	c.ServerURL = strings.TrimRight(c.ServerURL, "/")
+	c.ServerURL = strings.TrimRight(strings.TrimSpace(c.ServerURL), "/")
+
+	// A whitespace-only key would sail past the emptiness check and
+	// then be rejected by the server on every flush.
+	c.APIKey = strings.TrimSpace(c.APIKey)
+	c.DeviceName = strings.TrimSpace(c.DeviceName)
 
 	return c.Validate()
+}
+
+// validateServerURL checks that the URL is one Reporter can append
+// "/api/v1/activity" to. A query or fragment would end up before the
+// path, so they are rejected rather than silently mangled.
+func validateServerURL(raw string) error {
+	if raw == "" {
+		return errors.New("server_url must not be empty")
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("server_url %q is not a valid URL: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("server_url %q must use http or https", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("server_url %q must include a host", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("server_url %q must not contain a query or fragment", raw)
+	}
+
+	return nil
 }
 
 // Validate rejects configurations the daemon cannot run with. The
@@ -107,8 +143,8 @@ func (c *Config) finalize() error {
 // durations, so a typo like poll_interval = "0s" must fail at load
 // time rather than at the first tick.
 func (c *Config) Validate() error {
-	if c.ServerURL == "" {
-		return errors.New("server_url must not be empty")
+	if err := validateServerURL(c.ServerURL); err != nil {
+		return err
 	}
 	if c.PollInterval.Duration <= 0 {
 		return fmt.Errorf("poll_interval must be positive, got %s", c.PollInterval)
