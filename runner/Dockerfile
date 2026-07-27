@@ -9,7 +9,7 @@ ARG GOFUMPT_VERSION=0.9.2
 # renovate: datasource=go depName=golang.org/x/vuln versioning=semver extractVersion=^v(?<version>.*)$
 ARG GOVULNCHECK_VERSION=1.1.4
 # renovate: datasource=go depName=github.com/securego/gosec/v2 versioning=semver extractVersion=^v(?<version>.*)$
-ARG GOSEC_VERSION=2.24.7
+ARG GOSEC_VERSION=2.28.0
 # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver extractVersion=^v(?<version>.*)$
 ARG GOLANGCI_LINT_VERSION=2.12.2
 # renovate: datasource=github-releases depName=goreleaser/goreleaser versioning=semver extractVersion=^v(?<version>.*)$
