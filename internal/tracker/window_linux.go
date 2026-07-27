@@ -9,6 +9,12 @@ import (
 	"strings"
 )
 
+// NewWindowDetector returns the platform's window detector. On Linux
+// this is the X11 detector backed by xdotool and xprop.
+func NewWindowDetector() (WindowDetector, error) {
+	return NewXWindowDetector()
+}
+
 // XWindowDetector uses xdotool and xprop to detect active windows
 // on X11.
 type XWindowDetector struct {

@@ -61,6 +61,28 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("loading config %s: %w", path, err)
 	}
 
+	applyEnvOverrides(cfg)
+
+	return cfg, nil
+}
+
+// LoadConfigOrDefault behaves like LoadConfig, but falls back to
+// defaults plus env var overrides when the file does not exist. This
+// lets the daemon run from environment variables alone.
+func LoadConfigOrDefault(path string) (*Config, error) {
+	if _, err := os.Stat(path); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("reading config %s: %w", path, err)
+		}
+		cfg := DefaultConfig()
+		applyEnvOverrides(cfg)
+		return cfg, nil
+	}
+
+	return LoadConfig(path)
+}
+
+func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("TRACKKR_SERVER_URL"); v != "" {
 		cfg.ServerURL = v
 	}
@@ -70,8 +92,6 @@ func LoadConfig(path string) (*Config, error) {
 	if v := os.Getenv("TRACKKR_DEVICE_NAME"); v != "" {
 		cfg.DeviceName = v
 	}
-
-	return cfg, nil
 }
 
 // DefaultConfigPath returns ~/.config/trackkr/config.toml.

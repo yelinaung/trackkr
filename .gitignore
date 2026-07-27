@@ -6,8 +6,9 @@ dist/
 *.dll
 *.so
 *.dylib
-trackkr-backend
-trackkrd
+# Anchored so they match the built binaries, not cmd/trackkrd/.
+/trackkr-backend
+/trackkrd
 
 # Test binary
 *.test

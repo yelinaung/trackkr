@@ -113,6 +113,60 @@ func TestLoadConfigMissing(t *testing.T) {
 	}
 }
 
+func TestLoadConfigOrDefaultMissingFile(t *testing.T) {
+	t.Setenv("TRACKKR_API_KEY", "env_key")
+
+	cfg, err := LoadConfigOrDefault(filepath.Join(t.TempDir(), "absent.toml"))
+	if err != nil {
+		t.Fatalf("LoadConfigOrDefault: %v", err)
+	}
+
+	if cfg.APIKey != "env_key" {
+		t.Errorf("APIKey = %q, want env override", cfg.APIKey)
+	}
+	if cfg.PollInterval.Duration != 3*time.Second {
+		t.Errorf("PollInterval = %v, want default 3s", cfg.PollInterval)
+	}
+}
+
+func TestLoadConfigOrDefaultExistingFile(t *testing.T) {
+	t.Parallel()
+	content := `
+server_url = "https://from-file.example.com"
+api_key = "from_file_key"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfigOrDefault(path)
+	if err != nil {
+		t.Fatalf("LoadConfigOrDefault: %v", err)
+	}
+
+	if cfg.ServerURL != "https://from-file.example.com" {
+		t.Errorf("ServerURL = %q, want value from file", cfg.ServerURL)
+	}
+	if cfg.APIKey != "from_file_key" {
+		t.Errorf("APIKey = %q, want value from file", cfg.APIKey)
+	}
+}
+
+func TestLoadConfigOrDefaultInvalidFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("this is not = valid toml ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := LoadConfigOrDefault(path); err == nil {
+		t.Error("expected error for malformed config file")
+	}
+}
+
 func TestDurationUnmarshal(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
