@@ -13,6 +13,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const (
+	testFirefoxApp      = "Firefox"
+	testRecordTitle     = "Test"
+	testVSCodeApp       = "VS Code"
+	testMainGoTitle     = "main.go"
+	testUnusedServerURL = "http://unused"
+	testValue           = "test"
+)
+
 func testReporterConfig(t *testing.T) *Config {
 	t.Helper()
 	return &Config{
@@ -46,15 +55,15 @@ func TestEnqueueAndFlush(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 	reporter.Enqueue(&Record{
-		AppName:   "Firefox",
-		Title:     "Test",
+		AppName:   testFirefoxApp,
+		Title:     testRecordTitle,
 		StartedAt: now,
 		EndedAt:   now.Add(30 * time.Second),
 		DurationS: 30,
 	})
 	reporter.Enqueue(&Record{
-		AppName:   "VS Code",
-		Title:     "main.go",
+		AppName:   testVSCodeApp,
+		Title:     testMainGoTitle,
 		StartedAt: now.Add(30 * time.Second),
 		EndedAt:   now.Add(60 * time.Second),
 		DurationS: 30,
@@ -86,8 +95,8 @@ func TestFlushNetworkFailure(t *testing.T) {
 	reporter := NewReporter(cfg, srv.Client(), &logger)
 
 	reporter.Enqueue(&Record{
-		AppName:   "Firefox",
-		Title:     "Test",
+		AppName:   testFirefoxApp,
+		Title:     testRecordTitle,
 		StartedAt: time.Now(),
 		EndedAt:   time.Now().Add(time.Second),
 		DurationS: 1,
@@ -106,7 +115,7 @@ func TestFlushNetworkFailure(t *testing.T) {
 func TestFlushEmptyQueue(t *testing.T) {
 	t.Parallel()
 	cfg := testReporterConfig(t)
-	cfg.ServerURL = "http://unused"
+	cfg.ServerURL = testUnusedServerURL
 	logger := zerolog.Nop()
 	reporter := NewReporter(cfg, http.DefaultClient, &logger)
 
@@ -126,8 +135,8 @@ func TestPendingPersistence(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 	reporter.Enqueue(&Record{
-		AppName:   "Firefox",
-		Title:     "Test",
+		AppName:   testFirefoxApp,
+		Title:     testRecordTitle,
 		StartedAt: now,
 		EndedAt:   now.Add(30 * time.Second),
 		DurationS: 30,
@@ -169,8 +178,8 @@ func TestShutdownSavesPending(t *testing.T) {
 	reporter := NewReporter(cfg, srv.Client(), &logger)
 
 	reporter.Enqueue(&Record{
-		AppName:   "Firefox",
-		Title:     "Test",
+		AppName:   testFirefoxApp,
+		Title:     testRecordTitle,
 		StartedAt: time.Now(),
 		EndedAt:   time.Now().Add(time.Second),
 		DurationS: 1,
@@ -218,8 +227,8 @@ func TestFlushOnThreshold(t *testing.T) {
 
 	for range 3 {
 		reporter.Enqueue(&Record{
-			AppName:   "test",
-			Title:     "test",
+			AppName:   testValue,
+			Title:     testValue,
 			StartedAt: time.Now(),
 			EndedAt:   time.Now().Add(time.Second),
 			DurationS: 1,

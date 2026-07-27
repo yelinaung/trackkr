@@ -7,13 +7,14 @@
 - **Test**: `mise test`
 - **Lint**:
     - Run `mise lint` and fix the issues
-- **Format**: `mise fmt`
+- **Format**: `mise format`
+- **Hooks**: `mise hooks`
 - `grep` is an alias to `rg`.
 
 ## Code Style Guidelines
 
 - **Imports**: Use goimports formatting, group stdlib, external, internal packages
-- **Formatting**: Use gofumpt (stricter than gofmt), enabled in golangci-lint with `mise fmt`.
+- **Formatting**: Use gofumpt (stricter than gofmt), enabled in golangci-lint with `mise format`.
 - **Naming**: Standard Go conventions - PascalCase for exported, camelCase for unexported
 - **Types**: Prefer explicit types, use type aliases for clarity (e.g., `type AgentName string`)
 - **Error handling**: Return errors explicitly, use `fmt.Errorf` for wrapping
@@ -89,7 +90,7 @@ ENSURE that the test coverage stays at or above 50% (CI enforced).
 
 ## Formatting
 
-- ALWAYS format any Go code you write with `mise fmt`
+- ALWAYS format any Go code you write with `mise format`
 
 ## Comments
 
@@ -101,7 +102,7 @@ ENSURE that the test coverage stays at or above 50% (CI enforced).
 - ALWAYS run both unit and integraton tests before pushing
     - Especially, the fail tests with `mise test-integration 2&>1 | grep -w 'FAIL:'`
 - ALWAYS use semantic commits (`fix:`, `feat:`, `chore:`, `refactor:`, `docs:`, `sec:`, etc).
-- ALWAYS run pre-commits before pushing
+- ALWAYS run prek hooks with `mise hooks` before pushing
 - Try to keep commits to one line, not including your attribution. Only use
   multi-line commits when additional context is truly necessary.
 - Push to all remotes with `mise push`.

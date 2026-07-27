@@ -7,7 +7,7 @@ import (
 )
 
 func TestServerConfigAddr(t *testing.T) {
-	cfg := ServerConfig{Host: "0.0.0.0", Port: 8080}
+	cfg := ServerConfig{Host: defaultServerHost, Port: 8080}
 	if got := cfg.Addr(); got != "0.0.0.0:8080" {
 		t.Errorf("Addr() = %q, want %q", got, "0.0.0.0:8080")
 	}
@@ -17,10 +17,10 @@ func TestDatabaseConfigDSN(t *testing.T) {
 	cfg := DatabaseConfig{
 		Host:     "localhost",
 		Port:     5432,
-		Name:     "trackkr",
-		User:     "trackkr",
+		Name:     defaultDatabase,
+		User:     defaultDatabase,
 		Password: "secret",
-		SSLMode:  "disable",
+		SSLMode:  defaultSSLMode,
 	}
 	want := "postgres://trackkr:secret@localhost:5432/trackkr?sslmode=disable" //nolint:gosec // test DSN
 	if got := cfg.DSN(); got != want {
@@ -92,17 +92,17 @@ func TestLoadConfigDefaults(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if cfg.Server.Host != "0.0.0.0" {
-		t.Errorf("default Server.Host = %q, want %q", cfg.Server.Host, "0.0.0.0")
+	if cfg.Server.Host != defaultServerHost {
+		t.Errorf("default Server.Host = %q, want %q", cfg.Server.Host, defaultServerHost)
 	}
 	if cfg.Server.Port != 8080 {
 		t.Errorf("default Server.Port = %d, want %d", cfg.Server.Port, 8080)
 	}
-	if cfg.Database.Name != "trackkr" {
-		t.Errorf("default Database.Name = %q, want %q", cfg.Database.Name, "trackkr")
+	if cfg.Database.Name != defaultDatabase {
+		t.Errorf("default Database.Name = %q, want %q", cfg.Database.Name, defaultDatabase)
 	}
-	if cfg.Database.SSLMode != "disable" {
-		t.Errorf("default Database.SSLMode = %q, want %q", cfg.Database.SSLMode, "disable")
+	if cfg.Database.SSLMode != defaultSSLMode {
+		t.Errorf("default Database.SSLMode = %q, want %q", cfg.Database.SSLMode, defaultSSLMode)
 	}
 }
 

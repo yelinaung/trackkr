@@ -45,8 +45,8 @@ func (m *mockIdleDetector) IdleTime(_ context.Context) (time.Duration, error) {
 func newTestTracker(t *testing.T, wd WindowDetector, id IdleDetector) (*Tracker, *Reporter) {
 	t.Helper()
 	cfg := &Config{
-		ServerURL:     "http://unused",
-		APIKey:        "test",
+		ServerURL:     testUnusedServerURL,
+		APIKey:        testValue,
 		PollInterval:  Duration{time.Second},
 		IdleThreshold: Duration{5 * time.Minute},
 		FlushInterval: Duration{time.Hour},
@@ -63,9 +63,9 @@ func TestTrackerWindowChange(t *testing.T) {
 	t.Parallel()
 	wd := &mockWindowDetector{
 		calls: []mockWindowCall{
-			{info: WindowInfo{AppName: "Firefox", Title: "Google"}},
-			{info: WindowInfo{AppName: "Firefox", Title: "Google"}},
-			{info: WindowInfo{AppName: "VS Code", Title: "main.go"}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: "Google"}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: "Google"}},
+			{info: WindowInfo{AppName: testVSCodeApp, Title: testMainGoTitle}},
 		},
 	}
 	id := &mockIdleDetector{times: make([]time.Duration, 3)}
@@ -89,8 +89,8 @@ func TestTrackerIdleTransition(t *testing.T) {
 	t.Parallel()
 	wd := &mockWindowDetector{
 		calls: []mockWindowCall{
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
 		},
 	}
 	id := &mockIdleDetector{
@@ -119,9 +119,9 @@ func TestTrackerResumeFromIdle(t *testing.T) {
 	t.Parallel()
 	wd := &mockWindowDetector{
 		calls: []mockWindowCall{
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
-			{info: WindowInfo{AppName: "VS Code", Title: "main.go"}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
+			{info: WindowInfo{AppName: testVSCodeApp, Title: testMainGoTitle}},
 		},
 	}
 	id := &mockIdleDetector{
@@ -155,8 +155,8 @@ func TestTrackerResumeFromIdle(t *testing.T) {
 	if trk.current == nil {
 		t.Fatal("current record is nil, want VS Code")
 	}
-	if trk.current.AppName != "VS Code" {
-		t.Errorf("current.AppName = %q, want %q", trk.current.AppName, "VS Code")
+	if trk.current.AppName != testVSCodeApp {
+		t.Errorf("current.AppName = %q, want %q", trk.current.AppName, testVSCodeApp)
 	}
 }
 
@@ -164,7 +164,7 @@ func TestTrackerNoActiveWindow(t *testing.T) {
 	t.Parallel()
 	wd := &mockWindowDetector{
 		calls: []mockWindowCall{
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
 			{err: ErrNoActiveWindow},
 		},
 	}
@@ -194,16 +194,16 @@ func TestTrackerShortRecordDiscarded(t *testing.T) {
 		FlushInterval: Duration{time.Hour},
 		FlushSize:     100,
 		DataDir:       t.TempDir(),
-		ServerURL:     "http://unused",
-		APIKey:        "test",
+		ServerURL:     testUnusedServerURL,
+		APIKey:        testValue,
 	}
 	reporter := NewReporter(cfg, http.DefaultClient, &logger)
 	trk := NewTracker(cfg, nil, nil, reporter, &logger)
 
 	now := time.Now()
 	trk.current = &activeRecord{
-		AppName:   "Test",
-		Title:     "Test",
+		AppName:   testRecordTitle,
+		Title:     testRecordTitle,
 		StartedAt: now.Add(time.Hour),
 	}
 	trk.finalize(now) // endedAt before startedAt.
@@ -218,18 +218,18 @@ func TestTrackerGracefulShutdown(t *testing.T) {
 	// Window detector that always returns the same window.
 	wd := &mockWindowDetector{
 		calls: []mockWindowCall{
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
-			{info: WindowInfo{AppName: "Firefox", Title: "Test"}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
+			{info: WindowInfo{AppName: testFirefoxApp, Title: testRecordTitle}},
 		},
 	}
 	id := &mockIdleDetector{times: make([]time.Duration, 5)}
 
 	cfg := &Config{
-		ServerURL:     "http://unused",
-		APIKey:        "test",
+		ServerURL:     testUnusedServerURL,
+		APIKey:        testValue,
 		PollInterval:  Duration{10 * time.Millisecond},
 		IdleThreshold: Duration{5 * time.Minute},
 		FlushInterval: Duration{time.Hour},

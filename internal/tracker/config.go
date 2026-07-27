@@ -9,6 +9,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+const unknownApp = "unknown"
+
 // Duration wraps time.Duration for TOML unmarshalling.
 type Duration struct{ time.Duration }
 
@@ -91,7 +93,7 @@ func DefaultDataDir() string {
 func hostname() string {
 	h, err := os.Hostname()
 	if err != nil {
-		return "unknown"
+		return unknownApp
 	}
 	return h
 }

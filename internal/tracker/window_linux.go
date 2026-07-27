@@ -9,8 +9,6 @@ import (
 	"strings"
 )
 
-const unknownApp = "unknown"
-
 // XWindowDetector uses xdotool and xprop to detect active windows
 // on X11.
 type XWindowDetector struct {

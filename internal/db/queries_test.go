@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	testFirefoxApp = "Firefox"
+	testPageTitle  = "Test Page"
+)
+
 func TestCreateUser(t *testing.T) {
 	pool := testPool(t)
 	q := NewQueries(pool)
@@ -228,8 +233,8 @@ func TestInsertActivityRecords(t *testing.T) {
 	records := []ActivityRecordRow{
 		{
 			DeviceID:  device.ID,
-			AppName:   "Firefox",
-			Title:     "Test Page",
+			AppName:   testFirefoxApp,
+			Title:     testPageTitle,
 			StartedAt: now,
 			EndedAt:   now.Add(30 * time.Second),
 			DurationS: 30,
@@ -275,8 +280,8 @@ func TestInsertActivityRecordsDuplicates(t *testing.T) {
 	records := []ActivityRecordRow{
 		{
 			DeviceID:  device.ID,
-			AppName:   "Firefox",
-			Title:     "Test Page",
+			AppName:   testFirefoxApp,
+			Title:     testPageTitle,
 			StartedAt: now,
 			EndedAt:   now.Add(30 * time.Second),
 			DurationS: 30,
@@ -321,8 +326,8 @@ func TestGetActivityRecords(t *testing.T) {
 	records := []ActivityRecordRow{
 		{
 			DeviceID:  device.ID,
-			AppName:   "Firefox",
-			Title:     "Test Page",
+			AppName:   testFirefoxApp,
+			Title:     testPageTitle,
 			URL:       &url,
 			StartedAt: now,
 			EndedAt:   now.Add(30 * time.Second),

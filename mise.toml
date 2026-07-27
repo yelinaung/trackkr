@@ -1,3 +1,6 @@
+[tools]
+prek = "0.4.11"
+
 [tasks.test]
 description = "Run Go tests"
 run = [
@@ -29,6 +32,10 @@ run = [
 [tasks.format]
 description = "Format Go code"
 run = ["gofumpt -w ./cmd/ ./internal/"]
+
+[tasks.hooks]
+description = "Run prek hooks"
+run = ["prek run --all-files"]
 
 [tasks.push-all]
 description = "Pull with rebase from github, then push current branch to all remotes"

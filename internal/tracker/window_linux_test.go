@@ -29,17 +29,17 @@ func TestParseWMClass(t *testing.T) {
 		{
 			name:  "no equals sign",
 			input: `WM_CLASS not found.`,
-			want:  "unknown",
+			want:  unknownApp,
 		},
 		{
 			name:  "empty after equals",
 			input: `WM_CLASS(STRING) = `,
-			want:  "unknown",
+			want:  unknownApp,
 		},
 		{
 			name:  "empty string value",
 			input: `WM_CLASS(STRING) = "", ""`,
-			want:  "unknown",
+			want:  unknownApp,
 		},
 		{
 			name:  "spaces in value",

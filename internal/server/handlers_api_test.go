@@ -14,6 +14,12 @@ import (
 	"github.com/yelinaung/trackkr/internal/db"
 )
 
+const (
+	testFirefoxApp = "Firefox"
+	testPageTitle  = "Test Page"
+	testPageURL    = "https://example.com"
+)
+
 func newRequest(t *testing.T, method, target string, body io.Reader) *http.Request {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), method, target, body)
@@ -32,9 +38,9 @@ func TestIngestActivity(t *testing.T) {
 	body := ingestRequest{
 		Records: []ingestRecord{
 			{
-				AppName:   "Firefox",
-				Title:     "Test Page",
-				URL:       "https://example.com",
+				AppName:   testFirefoxApp,
+				Title:     testPageTitle,
+				URL:       testPageURL,
 				StartedAt: now,
 				EndedAt:   now.Add(30 * time.Second),
 				DurationS: 30,
@@ -142,8 +148,8 @@ func TestIngestActivityInsertError(t *testing.T) {
 	body := ingestRequest{
 		Records: []ingestRecord{
 			{
-				AppName:   "Firefox",
-				Title:     "Test Page",
+				AppName:   testFirefoxApp,
+				Title:     testPageTitle,
 				StartedAt: now,
 				EndedAt:   now.Add(30 * time.Second),
 				DurationS: 30,
@@ -185,9 +191,9 @@ func TestIngestActivityURLOptional(t *testing.T) {
 				DurationS: 30,
 			},
 			{
-				AppName:   "Firefox",
-				Title:     "Test Page",
-				URL:       "https://example.com",
+				AppName:   testFirefoxApp,
+				Title:     testPageTitle,
+				URL:       testPageURL,
 				StartedAt: now.Add(30 * time.Second),
 				EndedAt:   now.Add(60 * time.Second),
 				DurationS: 30,
@@ -211,8 +217,8 @@ func TestIngestActivityURLOptional(t *testing.T) {
 	if captured[0].URL != nil {
 		t.Errorf("record[0].URL = %v, want nil", captured[0].URL)
 	}
-	if captured[1].URL == nil || *captured[1].URL != "https://example.com" {
-		t.Errorf("record[1].URL = %v, want %q", captured[1].URL, "https://example.com")
+	if captured[1].URL == nil || *captured[1].URL != testPageURL {
+		t.Errorf("record[1].URL = %v, want %q", captured[1].URL, testPageURL)
 	}
 }
 

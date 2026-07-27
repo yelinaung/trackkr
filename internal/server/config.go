@@ -7,6 +7,12 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+const (
+	defaultServerHost = "0.0.0.0"
+	defaultDatabase   = "trackkr"
+	defaultSSLMode    = "disable"
+)
+
 type Config struct {
 	Server   ServerConfig   `toml:"server"`
 	Database DatabaseConfig `toml:"database"`
@@ -46,15 +52,15 @@ func (d *DatabaseConfig) DSN() string {
 func LoadConfig(path string) (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			Host: "0.0.0.0",
+			Host: defaultServerHost,
 			Port: 8080,
 		},
 		Database: DatabaseConfig{
 			Host:    "localhost",
 			Port:    5432,
-			Name:    "trackkr",
-			User:    "trackkr",
-			SSLMode: "disable",
+			Name:    defaultDatabase,
+			User:    defaultDatabase,
+			SSLMode: defaultSSLMode,
 		},
 	}
 
