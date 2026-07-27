@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -105,7 +106,7 @@ func newRouter(s *Server) *chi.Mux {
 
 	// Static assets are public: gating them would load the login page
 	// with no CSS, and style-src 'self' leaves no CDN fallback.
-	r.Handle("/static/*", http.FileServer(http.FS(web.Static)))
+	r.Handle("/static/*", noDirListing(http.FileServer(http.FS(web.Static))))
 
 	r.Group(func(pub chi.Router) {
 		pub.Use(RequireCSRF(s.codec))
@@ -132,6 +133,18 @@ func newRouter(s *Server) *chi.Mux {
 	})
 
 	return r
+}
+
+// noDirListing stops http.FileServer from rendering a browsable index of
+// the embedded assets.
+func noDirListing(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -126,6 +126,24 @@ func TestFormsCarryCSRFToken(t *testing.T) {
 	}
 }
 
+// The swatch must carry the same colour as the app's bars; the earlier
+// data-app attribute was inert and every swatch rendered identically.
+func TestTotalsSwatchesMatchBarColours(t *testing.T) {
+	t.Parallel()
+	html := renderPartial(t, "timeline", sampleTimelineData())
+
+	fill := appColor(testFirefoxLower)
+	if !strings.Contains(html, "totals__swatch") {
+		t.Fatal("no swatch rendered")
+	}
+	if strings.Count(html, `fill="`+fill+`"`) < 2 {
+		t.Errorf("swatch and bar do not share fill %q:\n%s", fill, html)
+	}
+	if strings.Contains(html, "data-app=") {
+		t.Error("dead data-app attribute is still emitted")
+	}
+}
+
 func TestTimelineRendersBarsAsSVGAttributes(t *testing.T) {
 	t.Parallel()
 	html := renderPartial(t, "timeline", sampleTimelineData())
@@ -247,7 +265,7 @@ func sampleTimelineData() *pageData {
 		DateLabel:    "Monday, 4 May 2026",
 		Devices:      devices,
 		Chart:        layout(records, devices, day),
-		Totals:       []db.AppTotalRow{{AppName: testFirefoxLower, Seconds: 1800}},
+		Totals:       []TotalView{{AppName: testFirefoxLower, Seconds: 1800, Fill: appColor(testFirefoxLower)}},
 		TotalSeconds: 1800,
 	}
 }

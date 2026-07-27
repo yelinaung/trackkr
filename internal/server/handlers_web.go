@@ -3,15 +3,37 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
 	"golang.org/x/crypto/bcrypt"
 )
+
+const (
+	// minPasswordBytes is the shortest password registration accepts.
+	minPasswordBytes = 12
+	// maxPasswordBytes is bcrypt's hard limit. Longer input makes
+	// GenerateFromPassword fail, and a passphrase of accented or
+	// non-Latin characters reaches it well before 72 characters.
+	maxPasswordBytes = 72
+
+	// uniqueViolation is PostgreSQL's SQLSTATE for a duplicate key.
+	uniqueViolation = "23505"
+)
+
+// isUniqueViolation reports whether err is a duplicate-key error rather
+// than an operational failure.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation
+}
 
 // defaultDeviceType is used when the form leaves the type blank.
 const defaultDeviceType = "desktop"
@@ -45,6 +67,16 @@ type webHandlers struct {
 	allowReg  bool
 }
 
+// ensureCSRF reuses the request's token or mints one. Every page that
+// renders a form needs this; reading the cookie alone leaves the hidden
+// field empty for a visitor who has not been to /login this session.
+func (h *webHandlers) ensureCSRF(w http.ResponseWriter, r *http.Request) (string, error) {
+	if c, err := r.Cookie(csrfCookieName); err == nil && c.Value != "" {
+		return c.Value, nil
+	}
+	return h.codec.issueCSRF(w)
+}
+
 func (h *webHandlers) base(r *http.Request, token string) *pageData {
 	return &pageData{
 		User:              UserFromContext(r.Context()),
@@ -64,7 +96,7 @@ func (h *webHandlers) fail(w http.ResponseWriter, err error, msg string) {
 
 func (h *webHandlers) handleLoginForm() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token, err := h.codec.issueCSRF(w)
+		token, err := h.ensureCSRF(w, r)
 		if err != nil {
 			h.fail(w, err, "issuing csrf token")
 			return
@@ -93,6 +125,14 @@ func (h *webHandlers) handleLogin() http.HandlerFunc {
 		username := r.PostFormValue("username")
 		user, err := h.queries.GetUserByUsername(r.Context(), username)
 		if err != nil {
+			// Only a missing row is a failed login. Anything else is
+			// our problem, not the visitor's: report it as a 500 and
+			// hand back the attempt they reserved.
+			if !errors.Is(err, pgx.ErrNoRows) {
+				h.limiter.release(host)
+				h.fail(w, err, "looking up user")
+				return
+			}
 			// Spend the same time as a real comparison.
 			_ = bcrypt.CompareHashAndPassword([]byte(bcryptDummyHash), []byte(r.PostFormValue("password")))
 			h.renderLoginError(w, r)
@@ -144,7 +184,7 @@ func (h *webHandlers) handleLogout() http.HandlerFunc {
 
 func (h *webHandlers) handleRegisterForm() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token, err := h.codec.issueCSRF(w)
+		token, err := h.ensureCSRF(w, r)
 		if err != nil {
 			h.fail(w, err, "issuing csrf token")
 			return
@@ -158,11 +198,33 @@ func (h *webHandlers) handleRegisterForm() http.HandlerFunc {
 
 func (h *webHandlers) handleRegister() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Registration hashes with bcrypt too, so it needs the same
+		// throttle as login or it becomes the cheaper CPU target.
+		host := clientHost(r)
+		if !h.limiter.reserve(host, time.Now()) {
+			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
+			return
+		}
+
 		username := r.PostFormValue("username")
 		password := r.PostFormValue("password")
 
-		if username == "" || len(password) < 12 {
-			h.renderRegisterError(w, r, "Pick a username and a password of at least 12 characters.")
+		if username == "" || len(password) < minPasswordBytes {
+			h.renderRegisterError(w, r, fmt.Sprintf(
+				"Pick a username and a password of at least %d characters.", minPasswordBytes,
+			))
+			return
+		}
+
+		// bcrypt refuses anything over 72 bytes, which a fairly short
+		// non-ASCII passphrase can reach. Say so here rather than
+		// letting GenerateFromPassword turn it into a 500.
+		if len(password) > maxPasswordBytes {
+			h.renderRegisterError(w, r, fmt.Sprintf(
+				"That password is too long: %d bytes, and the limit is %d. "+
+					"Accented or non-Latin characters count as several bytes each.",
+				len(password), maxPasswordBytes,
+			))
 			return
 		}
 
@@ -174,10 +236,18 @@ func (h *webHandlers) handleRegister() http.HandlerFunc {
 
 		user, err := h.queries.CreateUser(r.Context(), username, string(hash))
 		if err != nil {
+			// Only a uniqueness violation means the name is taken;
+			// telling someone to pick another name during an outage
+			// sends them chasing a problem that is not theirs.
+			if !isUniqueViolation(err) {
+				h.fail(w, err, "creating user")
+				return
+			}
 			h.renderRegisterError(w, r, "That username is taken.")
 			return
 		}
 
+		h.limiter.release(host)
 		if _, err := h.codec.issueCSRF(w); err != nil {
 			h.fail(w, err, "rotating csrf token")
 			return
@@ -206,7 +276,7 @@ func (h *webHandlers) renderRegisterError(w http.ResponseWriter, r *http.Request
 
 func (h *webHandlers) handleDashboard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		data, err := h.timelineData(r)
+		data, err := h.timelineData(w, r)
 		if err != nil {
 			h.fail(w, err, "building dashboard")
 			return
@@ -221,7 +291,7 @@ func (h *webHandlers) handleDashboard() http.HandlerFunc {
 // handleTimeline serves the htmx partial for the date and device filter.
 func (h *webHandlers) handleTimeline() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		data, err := h.timelineData(r)
+		data, err := h.timelineData(w, r)
 		if err != nil {
 			h.fail(w, err, "building timeline")
 			return
@@ -234,15 +304,15 @@ func (h *webHandlers) handleTimeline() http.HandlerFunc {
 }
 
 // timelineData gathers one day of activity for the signed-in user.
-func (h *webHandlers) timelineData(r *http.Request) (*pageData, error) {
+func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pageData, error) {
 	user := UserFromContext(r.Context())
 	if user == nil {
 		return nil, errors.New("timeline requested without a session")
 	}
 
-	token := ""
-	if c, err := r.Cookie(csrfCookieName); err == nil {
-		token = c.Value
+	token, err := h.ensureCSRF(w, r)
+	if err != nil {
+		return nil, err
 	}
 	data := h.base(r, token)
 
@@ -269,8 +339,14 @@ func (h *webHandlers) timelineData(r *http.Request) (*pageData, error) {
 		return nil, err
 	}
 
+	views := make([]TotalView, 0, len(totals))
 	for _, t := range totals {
 		data.TotalSeconds += t.Seconds
+		views = append(views, TotalView{
+			AppName: t.AppName,
+			Seconds: t.Seconds,
+			Fill:    appColor(t.AppName),
+		})
 	}
 
 	// The query fetches one row past the limit purely as a probe: its
@@ -283,14 +359,13 @@ func (h *webHandlers) timelineData(r *http.Request) (*pageData, error) {
 	}
 
 	data.Devices = devices
-	data.Totals = totals
+	data.Totals = views
 	data.Chart = layout(records, devices, day)
 	data.Date = start.Format("2006-01-02")
 	data.Today = time.Now().In(h.loc).Format("2006-01-02")
 	data.DateLabel = start.Format("Monday, 2 January 2006")
 	// The cap truncates the end of the day; totals still cover all of it.
 	data.Truncated = truncated
-	data.Chart.Truncated = truncated
 
 	return data, nil
 }
@@ -318,7 +393,7 @@ func parseDeviceID(raw string) *int64 {
 
 func (h *webHandlers) handleDevices() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		data, err := h.devicesData(r)
+		data, err := h.devicesData(w, r)
 		if err != nil {
 			h.fail(w, err, "listing devices")
 			return
@@ -376,7 +451,7 @@ func (h *webHandlers) handleDeleteDevice() http.HandlerFunc {
 			return
 		}
 
-		data, err := h.devicesData(r)
+		data, err := h.devicesData(w, r)
 		if err != nil {
 			h.fail(w, err, "listing devices")
 			return
@@ -388,15 +463,15 @@ func (h *webHandlers) handleDeleteDevice() http.HandlerFunc {
 	}
 }
 
-func (h *webHandlers) devicesData(r *http.Request) (*pageData, error) {
+func (h *webHandlers) devicesData(w http.ResponseWriter, r *http.Request) (*pageData, error) {
 	user := UserFromContext(r.Context())
 	if user == nil {
 		return nil, errors.New("devices requested without a session")
 	}
 
-	token := ""
-	if c, err := r.Cookie(csrfCookieName); err == nil {
-		token = c.Value
+	token, err := h.ensureCSRF(w, r)
+	if err != nil {
+		return nil, err
 	}
 
 	devices, err := h.queries.ListDevicesByUser(r.Context(), user.ID)

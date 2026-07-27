@@ -1,6 +1,12 @@
 [server]
 host = "0.0.0.0"
 port = 8080
+# timezone: IANA name deciding what "today" means on the dashboard.
+# Records are TIMESTAMPTZ, so a day needs a zone. Defaults to Local.
+timezone = "Local"
+# secure_cookies: marks session and CSRF cookies Secure. Keep true in
+# production; set false only for plain-HTTP local development.
+secure_cookies = true
 
 [database]
 host = "localhost"

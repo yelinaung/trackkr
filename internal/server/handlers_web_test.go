@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
 	"golang.org/x/crypto/bcrypt"
@@ -19,14 +21,18 @@ import (
 // fakeWeb implements WebQuerier and nothing else, which is the point of
 // splitting the interfaces.
 type fakeWeb struct {
-	users     map[string]*db.UserRow
-	byID      map[int64]*db.UserRow
-	devices   []db.DeviceRow
-	records   []db.ActivityRecordRow
-	totals    []db.AppTotalRow
-	deleted   []int64
+	users   map[string]*db.UserRow
+	byID    map[int64]*db.UserRow
+	devices []db.DeviceRow
+	records []db.ActivityRecordRow
+	totals  []db.AppTotalRow
+	deleted []int64
+	nextID  int64
+
+	// lookupErr and createErr stand in for operational failures, as
+	// opposed to the pgx.ErrNoRows a missing row produces.
+	lookupErr error
 	createErr error
-	nextID    int64
 }
 
 func newFakeWeb() *fakeWeb {
@@ -51,24 +57,34 @@ func (f *fakeWeb) addUser(t *testing.T, username, password string) *db.UserRow {
 }
 
 func (f *fakeWeb) GetUserByID(_ context.Context, id int64) (*db.UserRow, error) {
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
 	u, ok := f.byID[id]
 	if !ok {
-		return nil, errors.New("no rows")
+		return nil, pgx.ErrNoRows
 	}
 	return u, nil
 }
 
 func (f *fakeWeb) GetUserByUsername(_ context.Context, username string) (*db.UserRow, error) {
+	if f.lookupErr != nil {
+		return nil, f.lookupErr
+	}
 	u, ok := f.users[username]
 	if !ok {
-		return nil, errors.New("no rows")
+		return nil, pgx.ErrNoRows
 	}
 	return u, nil
 }
 
 func (f *fakeWeb) CreateUser(_ context.Context, username, hash string) (*db.UserRow, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
 	if _, taken := f.users[username]; taken {
-		return nil, errors.New("duplicate")
+		// What PostgreSQL actually returns for a duplicate key.
+		return nil, &pgconn.PgError{Code: uniqueViolation}
 	}
 	f.nextID++
 	user := &db.UserRow{ID: f.nextID, Username: username, Password: hash}
@@ -529,8 +545,8 @@ func TestRegisterCreatesUserAndSession(t *testing.T) {
 	_, csrf := signIn(t, srv, 1)
 
 	form := url.Values{
-		"username":    {"newcomer"},
-		"password":    {"a-long-enough-password"},
+		"username":    {testNewUser},
+		"password":    {testGoodPassword},
 		csrfFieldName: {csrf.Value},
 	}
 	rec := httptest.NewRecorder()
@@ -539,7 +555,7 @@ func TestRegisterCreatesUserAndSession(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303: %s", rec.Code, rec.Body.String())
 	}
-	if _, ok := fake.users["newcomer"]; !ok {
+	if _, ok := fake.users[testNewUser]; !ok {
 		t.Error("user was not created")
 	}
 }
@@ -550,7 +566,7 @@ func TestRegisterRejectsShortPassword(t *testing.T) {
 	srv := webServer(t, fake, true)
 	_, csrf := signIn(t, srv, 1)
 
-	form := url.Values{testUsernameField: {"newcomer"}, testPasswordField: {"short"}, csrfFieldName: {csrf.Value}}
+	form := url.Values{testUsernameField: {testNewUser}, testPasswordField: {"short"}, csrfFieldName: {csrf.Value}}
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
 
@@ -636,5 +652,188 @@ func TestDashboardTruncationBoundary(t *testing.T) {
 				t.Errorf("rendered %d bars, want at most %d", bars, db.ActivityRecordLimit)
 			}
 		})
+	}
+}
+
+// A database outage is not a credential failure: the visitor should see
+// a server error, and the attempt they reserved must be handed back.
+func TestLoginSurfacesOperationalErrors(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "ye", testPassword)
+	srv := webServer(t, fake, false)
+	_, csrf := signIn(t, srv, user.ID)
+
+	fake.lookupErr = errors.New("connection refused")
+
+	form := url.Values{testUsernameField: {"ye"}, testPasswordField: {testPassword}, csrfFieldName: {csrf.Value}}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, formPost(t, testLoginPath, form, csrf))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "Invalid username or password") {
+		t.Error("an outage was reported as bad credentials")
+	}
+	if left := srv.limiter.remaining("10.1.2.3", time.Now()); left != loginAttemptLimit {
+		t.Errorf("remaining attempts = %d, want %d; the outage consumed one", left, loginAttemptLimit)
+	}
+}
+
+func TestRegisterDistinguishesTakenFromBroken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("duplicate username", func(t *testing.T) {
+		t.Parallel()
+		fake := newFakeWeb()
+		fake.addUser(t, "taken", testPassword)
+		srv := webServer(t, fake, true)
+		_, csrf := signIn(t, srv, 1)
+
+		form := url.Values{
+			testUsernameField: {"taken"},
+			testPasswordField: {testGoodPassword},
+			csrfFieldName:     {csrf.Value},
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "username is taken") {
+			t.Error("duplicate was not reported as taken")
+		}
+	})
+
+	t.Run("database failure", func(t *testing.T) {
+		t.Parallel()
+		fake := newFakeWeb()
+		fake.createErr = errors.New("connection refused")
+		srv := webServer(t, fake, true)
+		_, csrf := signIn(t, srv, 1)
+
+		form := url.Values{
+			testUsernameField: {testNewUser},
+			testPasswordField: {testGoodPassword},
+			csrfFieldName:     {csrf.Value},
+		}
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "username is taken") {
+			t.Error("an outage told the visitor to pick another name")
+		}
+	})
+}
+
+// bcrypt rejects anything over 72 bytes, and a non-ASCII passphrase
+// reaches that well before 72 characters.
+func TestRegisterRejectsOverlongPassword(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	srv := webServer(t, fake, true)
+	_, csrf := signIn(t, srv, 1)
+
+	// 30 characters, 90 bytes.
+	long := strings.Repeat("パスワード", 6)
+	if len(long) <= maxPasswordBytes {
+		t.Fatalf("test fixture is only %d bytes", len(long))
+	}
+
+	form := url.Values{
+		testUsernameField: {testNewUser},
+		testPasswordField: {long},
+		csrfFieldName:     {csrf.Value},
+	}
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (not a 500 from bcrypt)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "too long") {
+		t.Errorf("no explanation of the byte limit:\n%s", rec.Body.String())
+	}
+	if len(fake.users) != 0 {
+		t.Error("a user was created despite the overlong password")
+	}
+}
+
+// Registration hashes with bcrypt, so it needs the same throttle as
+// login or it is simply the cheaper target.
+func TestRegisterIsThrottled(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	srv := webServer(t, fake, true)
+	_, csrf := signIn(t, srv, 1)
+
+	form := url.Values{testUsernameField: {""}, testPasswordField: {"short"}, csrfFieldName: {csrf.Value}}
+	for range loginAttemptLimit {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rec.Code)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429", rec.Code)
+	}
+}
+
+// A signed-in visitor who never loaded /login still needs a usable token
+// on the pages that render forms.
+func TestDevicesPageMintsCSRFTokenWhenMissing(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "ye", testPassword)
+	srv := webServer(t, fake, false)
+	session, _ := signIn(t, srv, user.ID)
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/devices", nil)
+	r.AddCookie(session)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var token string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == csrfCookieName {
+			token = c.Value
+		}
+	}
+	if token == "" {
+		t.Fatal("no CSRF cookie minted for a page with forms")
+	}
+	if !strings.Contains(rec.Body.String(), token) {
+		t.Error("minted token was not rendered into the form")
+	}
+}
+
+// http.FileServer happily indexes an embedded FS otherwise.
+func TestStaticDirectoryListingIsBlocked(t *testing.T) {
+	t.Parallel()
+	srv := webServer(t, newFakeWeb(), false)
+
+	for _, path := range []string{"/static/", "/static/fonts/"} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
+
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", path, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "style.css") {
+			t.Errorf("%s leaked a directory listing", path)
+		}
 	}
 }

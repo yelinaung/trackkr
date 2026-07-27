@@ -26,6 +26,8 @@ const (
 	testFirefoxLower  = "firefox"
 	testPasswordField = "password"
 	testUsernameField = "username"
+	testNewUser       = "newcomer"
+	testGoodPassword  = "a-long-enough-password"
 )
 
 // mockQuerier implements Querier for unit tests without a database.

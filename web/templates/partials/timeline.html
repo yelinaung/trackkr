@@ -39,7 +39,9 @@
   <ol class="totals__list">
     {{range .Totals}}
     <li class="totals__item">
-      <span class="totals__swatch" data-app="{{.AppName}}"></span>
+      <svg class="totals__swatch" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+        <rect width="12" height="12" rx="3" fill="{{.Fill}}"></rect>
+      </svg>
       <span class="totals__app">{{.AppName}}</span>
       <span class="totals__time">{{duration .Seconds}}</span>
     </li>

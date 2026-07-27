@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/yelinaung/trackkr/internal/db"
 )
 
@@ -91,7 +92,7 @@ func TestRequireSessionRejects(t *testing.T) {
 			// stay signed in, and must not 500 either.
 			name:    "deleted user",
 			cookie:  codec.encode(42, time.Now().Add(time.Hour)),
-			queries: stubSessionQuerier{err: errors.New("no rows")},
+			queries: stubSessionQuerier{err: pgx.ErrNoRows},
 		},
 	}
 
@@ -119,6 +120,58 @@ func TestRequireSessionRejects(t *testing.T) {
 
 // An htmx request must get HX-Redirect, or the login page is swapped into
 // whatever div triggered the request.
+// A database outage is not a logout. Clearing the cookie here would
+// sign out every active user for the length of the outage, and they
+// would have to log in again afterwards for no reason.
+func TestRequireSessionKeepsCookieOnTransientError(t *testing.T) {
+	t.Parallel()
+	codec := newSessionCodec(testSecret, true)
+	queries := stubSessionQuerier{err: errors.New("connection refused")}
+	handler := RequireSession(codec, queries)(okHandler())
+
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)
+	r.AddCookie(&http.Cookie{ //nolint:gosec // G124: request-side cookie in a test.
+		Name:  sessionCookieName,
+		Value: codec.encode(42, time.Now().Add(time.Hour)),
+	})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rec.Code)
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == sessionCookieName && c.MaxAge < 0 {
+			t.Error("session cookie was cleared by a transient failure")
+		}
+	}
+}
+
+func TestAttemptLimiterReleaseReturnsAnAttempt(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	l := newAttemptLimiter(2, time.Minute)
+
+	l.reserve(testLimiterIP, now)
+	l.reserve(testLimiterIP, now)
+	if l.reserve(testLimiterIP, now) {
+		t.Fatal("expected throttling at the limit")
+	}
+
+	l.release(testLimiterIP)
+	if !l.reserve(testLimiterIP, now) {
+		t.Error("released attempt was not given back")
+	}
+
+	// Releasing more than was reserved must not underflow.
+	l.release(testLimiterIP)
+	l.release(testLimiterIP)
+	l.release(testLimiterIP)
+	if got := l.remaining(testLimiterIP, now); got != 2 {
+		t.Errorf("remaining = %d, want 2", got)
+	}
+}
+
 func TestRequireSessionUsesHXRedirectForHTMX(t *testing.T) {
 	t.Parallel()
 	handler := RequireSession(newSessionCodec(testSecret, true),

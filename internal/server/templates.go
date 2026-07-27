@@ -28,10 +28,18 @@ type pageData struct {
 	Devices        []db.DeviceRow
 	SelectedDevice int64
 	Chart          Chart
-	Totals         []db.AppTotalRow
+	Totals         []TotalView
 	TotalSeconds   int64
 	Truncated      bool
 	RecordLimit    int
+}
+
+// TotalView is one row of the per-app summary, carrying the same colour
+// the timeline bars use so the swatch matches.
+type TotalView struct {
+	AppName string
+	Seconds int64
+	Fill    string
 }
 
 // templates holds one parsed set per page, plus the standalone partials.

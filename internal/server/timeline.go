@@ -38,12 +38,13 @@ type Chart struct {
 	SpanMin   float64
 	HourMarks []HourMark
 	Lanes     []Lane
-	Truncated bool
 }
 
-// HourMark is a vertical gridline label.
+// HourMark labels one hour cell of the axis. The axis is HTML rather
+// than SVG text, which would be distorted by the non-uniform scaling the
+// bars need, so equal-width cells carry the position and only the label
+// travels.
 type HourMark struct {
-	X     float64
 	Label string
 }
 
@@ -150,10 +151,7 @@ func toBar(rec *db.ActivityRecordRow, start, end time.Time, span float64, index 
 func hourMarks(start, end time.Time) []HourMark {
 	var marks []HourMark
 	for t := start; t.Before(end); t = t.Add(time.Hour) {
-		marks = append(marks, HourMark{
-			X:     t.Sub(start).Minutes(),
-			Label: t.Format("15"),
-		})
+		marks = append(marks, HourMark{Label: t.Format("15")})
 	}
 	return marks
 }

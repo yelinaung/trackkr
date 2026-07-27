@@ -462,11 +462,10 @@ button:focus-visible {
   background-color: var(--paper-raised);
 }
 
+/* The fill comes from the same hash the bars use, passed as an SVG
+   attribute so the swatch matches its bar without inline CSS. */
 .totals__swatch {
-  width: 0.75rem;
-  height: 0.75rem;
-  border-radius: 3px;
-  background-color: var(--ink-soft);
+  display: block;
 }
 
 .totals__time {

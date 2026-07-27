@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/yelinaung/trackkr/internal/db"
 )
 
@@ -58,6 +60,14 @@ func RequireSession(codec *sessionCodec, queries SessionQuerier) func(http.Handl
 
 			user, err := queries.GetUserByID(r.Context(), userID)
 			if err != nil {
+				// Only a genuinely missing row means the session is
+				// dead. Treating a database outage or a cancelled
+				// request the same way would sign everyone out for the
+				// duration of the outage.
+				if !errors.Is(err, pgx.ErrNoRows) {
+					http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+					return
+				}
 				codec.clearSession(w)
 				redirectToLogin(w, r)
 				return
@@ -144,6 +154,24 @@ func (l *attemptLimiter) reserve(host string, now time.Time) bool {
 	}
 	l.attempts[host] = append(l.attempts[host], now)
 	return true
+}
+
+// release gives back the most recent reservation for host, used when an
+// attempt failed for an operational reason rather than a bad password.
+// A database outage should not burn through someone's attempts.
+func (l *attemptLimiter) release(host string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	times := l.attempts[host]
+	if len(times) == 0 {
+		return
+	}
+	if len(times) == 1 {
+		delete(l.attempts, host)
+		return
+	}
+	l.attempts[host] = times[:len(times)-1]
 }
 
 // remaining reports how many attempts host has left (for tests).
