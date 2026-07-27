@@ -880,37 +880,36 @@ func TestRegisterCountsPasswordCharactersNotBytes(t *testing.T) {
 	}
 }
 
-// A new account should not start out one attempt from a lockout because
-// of earlier failures from the same address.
-func TestRegisterClearsThrottleBucketOnSuccess(t *testing.T) {
+// Every unique username succeeds, so returning the attempt on success
+// would leave account creation completely unthrottled: one host could
+// mint accounts forever, each costing a bcrypt hash and a row.
+func TestRegisterSuccessKeepsThrottleReservation(t *testing.T) {
 	t.Parallel()
 	fake := newFakeWeb()
 	srv := webServer(t, fake, true)
 	_, csrf := signIn(t, srv, 1)
 
-	// Burn most of the bucket with failed logins from this host.
-	bad := url.Values{testUsernameField: {"nobody"}, testPasswordField: {testBadPass}, csrfFieldName: {csrf.Value}}
-	for range loginAttemptLimit - 1 {
+	register := func(username string) int {
+		form := url.Values{
+			testUsernameField: {username},
+			testPasswordField: {testGoodPassword},
+			csrfFieldName:     {csrf.Value},
+		}
 		rec := httptest.NewRecorder()
-		srv.ServeHTTP(rec, formPost(t, testLoginPath, bad, csrf))
-	}
-	if left := srv.limiter.remaining("10.1.2.3", time.Now()); left != 1 {
-		t.Fatalf("setup: remaining = %d, want 1", left)
+		srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
+		return rec.Code
 	}
 
-	form := url.Values{
-		testUsernameField: {testNewUser},
-		testPasswordField: {testGoodPassword},
-		csrfFieldName:     {csrf.Value},
+	for i := range loginAttemptLimit {
+		if code := register(fmt.Sprintf("newcomer-%d", i)); code != http.StatusSeeOther {
+			t.Fatalf("registration %d: status = %d, want 303", i+1, code)
+		}
 	}
-	rec := httptest.NewRecorder()
-	srv.ServeHTTP(rec, formPost(t, "/register", form, csrf))
 
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303: %s", rec.Code, rec.Body.String())
+	if code := register("one-too-many"); code != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429 once the window is spent", code)
 	}
-	if left := srv.limiter.remaining("10.1.2.3", time.Now()); left != loginAttemptLimit {
-		t.Errorf("remaining = %d, want %d; the new account is still near a lockout",
-			left, loginAttemptLimit)
+	if len(fake.users) != loginAttemptLimit {
+		t.Errorf("created %d accounts, want %d", len(fake.users), loginAttemptLimit)
 	}
 }

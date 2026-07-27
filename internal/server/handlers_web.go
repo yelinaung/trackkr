@@ -251,10 +251,12 @@ func (h *webHandlers) handleRegister() http.HandlerFunc {
 			return
 		}
 
-		// Clear the whole bucket, as a successful login does: releasing
-		// only this reservation would leave earlier failures counting
-		// against a brand-new account.
-		h.limiter.reset(host)
+		// The reservation stands. Unlike login, where proving
+		// credentials clears the bucket, a successful registration is
+		// exactly what an abuser repeats: every unique username
+		// succeeds, so giving the attempt back would let one host mint
+		// accounts without limit, each costing a bcrypt hash and a row.
+		// Keeping it caps registrations at the same rate as failures.
 		if _, err := h.codec.issueCSRF(w); err != nil {
 			h.fail(w, err, "rotating csrf token")
 			return

@@ -118,8 +118,6 @@ func TestRequireSessionRejects(t *testing.T) {
 	}
 }
 
-// An htmx request must get HX-Redirect, or the login page is swapped into
-// whatever div triggered the request.
 // A database outage is not a logout. Clearing the cookie here would
 // sign out every active user for the length of the outage, and they
 // would have to log in again afterwards for no reason.
@@ -172,6 +170,8 @@ func TestAttemptLimiterReleaseReturnsAnAttempt(t *testing.T) {
 	}
 }
 
+// An htmx request must get HX-Redirect, or the login page is swapped
+// into whatever div triggered the request.
 func TestRequireSessionUsesHXRedirectForHTMX(t *testing.T) {
 	t.Parallel()
 	handler := RequireSession(newSessionCodec(testSecret, true),
