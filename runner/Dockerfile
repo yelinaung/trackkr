@@ -11,7 +11,7 @@ ARG GOVULNCHECK_VERSION=1.1.4
 # renovate: datasource=go depName=github.com/securego/gosec/v2 versioning=semver extractVersion=^v(?<version>.*)$
 ARG GOSEC_VERSION=2.24.7
 # renovate: datasource=github-releases depName=golangci/golangci-lint versioning=semver extractVersion=^v(?<version>.*)$
-ARG GOLANGCI_LINT_VERSION=2.11.3
+ARG GOLANGCI_LINT_VERSION=2.12.2
 # renovate: datasource=github-releases depName=goreleaser/goreleaser versioning=semver extractVersion=^v(?<version>.*)$
 ARG GORELEASER_VERSION=2.17.0
 # renovate: datasource=github-releases depName=gitleaks/gitleaks versioning=semver extractVersion=^v(?<version>.*)$
