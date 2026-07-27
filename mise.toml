@@ -1,4 +1,10 @@
 [tools]
+# go.mod requires 1.26.1; this pins the toolchain everyone actually runs.
+go = "1.26.5"
+# Keep in step with the version pinned in .github/workflows/ci.yml, or
+# the linter passes locally and fails in CI (or the reverse).
+golangci-lint = "2.12.2"
+gofumpt = "0.10.0"
 prek = "0.4.11"
 
 [tasks.test]
