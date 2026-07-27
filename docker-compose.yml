@@ -8,7 +8,9 @@ services:
     ports:
       - "5455:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18+ stores data in a major-version subdirectory and
+      # refuses to start when the mount is at .../data instead.
+      - pgdata:/var/lib/postgresql
 
 volumes:
   pgdata:
