@@ -36,8 +36,9 @@ Build a cross-platform activity/time tracking app that monitors active windows a
 ## Tech Stack
 
 - **Server**: Go, chi router, pgx/v5, golang-migrate, bcrypt, zerolog
-- **Dashboard**: Go html/template + HTMX (vendored), pure CSS timeline bars
-- **Database**: PostgreSQL 16
+- **Dashboard**: Go html/template + HTMX 2.0.x and Bootstrap 5.3 CSS (both
+  vendored, no Bootstrap JS), inline SVG timeline bars
+- **Database**: PostgreSQL 18 (`postgres:18-alpine`, digest-pinned in docker-compose)
 - **Desktop client**: Go daemon, platform-specific window/idle detection
 - **Browser extension**: Firefox WebExtension (Manifest V2), talks to local daemon on localhost:7600
 - **Deployment**: Docker (multi-stage build), docker-compose for dev
@@ -56,15 +57,21 @@ trackkr/
 ├── internal/
 │   ├── server/
 │   │   ├── server.go               # HTTP server setup, middleware, routes
-│   │   ├── auth.go                 # API key validation + session auth
+│   │   ├── auth.go                 # API key validation
+│   │   ├── session.go              # Signed-cookie sessions
+│   │   ├── middleware.go           # RequireSession, security headers, CSRF
 │   │   ├── handlers_api.go         # API handlers (ingest, devices)
 │   │   ├── handlers_web.go         # Web dashboard handlers
+│   │   ├── templates.go            # Template parsing + render helper
+│   │   ├── timeline.go             # Record -> SVG bar geometry
 │   │   └── config.go               # Server config (TOML file + env var overrides for secrets)
 │   ├── db/
 │   │   ├── db.go                   # Connection pool setup
 │   │   ├── migrations/
 │   │   │   ├── 001_initial.up.sql
-│   │   │   └── 001_initial.down.sql
+│   │   │   ├── 001_initial.down.sql
+│   │   │   ├── 002_device_cascade.up.sql
+│   │   │   └── 002_device_cascade.down.sql
 │   │   ├── queries.go              # Query functions
 │   │   └── models.go               # DB model structs
 │   ├── tracker/
@@ -79,17 +86,22 @@ trackkr/
 │   │   └── config.go               # Client config
 │   └── models/
 │       └── activity.go             # Shared types: ActivityRecord
-├── web/
+├── web/                            # Go package: go:embed templates + static
+│   ├── web.go
 │   ├── templates/
 │   │   ├── base.html
 │   │   ├── login.html
+│   │   ├── register.html
 │   │   ├── dashboard.html
+│   │   ├── devices.html
 │   │   └── partials/
-│   │       ├── timeline.html
-│   │       └── device_filter.html
+│   │       ├── timeline.html       # inline SVG chart
+│   │       └── device_rows.html
 │   └── static/
+│       ├── bootstrap.min.css       # 5.3.x compiled CSS, no Bootstrap JS
 │       ├── style.css
-│       └── htmx.min.js
+│       ├── htmx.min.js             # 2.0.x, exact version pinned
+│       └── fonts/
 ├── extension/
 │   ├── manifest.json
 │   ├── background.js
@@ -100,7 +112,9 @@ trackkr/
 │   ├── trackkrd.service            # systemd unit
 │   └── com.trackkr.daemon.plist    # launchd plist
 ├── docs/
-│   └── plan.md                     # This file
+│   ├── plan.md                     # This file
+│   ├── phase2-plan.md              # Linux daemon design
+│   └── phase3-plan.md              # Web dashboard design
 ├── go.mod
 ├── go.sum
 ├── mise.toml                       # Task runner
@@ -139,12 +153,16 @@ CREATE TABLE activity_records (
     started_at  TIMESTAMPTZ NOT NULL,
     ended_at    TIMESTAMPTZ NOT NULL,
     duration_s  INTEGER NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (device_id, started_at)
 );
 
-CREATE INDEX idx_activity_records_device_started ON activity_records (device_id, started_at);
 CREATE INDEX idx_activity_records_started ON activity_records (started_at);
 ```
+
+The `UNIQUE (device_id, started_at)` constraint makes re-sent batches
+idempotent, and its backing index also serves device-filtered timeline
+queries, so no separate `(device_id, started_at)` index is needed.
 
 ---
 
@@ -155,18 +173,20 @@ CREATE INDEX idx_activity_records_started ON activity_records (started_at);
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/activity` | Submit batch of activity records |
-| `GET` | `/api/v1/devices` | List devices for authenticated user |
+| `GET` | `/api/v1/devices` | List devices for authenticated user (planned, Phase 3) |
 | `POST` | `/api/v1/heartbeat` | Daemon liveness ping |
 
 ### Web Dashboard (session cookie auth)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET/POST` | `/login` | Login page + form submit |
-| `POST` | `/logout` | Clear session |
-| `GET` | `/` | Dashboard (today's timeline) |
-| `GET` | `/timeline` | HTMX partial: timeline for date+device filter |
-| `GET/POST/DELETE` | `/devices` | Device management |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET/POST` | `/login` | public | Login page + form submit |
+| `GET/POST` | `/register` | public | Signup, mounted only when `allow_registration` |
+| `POST` | `/logout` | public | Clear session |
+| `GET` | `/static/*` | public | Embedded CSS, JS, fonts |
+| `GET` | `/` | session | Dashboard (today's timeline) |
+| `GET` | `/timeline` | session | HTMX partial: timeline for date+device filter |
+| `GET/POST/DELETE` | `/devices` | session | Device management |
 
 ---
 
@@ -229,10 +249,15 @@ idle_threshold = "5m"
 
 ## Dashboard MVP — Daily Timeline
 
-- Pure CSS positioned `<div>` bars (percentage-based `left` and `width` within a 24h container)
+- Inline SVG `<rect>` bars with `x`/`width` in minutes from midnight, inside a
+  `viewBox` whose span is the real day length (23, 24, or 25 hours across DST)
+- Geometry travels as presentation attributes, not inline CSS: a strict
+  `style-src 'self'` survives HTMX swaps, where a nonce could not
 - Colors assigned per app via deterministic hash
 - HTMX partials for date picker and device filter (swap timeline on change)
-- Hover tooltip shows app name, title, time range
+- Hover detail via SVG `<title>` plus a CSS-revealed label: app name, title,
+  time range
+- See `phase3-plan.md` for the full design
 
 ---
 
@@ -245,24 +270,28 @@ port = 8080
 
 [database]
 host = "localhost"
-port = 5432
+port = 5455              # docker-compose maps 5455 -> 5432
 name = "trackkr"
 user = "trackkr"
 # password loaded from env var TRACKKR_DB_PASSWORD
 sslmode = "disable"
 
 [auth]
-# admin_password_hash loaded from env var TRACKKR_ADMIN_PASSWORD_HASH
-session_secret = ""  # or from env var TRACKKR_SESSION_SECRET
+# session_secret loaded from env var TRACKKR_SESSION_SECRET
+# allow_registration: set true to enable web-based user signup
+allow_registration = false
 ```
 
-Secrets (`database.password`, `auth.admin_password_hash`, `auth.session_secret`) are loaded from environment variables, keeping the config file committable.
+Secrets (`database.password`, `auth.session_secret`) are loaded from
+environment variables, keeping the config file committable. There is no
+admin password hash: users live in the `users` table, created with
+`trackkr-backend create-user <username> <password>`.
 
 ---
 
 ## Implementation Order
 
-### Phase 1: Server Foundation
+### Phase 1: Server Foundation (done)
 1. Go module init, project structure, update mise.toml tasks
 2. PostgreSQL connection with pgx/v5
 3. Database migrations with golang-migrate
@@ -270,17 +299,17 @@ Secrets (`database.password`, `auth.admin_password_hash`, `auth.session_secret`)
 5. API key auth middleware
 6. Test with curl
 
-### Phase 2: Linux Desktop Client
+### Phase 2: Linux Desktop Client (done — see `phase2-plan.md`)
 1. `window_linux.go` — active window via xdotool
 2. `idle_linux.go` — idle time via xprintidle
 3. Tracking loop with state machine
-4. Reporter with batch sending
+4. Reporter with batch sending, disk-persisted queue, graceful shutdown
 5. End-to-end test: daemon → server → DB
 
-### Phase 3: Web Dashboard MVP
+### Phase 3: Web Dashboard MVP (planned — see `phase3-plan.md`)
 0. No heavy web-framework
 1. Login page + session auth
-2. Dashboard page with CSS timeline (Use Bootstrap getbootstrap.com)
+2. Dashboard page with SVG timeline (Bootstrap 5.3 compiled CSS, no Bootstrap JS)
 3. HTMX date/device filtering
 4. Device management page (create device + API key)
 5. Embed templates/static with Go embed
@@ -295,8 +324,9 @@ Secrets (`database.password`, `auth.admin_password_hash`, `auth.session_secret`)
 1. `window_darwin.go` + `idle_darwin.go` via cgo
 2. launchd plist for auto-start
 3. Dockerfile + docker-compose for production
-4. systemd unit for Linux auto-start
-5. Graceful shutdown, queue persistence
+
+The systemd unit, graceful shutdown, and disk-persisted queue originally
+listed here all landed in Phase 2.
 
 ### Phase 6: Future Enhancements (parked)
 - Android app
