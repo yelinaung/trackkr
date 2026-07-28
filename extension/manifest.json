@@ -20,7 +20,12 @@
 
   "permissions": ["tabs", "storage", "idle"],
 
-  "optional_host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "//optional_host_permissions": "Must cover every address the daemon's own validation accepts, or a config it considers valid leaves the extension permanently unable to request access. It accepts any loopback address; these are the ones a match pattern can express.",
+  "optional_host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
+    "http://[::1]/*"
+  ],
 
   "background": {
     "scripts": ["logic.js", "common.js", "background.js"]

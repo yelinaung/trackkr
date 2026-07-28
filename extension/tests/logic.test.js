@@ -157,5 +157,74 @@ test("originFor drops the port", () => {
   assert.equal(originFor("http://127.0.0.1:9999/"), "http://127.0.0.1/*");
   assert.equal(originFor("http://localhost:7600"), "http://localhost/*");
 
+  // The daemon accepts any loopback bind, so the IPv6 form has to
+  // produce a pattern the manifest actually declares.
+  assert.equal(originFor("http://[::1]:7600"), "http://[::1]/*");
+
   assert.throws(() => originFor("not a url"));
+});
+
+// Whatever originFor produces for a daemon address must be declared in
+// optional_host_permissions, or the extension can never request it and
+// reporting is blocked with no way to fix it from the UI.
+test("declared host permissions cover the addresses the daemon accepts", () => {
+  const manifest = require("../manifest.json");
+  const declared = new Set(manifest.optional_host_permissions);
+
+  for (const addr of ["http://127.0.0.1:7600", "http://localhost:7600", "http://[::1]:7600"]) {
+    assert.ok(
+      declared.has(originFor(addr)),
+      `${addr} derives ${originFor(addr)}, which the manifest does not declare`,
+    );
+  }
+});
+
+test("removeDelivered keeps records appended during the request", () => {
+  const { removeDelivered } = require("../logic.js");
+
+  const delivered = [
+    { url: "https://a.example", started_at: "2026-05-04T10:00:00.000Z" },
+    { url: "https://b.example", started_at: "2026-05-04T10:01:00.000Z" },
+  ];
+  // A third record arrived while the first two were in flight.
+  const latest = [
+    ...delivered,
+    { url: "https://c.example", started_at: "2026-05-04T10:02:00.000Z" },
+  ];
+
+  const remaining = removeDelivered(latest, delivered);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].url, "https://c.example");
+});
+
+// The case a count-based slice gets wrong: at the queue limit, the trim
+// drops an old record while a new one is appended, so the length never
+// changes and slice(delivered.length) would delete the newcomer that
+// was never sent.
+test("removeDelivered survives a trimmed full queue", () => {
+  const { removeDelivered, trimQueue } = require("../logic.js");
+
+  const limit = 5;
+  const delivered = Array.from({ length: limit }, (_, i) => ({
+    url: `https://example.com/${i}`,
+    started_at: new Date(Date.UTC(2026, 4, 4, 10, i)).toISOString(),
+  }));
+
+  const newcomer = { url: "https://late.example", started_at: "2026-05-04T11:00:00.000Z" };
+  const latest = trimQueue([...delivered, newcomer], limit);
+
+  assert.equal(latest.length, limit, "the trim kept the queue at its limit");
+
+  const remaining = removeDelivered(latest, delivered);
+  assert.deepEqual(remaining, [newcomer], "the unsent record survives");
+});
+
+test("removeDelivered tolerates duplicates and empty input", () => {
+  const { removeDelivered } = require("../logic.js");
+
+  const record = { url: "https://a.example", started_at: "2026-05-04T10:00:00.000Z" };
+
+  assert.deepEqual(removeDelivered([], [record]), []);
+  assert.deepEqual(removeDelivered([record], []), [record]);
+  assert.deepEqual(removeDelivered([record, record], [record]), []);
 });

@@ -82,6 +82,25 @@
     return queue.length <= limit ? queue : queue.slice(queue.length - limit);
   }
 
+  // recordKey identifies a record for removal after delivery. The
+  // start time is unique per tab segment, and the URL disambiguates
+  // two windows starting a segment in the same millisecond.
+  function recordKey(record) {
+    return `${record.started_at}|${record.url}`;
+  }
+
+  // removeDelivered drops exactly the records that were sent, keeping
+  // anything appended while the request was in flight.
+  //
+  // Slicing by count instead would delete the wrong records: if the
+  // queue is at its limit and a new record arrives mid-request, the
+  // trim drops an old one and the length is unchanged, so a count-based
+  // slice removes the newcomer that was never sent.
+  function removeDelivered(latest, delivered) {
+    const sent = new Set(delivered.map(recordKey));
+    return latest.filter((record) => !sent.has(recordKey(record)));
+  }
+
   function normalizeDaemonUrl(raw) {
     return String(raw || DEFAULT_DAEMON_URL).trim().replace(/\/+$/, "");
   }
@@ -105,6 +124,8 @@
     buildRecord,
     idleEndedAt,
     trimQueue,
+    recordKey,
+    removeDelivered,
     normalizeDaemonUrl,
     originFor,
   };
