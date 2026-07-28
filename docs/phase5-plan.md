@@ -26,6 +26,8 @@ config afterwards, so step 6 reorders that and touches
 internal/tracker/
   titles.go                    # portable: trust state, recheck interval
   titles_test.go               # no suffix, so Linux CI runs it
+  detector_core.go             # portable: appInfo, detectorCore, mapFrontmost
+  detector_core_test.go        # also suffix-free, also runs on Linux
   window_darwin.go             # //go:build darwin && cgo
   idle_darwin.go               # //go:build darwin && cgo
   macos_darwin.m               # //go:build darwin && cgo
@@ -46,12 +48,15 @@ Modified: `window.go` (takes ownership of `ErrUnsupportedPlatform`),
 `config.go` and `config_test.go` (macOS keys, and the
 `DefaultConfigPath` comment that misdescribes macOS),
 `cmd/trackkrd/main.go` and `main_test.go` (factories take config and
-logger), `mise.toml` (a bundling task), `docs/plan.md`.
+logger), `mise.toml` (bundling and portability tasks), `docs/plan.md`.
 
 Every filename above matters. Go applies implicit build constraints
 from `_darwin` suffixes, and `_test.go` files inherit them, so anything
 named `*_darwin_test.go` never runs on the Linux CI runner. The portable
-decision logic therefore lives in `titles.go`, with no suffix at all.
+decision logic therefore lives in `titles.go` and `detector_core.go`,
+neither carrying a suffix. Two files, because the trust policy and the
+detector's own decisions are separate concerns and one file called
+`titles.go` holding `appInfo` and `mapFrontmost` would be misnamed.
 
 Four build combinations have to compile, and each needs exactly one
 definition of each factory:
@@ -71,15 +76,17 @@ so every row can return it.
 | Capability | API | Permission |
 |---|---|---|
 | Idle time | `CGEventSourceSecondsSinceLastEventType` | none |
-| Frontmost app name and bundle id | `NSWorkspace.frontmostApplication` | none |
+| Frontmost app name and pid | `CGWindowListCopyWindowInfo` owner fields | none |
+| Bundle identifier for a pid | `NSRunningApplication` | none |
 | Window title | Accessibility (`AXUIElement`) | Accessibility |
-| Window title (alternative) | `CGWindowListCopyWindowInfo` | Screen Recording |
+| Window title (alternative) | `CGWindowListCopyWindowInfo` `kCGWindowName` | Screen Recording |
 
 Two thirds of the value arrives with no prompt at all. Titles cost more.
-`CGWindowListCopyWindowInfo` omits `kCGWindowName` silently when the
-process lacks Screen Recording, handing back an empty string that looks
-like data; Accessibility refuses openly and exposes its trust state to a
-direct query. Phase 5 takes the Accessibility route.
+The same window list that hands over owner names for free omits
+`kCGWindowName` silently without Screen Recording, handing back an empty
+string that looks like data; Accessibility refuses openly and exposes
+its trust state to a direct query. Phase 5 takes the Accessibility
+route.
 
 The phase lands in three stages, each useful alone: idle, then app
 names, then titles behind a permission the user grants when they want
@@ -101,10 +108,46 @@ now ends the current record at the idle threshold, as it does on Linux.
 
 ### Step 2: `window_darwin.go` -- the frontmost application
 
-`NSWorkspace.sharedWorkspace.frontmostApplication` gives
-`localizedName`, `bundleIdentifier`, and `processIdentifier` with no
-permission. Objective-C is not callable from cgo, so `macos_darwin.m`
-provides the C boundary.
+**`NSWorkspace.frontmostApplication` is a trap in a daemon.** It reads
+like a query and behaves like a cache. Apple's `NSRunningApplication`
+header says time-varying properties "persist until the next turn of the
+run loop", and `frontmostApplication` changes only when the main run
+loop runs in a common mode: LaunchServices delivers the change as a
+notification, and something has to pump for it to land. A Go daemon
+polling from a goroutine pumps nothing, so the value can pin to
+whichever application was frontmost at startup and stay there forever
+-- while every log line and every record looks healthy.
+
+So the frontmost application comes from the window server instead:
+
+```c
+CGWindowListCopyWindowInfo(
+    kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+    kCGNullWindowID)
+```
+
+The array is ordered front to back, so the first entry with
+`kCGWindowLayer == 0` is the window the user is looking at, and its
+`kCGWindowOwnerName` and `kCGWindowOwnerPID` are the application name
+and pid. Both are readable without Screen Recording; only
+`kCGWindowName`, the title, is gated, and titles come from
+Accessibility anyway. The call is a snapshot with no notification
+delivery behind it, so no run loop is involved.
+
+Bundle identifiers are not in that snapshot. `NSRunningApplication
+runningApplicationWithProcessIdentifier:` supplies one for the pid, and
+its identifier does not vary over time, so the staleness above does not
+apply. Objective-C is not callable from cgo, so `macos_darwin.m`
+provides the C boundary for that lookup and wraps the CoreGraphics work
+beside it.
+
+Should `CGWindowListCopyWindowInfo` prove insufficient -- an empty
+list under some Stage Manager arrangement, say -- the fallback is
+`NSWorkspace` plus an explicit
+`CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true)` before each read
+to drain pending notifications. That is a fallback, not the design:
+pumping a run loop on whichever thread cgo happens to land on is a
+weaker guarantee than not needing one.
 
 **The native contract.** The boundary carries two operations, because
 the title lookup needs a pid and happens only when trusted:
@@ -136,6 +179,19 @@ state that maps to `ErrNoActiveWindow`, while a failed
 `CFStringGetCString` is a fault worth surfacing. Two statuses would
 report an empty desktop every time a conversion failed.
 
+The Go side mirrors these constants so `mapFrontmost` stays portable and
+testable, which leaves the mirror free to drift. A compile-time
+assertion in `window_darwin.go` closes that for nothing:
+
+```go
+// Fails the build on any Mac if a constant drifts from its C original.
+var (
+    _ = [1]struct{}{}[statusOK-C.TRACKKR_OK]
+    _ = [1]struct{}{}[statusNoApp-C.TRACKKR_NO_APP]
+    _ = [1]struct{}{}[statusFailed-C.TRACKKR_FAILED]
+)
+```
+
 **The AX timeout is a shutdown requirement.** The tracker calls
 `ActiveWindow` synchronously from its only goroutine, and no cgo call
 can be interrupted by context cancellation. An application that stops
@@ -143,14 +199,21 @@ answering Accessibility messages -- a beachballing app, most often --
 stalls the poll loop. `Run` then cannot return on `ctx.Done()`, and the
 daemon refuses to shut down with its final record unwritten.
 
-`AXUIElementSetMessagingTimeout(app, 0.5)` bounds the call. Half a
-second sits well inside the three-second poll interval: a hung
-application costs a fraction of one tick, and a busy-but-alive one still
-answers. A timeout returns NULL and degrades like any other missing
-title, so the application record survives with an empty title.
+`AXUIElementSetMessagingTimeout(app, 0.5)` bounds each AX *message*,
+not the title read. A read sends at least two -- copy
+`kAXFocusedWindowAttribute`, then `kAXTitleAttribute` -- so a hung
+application costs about a second, not half of one. That still sits
+inside the three-second default poll interval, but `poll_interval` is
+user-configurable, and setting it to `1s` erases the margin. The
+detector logs a warning at startup when `poll_interval` is under two
+seconds and titles are enabled. A timeout returns NULL and degrades like
+any other missing title, so the application record survives with an
+empty title.
 
-The Go side checks `ctx.Err()` before entering cgo, so a cancelled
-context skips the call instead of starting one nothing can stop.
+The Go side checks `ctx.Err()` before both native calls, not only the
+title read -- the frontmost lookup is equally uninterruptible once
+started -- so a cancelled context skips them instead of starting one
+nothing can stop.
 Wrapping the call in a goroutine and selecting on the context looks like
 the obvious alternative and is worse: the goroutine stays blocked in cgo
 holding an OS thread, and an unresponsive application leaks one per
@@ -170,8 +233,8 @@ whether anyone is present; the pid looks up a title. Neither is stored
 or sent.
 
 **`ErrNoActiveWindow`, deterministically.** The detector returns the
-sentinel when `frontmostApplication` is nil, when the name is empty, or
-when the bundle identifier is one of:
+sentinel when the window list has no layer-zero entry, when the owner
+name is empty, or when the bundle identifier is one of:
 
 ```
 com.apple.loginwindow             the login or lock screen
@@ -284,10 +347,18 @@ like any other.
 
 ### Step 4: build tags and the no-cgo path
 
-`CGO_ENABLED=0 GOOS=darwin go build ./...` is how this repo checks
-portability from the Linux runner, and cgo cannot cross-compile without
-an SDK. Keeping that check working takes more than one fallback file,
-because four things break at once:
+`CGO_ENABLED=0 GOOS=darwin go build ./...` is how the Linux runner can
+check portability, since cgo cannot cross-compile without an SDK. It is
+not how the runner checks anything today: `.github/workflows/ci.yml`
+runs `mise install`, `mise ext-lint`, `mise ext-test`, and `mise
+test-race`, and not one of them compiles for another platform. Phase 5
+adds a `mise portability` task running both cross-builds and a CI step
+invoking it, otherwise every claim below is enforced by nothing and the
+`darwin && !cgo` path rots the first time someone edits a neighbouring
+file.
+
+Keeping that check working takes more than one fallback file, because
+four things break at once:
 
 1. **Both factories disappear.** `idle_darwin.go` imports C, so cgo-off
    excludes it, and `idle_other.go` stops covering darwin once its tag
@@ -315,6 +386,18 @@ because four things break at once:
 
 A build on a Mac has cgo on by default and picks up the darwin
 implementations with no flags.
+
+```toml
+[tasks.portability]
+description = "Compile the platform fallbacks the CI runner cannot execute"
+run = [
+  "CGO_ENABLED=0 GOOS=darwin go build ./...",
+  "CGO_ENABLED=0 GOOS=windows go build ./...",
+]
+```
+
+The task compiles; it runs nothing. Neither build produces a binary the
+runner could execute, and a compile failure is the whole signal.
 
 ### Step 5: the `.app` bundle and launchd
 
@@ -408,6 +491,13 @@ because a background agent throwing a system dialog at an operator who
 never asked for one is an unpleasant surprise; `mise` output and the
 README point at the setting.
 
+With the prompt off there is no dialog to click, so `README-macos.md`
+has to spell the manual grant out: System Settings -> Privacy & Security
+-> Accessibility, then the `+` button, then `~/Applications/trackkr.app`.
+The bundle never appears in that list on its own -- an application shows
+up only after it has asked -- and a reader who expects to find it there
+concludes the install failed.
+
 Exposing the keys is not enough. `cmd/trackkrd` holds
 `newWindow func() (tracker.WindowDetector, error)`, a zero-argument
 factory, so nothing the config says can reach the darwin implementation.
@@ -428,6 +518,13 @@ has avoided everywhere else. The trust checker and the clock stay
 private constructor seams with production defaults, supplied only by
 tests.
 
+No idle detector reads the config today, on any platform, so
+`newIdle`'s first parameter is unused everywhere the day it lands. It
+takes one anyway: the two factories are constructed, stored, and called
+side by side, and an idle threshold or a per-platform event source is
+the obvious next config key. Matching signatures cost a parameter now
+and save a second signature change later.
+
 Every implementation changes signature -- linux, darwin, the no-cgo
 darwin fallback, the `!linux && !darwin` fallback -- along with
 `platformDetectors()` and the fakes in `main_test.go`. Linux ignores the
@@ -445,11 +542,11 @@ note, and the macOS section of the daemon design.
 ## Testing
 
 cgo code that talks to the window server cannot run on the Linux CI
-runner, and mocking `NSWorkspace` proves nothing. Three layers keep the
+runner, and mocking CoreGraphics proves nothing. Three layers keep the
 untestable part small:
 
 ```go
-// Portable, in titles.go. Every decision lives here.
+// Portable, in detector_core.go. Every decision lives here.
 type appInfo struct {
     Name     string
     BundleID string
@@ -492,7 +589,8 @@ as Go functions, and does nothing else. Which bundle identifiers mean
 trusted read yields no title -- all of it is ordinary Go that the Linux
 runner executes with fakes for both seams.
 
-`titles_test.go` and `config_test.go` run in CI and cover:
+`titles_test.go`, `detector_core_test.go`, and `config_test.go` run in
+CI and cover:
 
 - the trust cache: the first call checks, the next ten reuse, and a call
   past `trustRecheckInterval` checks again, all driven by a fake `now()`
@@ -534,11 +632,13 @@ Phase 6 has a signal it can use.
 ## Verification
 
 1. `mise test` and `mise test-race` pass; coverage stays at or above 50%.
-2. `mise lint` clean, and on the Linux runner both
-   `CGO_ENABLED=0 GOOS=darwin go build ./...` (the no-cgo fallback, the
-   relocated sentinel, and the constrained `.m` file) and
-   `CGO_ENABLED=0 GOOS=windows go build ./...` (the `!linux && !darwin`
-   row, which nothing else exercises) compile.
+   The gate is not at risk: the untestable code is the two cgo files,
+   which the Linux runner never compiles and so never counts against
+   the denominator, while the portable logic arrives with tests.
+2. `mise lint` clean, and `mise portability` passes in CI -- the darwin
+   build covering the no-cgo fallback, the relocated sentinel, and the
+   constrained `.m` file, the windows build covering the `!linux &&
+   !darwin` row that nothing else exercises.
 3. On a Mac: `go build ./...` with cgo on, and `mise bundle-macos`
    produces a signed bundle. Neither runs in CI, so both belong in the
    phase's checklist and not in its assumptions.
@@ -546,14 +646,18 @@ Phase 6 has a signal it can use.
    unavailable` nor `idle detection not implemented`.
 5. Switch between applications and confirm records appear on the
    dashboard with app names beside the existing browser rows.
-6. Without Accessibility granted: records carry app names and empty
+6. Switch applications rapidly for a full minute, then read the
+   timeline. Every application should be there. A frontmost lookup
+   frozen on one application produces a plausible-looking record and no
+   error anywhere, so only this catches it.
+7. Without Accessibility granted: records carry app names and empty
    titles, and the log says so once, not every poll.
-7. Grant Accessibility to the bundled app, wait for the recheck, and
+8. Grant Accessibility to the bundled app, wait for the recheck, and
    confirm titles start appearing with no restart.
-8. Walk away past the idle threshold and confirm the record ends when
+9. Walk away past the idle threshold and confirm the record ends when
    you stopped, not when you came back.
-9. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
-   the daemon restarts and keeps its Accessibility grant.
-10. Rebuild, re-sign, and re-bundle, then confirm whether the grant
+10. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
+    the daemon restarts and keeps its Accessibility grant.
+11. Rebuild, re-sign, and re-bundle, then confirm whether the grant
     survives. With `TRACKKR_SIGN_IDENTITY` set it should; ad-hoc is the
     case that may ask again, and the README should say which.
