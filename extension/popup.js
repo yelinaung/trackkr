@@ -3,6 +3,11 @@
 // otherwise presents as "daemon unreachable" and sends the user hunting
 // a daemon that is running perfectly.
 
+// The last settings read, kept so the grant button can call
+// permissions.request() without awaiting first: an await consumes the
+// user gesture the request needs.
+let known = { daemonUrl: DEFAULT_DAEMON_URL, token: "" };
+
 const stateEl = document.getElementById("state");
 const detailEl = document.getElementById("detail");
 const grantEl = document.getElementById("grant");
@@ -17,6 +22,7 @@ function show(kind, text, detail) {
 
 async function refresh() {
   const { daemonUrl, token } = await getSettings();
+  known = { daemonUrl, token };
 
   const queue = (await api.storage.local.get("queue")).queue || [];
   queueEl.textContent = String(queue.length);
@@ -50,9 +56,9 @@ async function refresh() {
 }
 
 grantEl.addEventListener("click", async () => {
-  const { daemonUrl } = await getSettings();
   try {
-    await api.permissions.request({ origins: [originFor(daemonUrl)] });
+    // No await before this call: the gesture must still be in scope.
+    await api.permissions.request({ origins: [originFor(known.daemonUrl)] });
   } catch (err) {
     // Declined, or not triggered by a gesture Firefox accepts.
   }

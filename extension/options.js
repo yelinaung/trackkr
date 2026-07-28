@@ -36,15 +36,20 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  await api.storage.local.set({ daemonUrl, token });
-
-  // The click is the user gesture permissions.request() requires.
+  // Request first, before anything is awaited.
+  //
+  // permissions.request() must be called while the user gesture is
+  // still in scope, and awaiting even a storage write consumes it --
+  // the request then resolves false without ever prompting, which
+  // looks exactly like the user declining.
   let granted = false;
   try {
     granted = await api.permissions.request({ origins: [origin] });
   } catch (err) {
     granted = false;
   }
+
+  await api.storage.local.set({ daemonUrl, token });
 
   if (!granted) {
     report("error", `Saved, but Firefox is still blocking ${origin}. Requests will fail until it is allowed.`);
