@@ -127,8 +127,11 @@ typedef struct { char *name; char *bundleID; pid_t pid; } trackkr_app;
 int trackkr_frontmost_app(trackkr_app *out);
 
 // Returns a malloc'd UTF-8 title, or NULL when the application has no
-// focused window, exposes no title, or the AX call fails. NULL is not
-// an error; it means "no title".
+// focused window, exposes no title, the AX call fails, or the call
+// times out. NULL is not an error; it means "no title".
+//
+// Calls AXUIElementSetMessagingTimeout(app, 0.5) before reading any
+// attribute.
 char *trackkr_focused_window_title(pid_t pid);
 ```
 
@@ -137,8 +140,30 @@ that maps to `ErrNoActiveWindow`; a failed `CFStringGetCString` is a
 fault worth surfacing. Collapsing them would report an empty desktop
 whenever a conversion failed.
 
-Both wrap their bodies in `@autoreleasepool`, since a daemon polling
-every three seconds without one leaks steadily. Every `AXUIElementRef`
+**The AX timeout is a shutdown requirement, not a nicety.** The tracker
+calls `ActiveWindow` synchronously from its only goroutine, and a cgo
+call cannot be interrupted by context cancellation. An application that
+stops answering Accessibility messages -- a beachballing app is the
+common case -- would stall the poll loop and, with it, `Run`'s return
+on `ctx.Done()`, so the daemon would refuse to shut down while its
+final record went unwritten.
+
+`AXUIElementSetMessagingTimeout(app, 0.5)` bounds it. Half a second is
+chosen against the three-second default poll interval: short enough
+that a hung application costs a fraction of one tick, long enough that
+a busy-but-alive application still answers. A timeout returns NULL and
+is treated as any other missing title -- the application record
+survives with an empty title.
+
+The Go side checks `ctx.Err()` before entering cgo, which makes a
+cancelled context skip the call rather than start one that cannot be
+stopped. Wrapping the call in a goroutine and selecting on the context
+would be worse: the goroutine stays blocked in cgo holding an OS
+thread, and a repeatedly unresponsive application would leak one per
+poll.
+
+Both functions wrap their bodies in `@autoreleasepool`, since a daemon
+polling every three seconds without one leaks steadily. Every `AXUIElementRef`
 and `CFTypeRef` obtained from a `Copy` or `Create` call is released on
 both the success and failure paths, and the Go side defers `C.free` on
 every non-NULL string. `CFStringGetCString` with
@@ -239,7 +264,15 @@ The rules, each one a test:
   alone test it;
 - the mutex is not decoration. `ActiveWindow` is called from the
   tracker's single goroutine today, but a detector that silently
-  requires that is a trap for the next caller.
+  requires that is a trap for the next caller;
+- **no callback runs while `mu` is held.** The locked section decides
+  the new state, reserves the prompt by setting `prompted`, and
+  records what needs announcing; `prompt` and `log` are invoked after
+  unlocking. Injected callbacks are arbitrary code -- a logger that
+  reaches back into the detector, or a test double that does -- and
+  calling them under the lock invites a deadlock while gaining
+  nothing. Reserving under the lock keeps one-check and one-prompt
+  intact regardless.
 
 The check is on demand inside `ActiveWindow`. A background goroutine
 would need a lifecycle, a shutdown path, and a place in `run` to be
@@ -315,6 +348,14 @@ Accessibility again. Two honest options, and the plan takes the first:
 `TRACKKR_SIGN_IDENTITY` is set and falls back to ad-hoc with a printed
 warning otherwise, so the tradeoff is visible at build time rather than
 discovered when titles stop appearing.
+
+The script installs rather than merely builds: it creates
+`~/Applications`, `~/Library/LaunchAgents`, `~/Library/Logs/trackkr`,
+and the config directory if absent, assembles the bundle at the fixed
+path below, signs it, and writes the generated agent plist. An artifact
+left in `dist/` would have a different code identity from the one macOS
+granted Accessibility to, which is the whole problem this step exists
+to avoid.
 
 **Installation contract.** Vague paths are how launchd agents fail
 silently, so each is fixed:
@@ -429,12 +470,34 @@ type appInfo struct {
 
 type detectorCore struct {
     policy    *titlePolicy
-    frontmost func() (appInfo, error)  // darwin: one C call
+    frontmost func() (*appInfo, error) // darwin: one C call
     titleFor  func(pid int) string     // darwin: the other C call
 }
 
 func (d *detectorCore) ActiveWindow(context.Context) (WindowInfo, error)
+
+// mapFrontmost turns a native status into the seam's contract. Pure,
+// so a switch typo in the adapter is caught on Linux rather than only
+// on a Mac with an empty desktop.
+func mapFrontmost(status int, app appInfo) (*appInfo, error) {
+    switch status {
+    case statusOK:
+        return &app, nil
+    case statusNoApp:
+        return nil, nil   // the core maps this to ErrNoActiveWindow
+    default:
+        return nil, errFrontmostFailed
+    }
+}
 ```
+
+`frontmost` returns a *pointer*. The three native statuses need three
+Go outcomes, and a value type collapses two of them: `TRACKKR_NO_APP`
+must be expressible as `(nil, nil)`, distinct from an operational
+failure carrying an error and from a real application. Returning a
+zero-valued `appInfo` for "nobody is frontmost" would force the core to
+infer emptiness from a blank name, which is exactly the guessing the
+three statuses exist to remove.
 
 `window_darwin.go` builds a `detectorCore` with the two C calls wrapped
 as Go functions and nothing else. `ActiveWindow` -- which bundle
@@ -459,12 +522,16 @@ CI:
 - `macos_read_titles = false` short-circuiting before `isTrusted` or
   `prompt` is called at all, which proves the config reaches the
   detector and that titles-off means prompt-off;
+- `mapFrontmost` over all three statuses, so an adapter switch typo
+  fails on Linux;
 - `ErrNoActiveWindow` for a nil application, an empty name, and each
   listed bundle identifier, via the injected `frontmost`;
 - a trusted read whose `titleFor` returns "" keeping the application
   record with an empty title;
 - an operational failure from `frontmost` surfacing as an error rather
   than as an empty desktop;
+- a cancelled context returning before `titleFor` is called, so
+  shutdown never waits on a native call;
 - the config keys and their defaults.
 
 A daemon test in `cmd/trackkrd` asserts the loaded config and the
