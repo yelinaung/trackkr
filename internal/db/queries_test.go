@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -573,6 +574,79 @@ func TestGetSiteTotals(t *testing.T) {
 	}
 	if totals[1].Site != "github.com" || totals[1].Seconds != 300 {
 		t.Errorf("second = %+v, want github.com with 300s", totals[1])
+	}
+}
+
+// The authority is not the hostname: it also carries userinfo and a
+// port. Grouping on it would print credentials on the dashboard and
+// split one site across several rows.
+func TestGetSiteTotalsUsesHostnameOnly(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
+
+	// All five are the same site once the hostname is extracted.
+	for i, url := range []string{
+		"https://example.com/a",
+		"https://www.example.com/b",
+		"https://EXAMPLE.com/c",
+		"https://example.com:8443/d",
+		"https://someone:hunter2@example.com/e",
+	} {
+		start := day.Add(time.Duration(i) * time.Hour)
+		insertRecordWithURL(t, q, device.ID, url, start, start.Add(time.Minute))
+	}
+
+	totals, err := q.GetSiteTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetSiteTotals: %v", err)
+	}
+
+	if len(totals) != 1 {
+		t.Fatalf("sites = %+v, want them all grouped as example.com", totals)
+	}
+	if totals[0].Site != "example.com" {
+		t.Errorf("site = %q, want example.com", totals[0].Site)
+	}
+	if totals[0].Seconds != 300 {
+		t.Errorf("seconds = %d, want 300 across the five visits", totals[0].Seconds)
+	}
+	// The password must not reach the dashboard by any route.
+	if strings.Contains(totals[0].Site, "hunter2") || strings.Contains(totals[0].Site, "@") {
+		t.Errorf("site %q leaked URL credentials", totals[0].Site)
+	}
+}
+
+// A bracketed IPv6 literal must survive port stripping intact.
+func TestGetSiteTotalsKeepsIPv6Literals(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+
+	insertRecordWithURL(t, q, device.ID, "http://[::1]:7600/extension/status",
+		day.Add(9*time.Hour), day.Add(9*time.Hour+time.Minute))
+	insertRecordWithURL(t, q, device.ID, "http://127.0.0.1:8080/devices",
+		day.Add(10*time.Hour), day.Add(10*time.Hour+time.Minute))
+
+	totals, err := q.GetSiteTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetSiteTotals: %v", err)
+	}
+
+	got := make(map[string]bool, len(totals))
+	for _, row := range totals {
+		got[row.Site] = true
+	}
+	for _, want := range []string{"[::1]", "127.0.0.1"} {
+		if !got[want] {
+			t.Errorf("missing %q; got %+v", want, totals)
+		}
 	}
 }
 
