@@ -354,3 +354,98 @@ test("navigating to an ignored site ends the previous segment", async () => {
     assert.equal(record.url.includes("private.example"), false, "an ignored URL was sent");
   }
 });
+
+// Adding a rule while its page is open must discard that segment. The
+// copy in session storage was captured before the rule existed.
+test("ignoring a site discards the segment already being timed", async () => {
+  const h = twoWindows();
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.state.session.current.startedAt -= 60_000;
+  assert.notEqual(h.current(), null, "a segment is running");
+
+  // What saving the options page does.
+  await h.context.api.storage.local.set({ ignored: ["focused.example"] });
+  await h.settled();
+
+  assert.equal(h.current(), null, "the running segment was dropped");
+  assert.equal(h.queue().length, 0, "and was not queued on the way out");
+  assert.equal(h.state.requests.length, 0);
+});
+
+// The queue is durable, so a rule added after a record was captured has
+// to reach back into it.
+test("ignoring a site purges matching records already queued", async () => {
+  const h = twoWindows({ respond: () => ({ ok: false, status: 503 }) });
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.state.session.current.startedAt -= 60_000;
+
+  // Delivery fails, so the record stays queued.
+  h.state.focusedWindowId = -1;
+  await h.fire("windows.onFocusChanged", -1);
+  await h.settled();
+  assert.equal(h.queue().length, 1, "the record is waiting to send");
+
+  await h.context.api.storage.local.set({ ignored: ["focused.example"] });
+  await h.settled();
+
+  assert.equal(h.queue().length, 0, "the queued record was purged");
+});
+
+// Belt and braces: even if a record reaches the queue some other way,
+// it must not be sent once its host is ignored.
+test("a queued record for an ignored host is never delivered", async () => {
+  const h = twoWindows();
+
+  h.state.local.ignored = ["secret.example"];
+  h.state.local.queue = [
+    {
+      url: "https://secret.example/page",
+      title: "Secret",
+      started_at: new Date(Date.now() - 120_000).toISOString(),
+      ended_at: new Date(Date.now() - 60_000).toISOString(),
+    },
+  ];
+
+  await h.fire("runtime.onStartup");
+  await h.settled();
+
+  assert.equal(h.state.requests.length, 0, "nothing was sent");
+  assert.equal(h.queue().length, 0, "and the record was dropped, not kept");
+});
+
+// The event page can be unloaded between the rule landing in storage
+// and the segment ending, so the change listener may never have run in
+// this instance. finalize rechecks for exactly that case.
+test("finalize rechecks the rules even if the change was never observed", async () => {
+  const h = twoWindows();
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.state.session.current.startedAt -= 60_000;
+
+  // Written directly, bypassing storage.onChanged: this is what a
+  // restarted event page sees -- rules already in storage, no
+  // notification in this instance.
+  h.state.local.ignored = ["focused.example"];
+
+  h.state.focusedWindowId = -1;
+  await h.fire("windows.onFocusChanged", -1);
+  await h.settled();
+
+  assert.equal(h.state.requests.length, 0, "nothing was sent");
+  assert.equal(h.queue().length, 0, "nothing was left queued");
+
+  // The stronger claim: the URL never reached storage at all. Relying
+  // on the delivery filter alone would persist it first and remove it
+  // afterwards.
+  const persisted = JSON.stringify(h.state.writes);
+  assert.equal(
+    persisted.includes("focused.example"),
+    false,
+    "an ignored URL was written to storage before being filtered",
+  );
+});

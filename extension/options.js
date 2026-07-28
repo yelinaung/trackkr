@@ -51,14 +51,16 @@ form.addEventListener("submit", async (event) => {
     granted = false;
   }
 
-  await api.storage.local.set({
-    daemonUrl,
-    token,
-    ignored: parseIgnoreList(ignoredEl.value),
-  });
+  const { patterns, invalid } = parseIgnoreList(ignoredEl.value);
+  await api.storage.local.set({ daemonUrl, token, ignored: patterns });
 
   if (!granted) {
     report("error", `Saved, but Firefox is still blocking ${origin}. Requests will fail until it is allowed.`);
+    return;
+  }
+  if (invalid.length > 0) {
+    // Saying so beats storing a rule that can never match.
+    report("error", `Saved, but these are not hostnames and were dropped: ${invalid.join(", ")}`);
     return;
   }
   report("ok", "Saved. The daemon should show as connected in the popup.");

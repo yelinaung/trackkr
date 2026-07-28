@@ -112,25 +112,78 @@
     return latest.filter((record) => !sent.has(recordKey(record)));
   }
 
-  // hostFor returns the comparable hostname of a URL: lowercase, no
-  // port, no "www." prefix. Returns "" for anything unparseable.
+  // hostFor returns the comparable hostname of a URL: lowercase,
+  // punycode, no port, no trailing DNS dot, no "www." prefix. Returns
+  // "" for anything unparseable.
   function hostFor(rawUrl) {
     try {
-      return new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, "");
+      return normalizeHost(new URL(rawUrl).hostname);
     } catch (err) {
       return "";
     }
   }
 
-  // parseIgnoreList turns the textarea into patterns: one per line,
-  // blanks and # comments dropped, normalized the same way hosts are so
-  // "WWW.Example.com " and "example.com" are the same rule.
+  function normalizeHost(host) {
+    return String(host).toLowerCase().replace(/\.$/, "").replace(/^www\./, "");
+  }
+
+  // canonicalIgnoreEntry turns one written rule into the form hosts are
+  // compared in, or "" if it cannot be one.
+  //
+  // The rule goes through the URL parser, exactly as a page URL does.
+  // Anything else means the two sides normalize differently: a rule
+  // written "bücher.de" would never match the hostname the browser
+  // reports, which is the punycode "xn--bcher-kva.de". Parsing also
+  // makes the forgiving forms work -- a pasted "https://bank.example",
+  // a "bank.example:443", a "bank.example/private" -- rather than
+  // storing them as rules that silently never match.
+  function canonicalIgnoreEntry(line) {
+    const trimmed = String(line).trim().replace(/^\*\./, "");
+    if (trimmed === "") {
+      return "";
+    }
+    const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+    try {
+      const { hostname } = new URL(candidate);
+      return hostname === "" ? "" : normalizeHost(hostname);
+    } catch (err) {
+      return "";
+    }
+  }
+
+  // parseIgnoreList turns the textarea into rules, reporting the lines
+  // it could not use rather than storing them as dead entries.
   function parseIgnoreList(text) {
-    return String(text || "")
-      .split("\n")
-      .map((line) => line.trim().toLowerCase())
-      .filter((line) => line !== "" && !line.startsWith("#"))
-      .map((line) => line.replace(/^\*\./, "").replace(/^www\./, ""));
+    const patterns = [];
+    const invalid = [];
+
+    for (const raw of String(text || "").split("\n")) {
+      const line = raw.trim();
+      if (line === "" || line.startsWith("#")) {
+        continue;
+      }
+      const host = canonicalIgnoreEntry(line);
+      if (host === "") {
+        invalid.push(line);
+        continue;
+      }
+      if (!patterns.includes(host)) {
+        patterns.push(host);
+      }
+    }
+    return { patterns, invalid };
+  }
+
+  // filterIgnored drops queued records whose host is now ignored.
+  //
+  // Rules added after a record was queued must still apply: the queue
+  // is durable, so without this a sensitive page recorded while the
+  // daemon was down would be delivered anyway once it came back.
+  function filterIgnored(records, patterns) {
+    if (!patterns || patterns.length === 0) {
+      return records;
+    }
+    return records.filter((record) => !isIgnored(record.url, patterns));
   }
 
   // isIgnored reports whether a URL should never be recorded.
@@ -177,8 +230,11 @@
     recordKey,
     removeDelivered,
     hostFor,
+    normalizeHost,
+    canonicalIgnoreEntry,
     parseIgnoreList,
     isIgnored,
+    filterIgnored,
     normalizeDaemonUrl,
     originFor,
   };

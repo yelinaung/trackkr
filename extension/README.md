@@ -29,11 +29,27 @@ per line. A host covers its subdomains, so `gov.sg` also ignores
 through would be unusable. Blank lines and `#` comments are dropped, a
 leading `*.` or `www.` is stripped, and matching is case-insensitive.
 
+Rules are canonicalized through the same URL parser that reads page
+addresses, so both sides normalize identically. That matters for
+internationalized domains: a rule written `bücher.de` is stored as
+`xn--bcher-kva.de`, which is what the browser actually reports. It also
+makes forgiving forms work -- `https://bank.example`,
+`bank.example:443`, `bank.example/private` all reduce to the hostname --
+and a line that cannot be a host is reported back rather than saved as
+a rule that never matches.
+
 The check runs in the browser, before anything is stored or queued.
 That placement is the point: an ignored page never reaches the daemon,
 so it cannot appear in the daemon's logs, the database, or the
 dashboard. Filtering on the daemon instead would mean the URL had
 already left the browser.
+
+Rules apply to what is already captured, not only to what comes next.
+Adding a rule discards the segment being timed at that moment, purges
+matching records from the unsent queue, and filters again immediately
+before delivery. Each of those covers a different gap: a page open when
+the rule is added, a record queued while the daemon was down, and an
+event page that restarted without ever seeing the change notification.
 
 ## Manifest decisions
 

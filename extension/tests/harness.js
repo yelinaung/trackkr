@@ -50,11 +50,18 @@ function createHarness(options = {}) {
     idleState,
     permitted,
     requests: [],
+    writes: [],
     // Set by a test to hold a fetch open.
     pendingFetch: null,
   };
 
   const listeners = new Map();
+
+  // Promises from listeners the fake invokes on its own (storage
+  // changes). A test cannot await those through fire(), and the
+  // background script's chain is a `let` binding, which a vm script
+  // does not expose on the context object.
+  const pending = [];
 
   function event(name) {
     return {
@@ -89,9 +96,28 @@ function createHarness(options = {}) {
           return out;
         },
         async set(entries) {
+          // Every write is logged so a test can assert what was
+          // persisted, not merely what survived. An ignored URL must
+          // never reach storage at all, even for an instant.
+          state.writes.push(JSON.parse(JSON.stringify(entries)));
+
+          const changes = {};
+          for (const [key, newValue] of Object.entries(entries)) {
+            changes[key] = { oldValue: state.local[key], newValue };
+          }
           Object.assign(state.local, entries);
+
+          // Real storage notifies listeners without awaiting them.
+          // Awaiting here deadlocks: a handler already inside the
+          // serialization chain writes storage, the listener appends to
+          // that same chain, and the write waits on itself.
+          const listener = listeners.get("storage.onChanged");
+          if (listener) {
+            pending.push(Promise.resolve(listener(changes, "local")));
+          }
         },
       },
+      onChanged: event("storage.onChanged"),
     },
 
     tabs: {
@@ -202,9 +228,12 @@ function createHarness(options = {}) {
       return listener(...args);
     },
 
-    // settled waits for the background script's serialization chain to
-    // drain, which is what makes concurrent events assertable.
+    // settled waits for everything in flight: handlers the test fired,
+    // and listeners the fake invoked itself.
     async settled() {
+      while (pending.length > 0) {
+        await pending.shift();
+      }
       await context.chain;
       await context.chain;
     },

@@ -127,6 +127,13 @@ async function finalize(endedAt = Date.now()) {
     return;
   }
 
+  // Recheck at the last moment. A rule can be added while this segment
+  // is open, and the copy in session storage was captured before that.
+  const { ignored } = await getSettings();
+  if (isIgnored(record.url, ignored)) {
+    return;
+  }
+
   const queue = await readQueue();
   queue.push(record);
   await writeQueue(queue);
@@ -136,12 +143,20 @@ async function finalize(endedAt = Date.now()) {
 // ingest shape so draining a backlog costs a single request. The queue
 // is only cleared once the daemon has accepted it.
 async function deliver() {
-  const batch = await readQueue();
+  const { daemonUrl, token, ignored } = await getSettings();
+
+  // Filter immediately before sending, not only when queueing. The
+  // queue is durable, so a page recorded while the daemon was down
+  // would otherwise still be delivered after its host was ignored.
+  const queued = await readQueue();
+  const batch = filterIgnored(queued, ignored);
+  if (batch.length !== queued.length) {
+    await writeQueue(batch);
+  }
   if (batch.length === 0) {
     return true;
   }
 
-  const { daemonUrl, token } = await getSettings();
   if (!token || !(await hasHostPermission(daemonUrl))) {
     return false;
   }
@@ -270,6 +285,32 @@ api.tabs.onRemoved.addListener((tabId) =>
     if (current && current.tabId === tabId) {
       await finalize();
       await deliver();
+    }
+  }),
+);
+
+// Rules changing must affect what is already captured, not just what
+// comes next. Without this, adding a rule while its page is open
+// leaves the segment in session storage, and finalize would queue and
+// send it.
+api.storage.onChanged.addListener((changes, area) =>
+  serialize(async () => {
+    if (area !== "local" || !changes.ignored) {
+      return;
+    }
+    const patterns = changes.ignored.newValue || [];
+
+    // Discarded, not finalized: a newly ignored page must leave no
+    // record behind at all.
+    const current = await readCurrent();
+    if (current && isIgnored(current.url, patterns)) {
+      await writeCurrent(null);
+    }
+
+    const queued = await readQueue();
+    const kept = filterIgnored(queued, patterns);
+    if (kept.length !== queued.length) {
+      await writeQueue(kept);
     }
   }),
 );

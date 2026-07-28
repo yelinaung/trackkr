@@ -251,9 +251,9 @@ test("parseIgnoreList reads the textarea forgivingly", () => {
     "www.reddit.com",
   ].join("\n");
 
-  assert.deepEqual(parseIgnoreList(text), ["bank.example", "gov.sg", "reddit.com"]);
-  assert.deepEqual(parseIgnoreList(""), []);
-  assert.deepEqual(parseIgnoreList(undefined), []);
+  assert.deepEqual(parseIgnoreList(text).patterns, ["bank.example", "gov.sg", "reddit.com"]);
+  assert.deepEqual(parseIgnoreList("").patterns, []);
+  assert.deepEqual(parseIgnoreList(undefined).patterns, []);
 });
 
 // A pattern has to cover subdomains, or ignoring a bank means listing
@@ -276,4 +276,61 @@ test("isIgnored matches a host and its subdomains", () => {
   assert.equal(isIgnored("https://gov.sg/", []), false);
   assert.equal(isIgnored("https://gov.sg/", undefined), false);
   assert.equal(isIgnored("not a url", patterns), false);
+});
+
+// Rules and page URLs must normalize identically, or a rule that looks
+// right never matches.
+test("ignore rules canonicalize through the URL parser", () => {
+  const { canonicalIgnoreEntry, hostFor, isIgnored } = require("../logic.js");
+
+  const cases = {
+    "bank.example": "bank.example",
+    "https://bank.example": "bank.example",
+    "bank.example:443": "bank.example",
+    "bank.example/private": "bank.example",
+    "WWW.Reddit.com": "reddit.com",
+    "*.gov.sg": "gov.sg",
+    "example.com.": "example.com",
+    // The browser reports punycode, so a Unicode rule has to become it.
+    "bücher.de": "xn--bcher-kva.de",
+    "not a host": "",
+  };
+
+  for (const [entry, want] of Object.entries(cases)) {
+    assert.equal(canonicalIgnoreEntry(entry), want, entry);
+  }
+
+  // The pair that motivated this: both sides land on the same string.
+  assert.equal(hostFor("https://bücher.de/x"), canonicalIgnoreEntry("bücher.de"));
+  assert.equal(isIgnored("https://bücher.de/x", [canonicalIgnoreEntry("bücher.de")]), true);
+  // A trailing DNS dot is the same host.
+  assert.equal(isIgnored("https://example.com./x", ["example.com"]), true);
+});
+
+test("parseIgnoreList reports lines it cannot use", () => {
+  const { parseIgnoreList } = require("../logic.js");
+
+  const { patterns, invalid } = parseIgnoreList(
+    ["bank.example", "not a host", "# note", "", "https://reddit.com", "bank.example"].join("\n"),
+  );
+
+  assert.deepEqual(patterns, ["bank.example", "reddit.com"], "deduplicated and canonical");
+  assert.deepEqual(invalid, ["not a host"], "the unusable line is reported, not stored");
+});
+
+test("filterIgnored drops queued records for ignored hosts", () => {
+  const { filterIgnored } = require("../logic.js");
+
+  const queue = [
+    { url: "https://keep.example/a" },
+    { url: "https://login.bank.example/session" },
+    { url: "https://keep.example/b" },
+  ];
+
+  assert.deepEqual(
+    filterIgnored(queue, ["bank.example"]).map((r) => r.url),
+    ["https://keep.example/a", "https://keep.example/b"],
+  );
+  assert.equal(filterIgnored(queue, []).length, 3);
+  assert.equal(filterIgnored(queue, undefined).length, 3);
 });
