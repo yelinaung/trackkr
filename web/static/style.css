@@ -56,10 +56,12 @@
   --radius: 10px;
   --lane-height: 26px;
   /* The axis and the lanes must reserve the same widths, or the hour
-     marks drift away from the bars once the minimums bind. */
+     marks drift away from the bars once the minimums bind. The chart is
+     wide enough that a few minutes is a visible sliver; it scrolls
+     horizontally rather than compressing a day into a phone width. */
   --lane-label: 6.25rem;
   --lane-gap: 0.75rem;
-  --chart-min: 33rem;
+  --chart-min: 72rem;
 
   /* Bootstrap reads these; overriding them retints its components. */
   --bs-body-bg: var(--paper);

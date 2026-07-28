@@ -31,6 +31,17 @@ mkdir -p "$DEV_DIR"
 
 say() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 
+# A stale server from a previous run holds the port and the new one
+# exits, leaving the old binary serving while you read the new logs --
+# which is exactly as confusing as it sounds. Fail here instead.
+for port in "$DEV_PORT" 7600; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "port $port is already in use; stop the previous run first:" >&2
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN | tail -n +2 >&2
+    exit 1
+  fi
+done
+
 say "starting postgres"
 docker compose up -d db >/dev/null
 
@@ -99,6 +110,9 @@ SERVER_PID=$!
 
 cleanup() {
   say "stopping"
+  # go run execs a child, so killing the process group is what actually
+  # stops the server rather than orphaning it on the port.
+  kill -- "-$$" 2>/dev/null || true
   kill "$SERVER_PID" 2>/dev/null || true
   wait "$SERVER_PID" 2>/dev/null || true
 }

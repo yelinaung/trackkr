@@ -111,6 +111,25 @@ func runCreateDevice(ctx context.Context, queries *db.Queries, logger *zerolog.L
 		logger.Fatal().Err(err).Str("username", username).Msg("no such user")
 	}
 
+	// Reuse a device of the same name rather than adding another.
+	// Re-running a setup script should be idempotent; otherwise the
+	// device filter fills up with identically named entries and only
+	// the newest one has any activity.
+	existing, err := queries.ListDevicesByUser(ctx, user.ID)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to list devices")
+	}
+	for i := range existing {
+		if existing[i].Name == name {
+			logger.Info().
+				Int64("id", existing[i].ID).
+				Str("name", name).
+				Msg("device already exists, reusing it")
+			fmt.Println(existing[i].APIKey)
+			return
+		}
+	}
+
 	apiKey, err := server.GenerateAPIKey()
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to generate api key")

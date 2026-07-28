@@ -159,9 +159,17 @@ func TestLayoutGivesShortRecordsAMinimumWidth(t *testing.T) {
 		EndedAt:   time.Date(2026, 5, 4, 10, 0, 5, 0, loc),
 	}}
 
-	bar := layout(recs, nil, day).Lanes[0].Bars[0]
-	if bar.Width < minBarMinutes {
-		t.Errorf("Width = %v, want at least %v", bar.Width, minBarMinutes)
+	chart := layout(recs, nil, day)
+	bar := chart.Lanes[0].Bars[0]
+
+	// The floor scales with the day so a bar is never sub-pixel: a
+	// fixed one-minute floor renders at under half a pixel.
+	want := chart.SpanMin * minBarFraction
+	if bar.Width < want {
+		t.Errorf("Width = %v, want at least %v", bar.Width, want)
+	}
+	if bar.Width > 5 {
+		t.Errorf("Width = %v, want the floor to stay small enough to read as brief", bar.Width)
 	}
 }
 

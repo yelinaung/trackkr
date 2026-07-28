@@ -8,8 +8,15 @@ import (
 	"github.com/yelinaung/trackkr/internal/db"
 )
 
-// minBarMinutes keeps a very short record wide enough to see and hover.
-const minBarMinutes = 1.0
+// minBarFraction floors a bar's width as a fraction of the day rather
+// than as a fixed number of minutes.
+//
+// A one-minute floor is meaningless on screen: the chart is 1440 units
+// wide, so at its minimum rendered width a minute is under half a
+// pixel and a real visit is invisible. This is a visibility affordance,
+// not a claim about duration -- the tooltip carries the true range, and
+// the totals below the chart are computed from the data, not the bars.
+const minBarFraction = 1.0 / 480.0
 
 // Bar is one activity block, positioned in minutes from the start of the
 // day. Geometry travels to the template as SVG presentation attributes,
@@ -125,8 +132,8 @@ func toBar(rec *db.ActivityRecordRow, start, end time.Time, span float64, index 
 
 	x := from.Sub(start).Minutes()
 	width := to.Sub(from).Minutes()
-	if width < minBarMinutes {
-		width = minBarMinutes
+	if minWidth := span * minBarFraction; width < minWidth {
+		width = minWidth
 	}
 	if x+width > span {
 		width = span - x
