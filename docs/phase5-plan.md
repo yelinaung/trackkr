@@ -17,23 +17,30 @@ the reporter, the queue, and the extension listener are platform-blind.
 
 ```
 internal/tracker/
-  window_darwin.go           # frontmost app + title, cgo
-  window_darwin_test.go
-  idle_darwin.go             # CGEventSource idle, cgo
-  idle_darwin_test.go
-  macos.m                    # the Objective-C cgo needs for NSWorkspace
-  permissions_darwin.go      # Accessibility trust state, degradation
-  permissions_darwin_test.go
-  window_nocgo_darwin.go     # darwin && !cgo fallback
+  titles.go                    # portable: trust state, recheck interval
+  titles_test.go               # no suffix, so Linux CI runs it
+  window_darwin.go             # //go:build darwin && cgo
+  idle_darwin.go               # //go:build darwin && cgo
+  macos_darwin.m               # //go:build darwin && cgo
+  platform_nocgo_darwin.go     # //go:build darwin && !cgo, both factories
 deploy/
-  com.trackkr.daemon.plist   # launchd user agent
-  trackkr.app/               # bundle skeleton: Info.plist, wrapper
+  com.trackkr.daemon.plist     # launchd user agent
+  trackkr.app/                 # bundle skeleton: Info.plist, wrapper
 scripts/
-  bundle-macos.sh            # build, assemble the .app, ad-hoc sign
+  bundle-macos.sh              # build, assemble the .app, ad-hoc sign
 ```
 
-Modified: `window_other.go` and `idle_other.go` (build tags become
-`!linux && !darwin`), `mise.toml` (a bundling task), `docs/plan.md`.
+Modified: `window.go` (takes ownership of `ErrUnsupportedPlatform`),
+`window_other.go` and `idle_other.go` (tags become
+`!linux && !darwin`), `config.go` (macOS keys), `cmd/trackkrd/main.go`
+and `main_test.go` (the detector factories take config), `mise.toml`
+(a bundling task), `docs/plan.md`.
+
+Every filename above matters. Go applies implicit build constraints
+from `_darwin` suffixes, and `_test.go` files inherit them, so anything
+named `*_darwin_test.go` never runs on the Linux CI runner. The
+portable decision logic therefore lives in `titles.go`, with no suffix
+at all.
 
 ## What Needs Permission, And What Does Not
 
@@ -75,7 +82,7 @@ as on Linux.
 
 `NSWorkspace.sharedWorkspace.frontmostApplication` gives
 `localizedName` and `bundleIdentifier` with no permission. Objective-C
-is not callable from cgo directly, so `macos.m` holds a small C
+is not callable from cgo directly, so `macos_darwin.m` holds a small C
 function that returns both as C strings and the Go side owns the
 freeing.
 
@@ -96,10 +103,12 @@ one; a window record never does. That distinction is honest on both
 platforms, survives the app being renamed, and needs no invented
 suffix on the app name. Phase 6's note in `plan.md` should say so.
 
-### Step 3: `permissions_darwin.go` -- titles, and living without them
+### Step 3: `titles.go` -- titles, and living without them
 
 `AXIsProcessTrusted()` reports whether the process may read other
-applications' UI. The detector checks it, and:
+applications' UI. The check itself is one cgo call; everything decided
+around it is ordinary Go in `titles.go`, behind a small interface the
+tests can substitute. The detector checks trust, and:
 
 - trusted: read `kAXFocusedWindowAttribute` then `kAXTitleAttribute`
   from `AXUIElementCreateApplication(pid)`, and report app plus title;
@@ -119,15 +128,39 @@ record at all.
 
 ### Step 4: build tags and the no-cgo path
 
-`window_other.go` and `idle_other.go` become `!linux && !darwin`.
+`CGO_ENABLED=0 GOOS=darwin go build ./...` is how this repo checks
+portability from the Linux runner, and cgo cannot cross-compile without
+an SDK. Keeping that check working is fiddlier than one fallback file,
+because four separate things break:
 
-cgo is the wrinkle for CI. The Linux runner cross-compiles with
-`GOOS=linux` today and `GOOS=darwin go build ./...` is part of how this
-repo checks portability, but cgo cannot cross-compile without an SDK.
-So `window_nocgo_darwin.go` carries `//go:build darwin && !cgo` and
-returns `ErrUnsupportedPlatform`, letting `CGO_ENABLED=0 GOOS=darwin`
-compile the tree exactly as it does now. The real build on a Mac has
-cgo on by default.
+1. **Both factories disappear, not one.** `idle_darwin.go` imports C,
+   so it is excluded without cgo, and `idle_other.go` no longer covers
+   darwin once its tag becomes `!linux && !darwin`. That leaves
+   `NewIdleDetectorOrNop` undefined, exactly as `NewWindowDetector`
+   would be. One `platform_nocgo_darwin.go`
+   (`//go:build darwin && !cgo`) supplies both.
+
+2. **The sentinel goes with them.** `ErrUnsupportedPlatform` is
+   currently declared in `window_other.go`, which stops covering darwin
+   under the new tag -- so the no-cgo fallback would return a symbol
+   that no longer exists. Move the declaration to `window.go`, which
+   has no build constraint and already holds `ErrNoActiveWindow`. It
+   belongs with the interface anyway.
+
+3. **The Objective-C file is a build input.** The go tool refuses
+   native source files when cgo is off, so an unconstrained `macos.m`
+   fails the package load before any Go file is considered. It is named
+   `macos_darwin.m` and carries `//go:build darwin && cgo`; the go tool
+   honours build constraints in C and Objective-C files as it does in
+   Go ones.
+
+4. **A test file inherits its filename's constraint.** Anything ending
+   `_darwin_test.go` is invisible to the Linux runner, which is why the
+   portable logic and its tests live in `titles.go` and
+   `titles_test.go`.
+
+The real build on a Mac has cgo on by default and picks up the darwin
+implementations without any flags.
 
 ### Step 5: the `.app` bundle and launchd
 
@@ -148,7 +181,7 @@ a personal machine; a Developer ID matters only for distribution.
 daemon: it needs the logged-in user's session to see the frontmost
 application at all.
 
-### Step 6: config and docs
+### Step 6: config, and getting it to the detector
 
 New client keys, defaulting to today's behaviour so an existing config
 keeps working:
@@ -157,6 +190,24 @@ keeps working:
 macos_read_titles = true                # false = app names only
 macos_prompt_for_accessibility = false  # true = ask on first run
 ```
+
+Exposing them is not enough: `cmd/trackkrd` holds
+`newWindow func() (tracker.WindowDetector, error)`, a zero-argument
+factory, so nothing the config says can reach the darwin
+implementation. Both factories gain a config parameter:
+
+```go
+type detectors struct {
+    newWindow func(*tracker.Config) (tracker.WindowDetector, error)
+    newIdle   func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector
+}
+```
+
+Every implementation changes signature -- linux, darwin, the no-cgo
+darwin fallback, the `!linux && !darwin` fallback -- along with
+`platformDetectors()` and the fakes in `main_test.go`. Linux ignores
+the config, which is fine; the alternative is a package-level setter,
+and a hidden global is worse than an ignored parameter.
 
 `docs/plan.md` gets the Phase 5 status, the URL-based deduplication
 note, and the macOS section of the daemon design.
@@ -169,13 +220,17 @@ this testable is the same one the extension uses: keep the cgo surface
 to a single function that returns `(app, title string, err error)`, and
 put every decision above it in ordinary Go.
 
-That leaves these covered by tests, on any platform:
+That leaves these covered by tests in `titles_test.go` and
+`config_test.go`, both of which the Linux runner executes:
 
 - the degradation state machine: trusted, not trusted, and the
   transition when permission is granted mid-run, driven through an
   injected trust checker;
 - the re-check interval, so a granted permission is noticed without a
   restart and without one syscall per poll;
+- `macos_read_titles = false` short-circuiting the trust check
+  entirely, which is the only way to prove the config reaches the
+  detector;
 - `ErrNoActiveWindow` mapping for an empty app name;
 - the config keys and their defaults.
 
@@ -193,7 +248,9 @@ Phase 6 has a signal it can use.
 
 1. `mise test` and `mise test-race` pass; coverage stays at or above 50%.
 2. `mise lint` clean, and `CGO_ENABLED=0 GOOS=darwin go build ./...`
-   still compiles on the Linux runner.
+   still compiles on the Linux runner -- the check that the no-cgo
+   fallback, the relocated sentinel, and the constrained `.m` file all
+   line up.
 3. `mise run-daemon` on this Mac logs neither `window detection
    unavailable` nor `idle detection not implemented`.
 4. Switch between applications and confirm records appear on the
