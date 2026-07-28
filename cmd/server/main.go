@@ -51,10 +51,13 @@ func main() {
 		case "create-user":
 			runCreateUser(ctx, queries, &logger)
 			return
+		case "create-device":
+			runCreateDevice(ctx, queries, &logger)
+			return
 		default:
 			logger.Fatal().
 				Str("command", os.Args[1]).
-				Msg("unknown command; usage: trackkr-server [create-user]")
+				Msg("unknown command; usage: trackkr-server [create-user|create-device]")
 		}
 	}
 
@@ -82,6 +85,48 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Fatal().Err(err).Msg("server error")
 	}
+}
+
+// runCreateDevice registers a device and prints its API key.
+//
+// The key goes to stdout on its own line and everything else to the
+// logger, so a script can capture it without parsing log output. That
+// is the whole reason this exists: without it, automating a dev setup
+// means inserting rows into the database by hand.
+func runCreateDevice(ctx context.Context, queries *db.Queries, logger *zerolog.Logger) {
+	if len(os.Args) < 4 {
+		fmt.Fprintf(os.Stderr, "usage: trackkr-server create-device <username> <device-name> [type]\n")
+		os.Exit(1)
+	}
+
+	username := os.Args[2]
+	name := os.Args[3]
+	deviceType := "desktop"
+	if len(os.Args) > 4 {
+		deviceType = os.Args[4]
+	}
+
+	user, err := queries.GetUserByUsername(ctx, username)
+	if err != nil {
+		logger.Fatal().Err(err).Str("username", username).Msg("no such user")
+	}
+
+	apiKey, err := server.GenerateAPIKey()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to generate api key")
+	}
+
+	device, err := queries.CreateDevice(ctx, user.ID, name, deviceType, apiKey)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to create device")
+	}
+
+	logger.Info().
+		Int64("id", device.ID).
+		Str("name", device.Name).
+		Msg("device created")
+
+	fmt.Println(device.APIKey)
 }
 
 func runCreateUser(ctx context.Context, queries *db.Queries, logger *zerolog.Logger) {

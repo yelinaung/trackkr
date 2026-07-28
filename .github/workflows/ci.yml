@@ -200,6 +200,12 @@ jobs:
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # Explicit because this job introduced the first non-Go tools:
+      # the runner has Go and golangci-lint already, but not node or
+      # web-ext, so the tasks below would fail on a fresh runner.
+      - name: Install pinned tools
+        run: mise install
+
       # Mozilla's own validator: it checks the manifest and the APIs the
       # code uses against strict_min_version, which no amount of reading
       # the source will tell you.

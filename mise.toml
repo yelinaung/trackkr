@@ -74,6 +74,10 @@ run = [
   "git push forgejo \"$(git branch --show-current)\"",
 ]
 
+[tasks.dev]
+description = "Run the whole stack: db, server, dev account, device, and daemon"
+run = ["./scripts/dev.sh"]
+
 [tasks.db]
 description = "Start PostgreSQL via docker-compose"
 run = ["docker compose up -d db"]
