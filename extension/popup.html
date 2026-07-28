@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>trackkr</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+<h1 class="title">trackkr</h1>
+
+<p id="state" class="state state--checking">Checking…</p>
+<p id="detail" class="detail"></p>
+
+<!-- Only shown for the permission state: permissions.request() needs a
+     user gesture, so it cannot come from the background script. -->
+<button id="grant" class="btn" hidden>Grant access to the daemon</button>
+
+<p class="queue"><span id="queue">0</span> record(s) waiting to send</p>
+
+<p class="links"><a href="#" id="options">Settings</a></p>
+
+<script src="common.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

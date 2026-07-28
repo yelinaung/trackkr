@@ -1,0 +1,80 @@
+/* The extension ships its own styles; it does not share the dashboard
+   stylesheet, which assumes Bootstrap underneath it. */
+
+:root {
+  --ink: #16191d;
+  --ink-soft: #5b6470;
+  --paper: #ffffff;
+  --edge: #e4e6e9;
+  --ok: #0f6f5c;
+  --warn: #b45309;
+  --error: #9b2c2c;
+}
+
+body {
+  width: 17rem;
+  margin: 0;
+  padding: 0.9rem 1rem 1rem;
+  font: 13px/1.45 system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.title {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
+}
+
+.state {
+  margin: 0 0 0.2rem;
+  font-weight: 600;
+}
+
+.state::before {
+  content: "";
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  background: var(--ink-soft);
+}
+
+.state--ok::before { background: var(--ok); }
+.state--error::before { background: var(--error); }
+.state--permission::before,
+.state--setup::before { background: var(--warn); }
+
+.detail {
+  margin: 0 0 0.7rem;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.btn {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--paper);
+  background: var(--ok);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ok);
+  outline-offset: 2px;
+}
+
+.queue,
+.links {
+  margin: 0.7rem 0 0;
+  color: var(--ink-soft);
+}
+
+.links a {
+  color: var(--ok);
+}

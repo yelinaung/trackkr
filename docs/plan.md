@@ -40,7 +40,8 @@ Build a cross-platform activity/time tracking app that monitors active windows a
   vendored, no Bootstrap JS), inline SVG timeline bars
 - **Database**: PostgreSQL 18 (`postgres:18-alpine`, digest-pinned in docker-compose)
 - **Desktop client**: Go daemon, platform-specific window/idle detection
-- **Browser extension**: Firefox WebExtension (Manifest V2), talks to local daemon on localhost:7600
+- **Browser extension**: Firefox WebExtension (Manifest V3), talks to a
+  token-authenticated loopback listener on 127.0.0.1:7600
 - **Deployment**: Docker (multi-stage build), docker-compose for dev
 - **Auto-start**: systemd (Linux), launchd (macOS)
 - **Task runner**: mise
@@ -103,10 +104,11 @@ trackkr/
 │       ├── htmx.min.js             # 2.0.x, exact version pinned
 │       └── fonts/
 ├── extension/
-│   ├── manifest.json
-│   ├── background.js
-│   ├── popup.html
-│   ├── popup.js
+│   ├── manifest.json               # MV3
+│   ├── common.js                   # shared helpers
+│   ├── background.js               # tab, focus, and idle listeners
+│   ├── popup.html / popup.js / popup.css
+│   ├── options.html / options.js / options.css
 │   └── icons/
 ├── deploy/
 │   ├── trackkrd.service            # systemd unit
@@ -114,7 +116,8 @@ trackkr/
 ├── docs/
 │   ├── plan.md                     # This file
 │   ├── phase2-plan.md              # Linux daemon design
-│   └── phase3-plan.md              # Web dashboard design
+│   ├── phase3-plan.md              # Web dashboard design
+│   └── phase4-plan.md              # Firefox extension design
 ├── go.mod
 ├── go.sum
 ├── mise.toml                       # Task runner
@@ -239,11 +242,28 @@ idle_threshold = "5m"
 
 ## Firefox Extension
 
-- Talks to local daemon on `http://localhost:7600/extension/activity` (no auth needed, localhost only)
-- Listens for `tabs.onActivated` and `tabs.onUpdated`
-- Skips incognito tabs
-- Sends previous tab as a completed record when tab changes
-- Daemon enriches with `app_name = "Firefox"` and feeds into reporter queue
+- Talks to the daemon at `http://127.0.0.1:7600/extension/activity`, with a
+  bearer token from `trackkrd -print-extension-token`. "Localhost only" is
+  not sufficient on its own: any local process can post to the port, and a
+  visited web page can attempt a cross-origin write, so the listener also
+  requires `Content-Type: application/json` (which forces a preflight it
+  never answers) and rejects any `Origin` that is not `moz-extension://`
+- Manifest V3, so the background script is a non-persistent event page and
+  Firefox treats host permissions as optional — the extension requests the
+  daemon origin at runtime and the popup reports when it is missing
+- Listens for `tabs.onActivated`, `tabs.onUpdated`, `windows.onFocusChanged`,
+  and `idle.onStateChanged`, so leaving the browser or the desk both end the
+  current segment as the desktop tracker's idle handling does
+- Skips private windows entirely, along with `about:`, `file:`, and
+  extension pages
+- Sends the previous tab as a completed record when the tab changes; the
+  unsent queue lives in `storage.local` so it survives a browser restart,
+  while the in-flight tab lives in `storage.session` so a stale focus does
+  not
+- Daemon enriches with `app_name = "Firefox"` and feeds into the reporter
+  queue. The desktop tracker separately records `firefox` from WM_CLASS, so
+  focused browsing is counted twice until Phase 6 deduplicates; the case
+  difference keeps the two visible as distinct rows
 
 ---
 
@@ -314,7 +334,7 @@ admin password hash: users live in the `users` table, created with
 4. Device management page (create device + API key)
 5. Embed templates/static with Go embed
 
-### Phase 4: Firefox Extension
+### Phase 4: Firefox Extension (in progress — see `phase4-plan.md`)
 1. Daemon localhost endpoint on :7600
 2. Extension background script with tab listeners
 3. Popup showing connection status

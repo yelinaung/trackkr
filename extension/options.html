@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>trackkr settings</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+<h1 class="title">trackkr</h1>
+
+<form id="form" class="form">
+  <label for="daemonUrl">Daemon URL</label>
+  <input id="daemonUrl" name="daemonUrl" type="url" placeholder="http://127.0.0.1:7600" required>
+  <p class="hint">Must match <code>extension_addr</code> in the daemon's config.</p>
+
+  <label for="token">Token</label>
+  <input id="token" name="token" type="password" autocomplete="off" required>
+  <p class="hint">
+    Generate with <code>trackkrd -print-extension-token</code>, then put the
+    same value in <code>extension_token</code>.
+  </p>
+
+  <button type="submit" class="btn">Save and grant access</button>
+</form>
+
+<p id="status" class="status" role="status"></p>
+
+<script src="common.js"></script>
+<script src="options.js"></script>
+</body>
+</html>

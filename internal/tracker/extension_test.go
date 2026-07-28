@@ -17,8 +17,10 @@ import (
 )
 
 const (
-	//nolint:gosec // G101: a fixture, not a credential.
-	testExtensionToken = "b8b0c1d2e3f405162738495a6b7c8d9e"
+	// Deliberately low-entropy and self-describing: a random-looking hex
+	// fixture trips both gosec and gitleaks, and an ignore entry then
+	// has to be carried forever for a value that was never a secret.
+	testExtensionToken = "test-token-not-a-real-secret"
 	testPageURL        = "https://example.com/a"
 )
 

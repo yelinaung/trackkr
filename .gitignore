@@ -16,11 +16,11 @@ dist/
 # Output of go coverage
 *.out
 *.cover
-*.html
-# The dashboard templates are source, not coverage output, and go:embed
-# fails to compile without them.
-!web/templates/*.html
-!web/templates/partials/*.html
+# Coverage HTML only. A blanket *.html swallowed the dashboard templates
+# once already, and would have taken the extension's pages next; keep the
+# rule pinned to the artefact it is actually for.
+/coverage.html
+/cover.html
 
 # Go workspace
 go.work

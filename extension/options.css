@@ -1,0 +1,82 @@
+/* Standalone styles, as with the popup. */
+
+:root {
+  --ink: #16191d;
+  --ink-soft: #5b6470;
+  --paper: #ffffff;
+  --edge: #e4e6e9;
+  --ok: #0f6f5c;
+  --error: #9b2c2c;
+}
+
+body {
+  max-width: 30rem;
+  margin: 0;
+  padding: 1.2rem;
+  font: 14px/1.5 system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.title {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+}
+
+.form {
+  display: grid;
+  gap: 0.25rem;
+}
+
+label {
+  margin-top: 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+input {
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+}
+
+input:focus-visible,
+.btn:focus-visible {
+  outline: 2px solid var(--ok);
+  outline-offset: 2px;
+}
+
+.hint {
+  margin: 0.1rem 0 0;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9em;
+}
+
+.btn {
+  margin-top: 1.1rem;
+  padding: 0.5rem 0.8rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--paper);
+  background: var(--ok);
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.status {
+  margin-top: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.status--ok { color: var(--ok); }
+.status--error { color: var(--error); }
