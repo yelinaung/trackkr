@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -100,19 +101,21 @@ func run(
 			Msg("window detection unavailable; reporting browser activity only")
 	}
 
-	client := &http.Client{Timeout: httpTimeout}
-	reporter := tracker.NewReporter(cfg, client, logger)
-
-	// Bind before anything starts: a squatted port should fail startup
-	// the way invalid config does, not leave a daemon running with no
-	// activity source at all.
-	var ext *tracker.ExtensionServer
+	// Bind before constructing the reporter, not after. A squatted port
+	// must fail startup the way invalid config does, and NewReporter
+	// loads pending.json and deletes it -- so returning an error after
+	// that point would throw away records that were safe on disk.
+	var extListener net.Listener
 	if cfg.ExtensionEnabled {
-		ext = tracker.NewExtensionServer(cfg, reporter, logger)
-		if err := ext.Listen(ctx); err != nil {
+		extListener, err = tracker.ListenExtension(ctx, cfg.ExtensionAddr)
+		if err != nil {
 			return err
 		}
+		defer func() { _ = extListener.Close() }()
 	}
+
+	client := &http.Client{Timeout: httpTimeout}
+	reporter := tracker.NewReporter(cfg, client, logger)
 
 	var trk *tracker.Tracker
 	if window != nil {
@@ -131,7 +134,8 @@ func run(
 	// still fatal, since the daemon would otherwise run without the
 	// feature the config asked for.
 	listenerErr := make(chan error, 1)
-	if ext != nil {
+	if extListener != nil {
+		ext := tracker.NewExtensionServer(cfg, extListener, reporter, logger)
 		wg.Go(func() {
 			if err := ext.Serve(ctx); err != nil {
 				listenerErr <- err

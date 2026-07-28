@@ -47,7 +47,7 @@ func testExtensionServer(t *testing.T) (*ExtensionServer, *fakeEnqueuer) {
 		ExtensionAddr:  defaultExtensionAddr,
 		ExtensionToken: testExtensionToken,
 	}
-	return NewExtensionServer(cfg, queue, &logger), queue
+	return NewExtensionServer(cfg, nil, queue, &logger), queue
 }
 
 // activityRequest builds a well-formed request, so each test varies one
@@ -348,7 +348,7 @@ func TestExtensionStatus(t *testing.T) {
 func TestExtensionRejectsEverythingWithoutAConfiguredToken(t *testing.T) {
 	t.Parallel()
 	logger := zerolog.Nop()
-	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, &fakeEnqueuer{}, &logger)
+	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, nil, &fakeEnqueuer{}, &logger)
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/extension/status", nil)
 	r.Header.Set("Authorization", "Bearer ")
@@ -369,12 +369,13 @@ func TestExtensionServerServeStopsOnCancel(t *testing.T) {
 		ExtensionAddr:  "127.0.0.1:0",
 		ExtensionToken: testExtensionToken,
 	}
-	srv := NewExtensionServer(cfg, &fakeEnqueuer{}, &logger)
-
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := srv.Listen(ctx); err != nil {
-		t.Fatalf("Listen: %v", err)
+	ln, err := ListenExtension(ctx, cfg.ExtensionAddr)
+	if err != nil {
+		t.Fatalf("ListenExtension: %v", err)
 	}
+	srv := NewExtensionServer(cfg, ln, &fakeEnqueuer{}, &logger)
+
 	if srv.Addr() == cfg.ExtensionAddr {
 		t.Errorf("Addr = %q, want the port the OS actually assigned", srv.Addr())
 	}
@@ -438,7 +439,6 @@ func TestExtensionRejectsZeroTimestamps(t *testing.T) {
 // anything starts serving.
 func TestExtensionListenReportsBindFailure(t *testing.T) {
 	t.Parallel()
-	logger := zerolog.Nop()
 
 	var lc net.ListenConfig
 	blocker, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -447,21 +447,15 @@ func TestExtensionListenReportsBindFailure(t *testing.T) {
 	}
 	defer func() { _ = blocker.Close() }()
 
-	cfg := &Config{
-		ExtensionAddr:  blocker.Addr().String(),
-		ExtensionToken: testExtensionToken,
-	}
-	srv := NewExtensionServer(cfg, &fakeEnqueuer{}, &logger)
-
-	if err := srv.Listen(t.Context()); err == nil {
-		t.Fatal("Listen succeeded on an occupied port")
+	if _, err := ListenExtension(t.Context(), blocker.Addr().String()); err == nil {
+		t.Fatal("ListenExtension succeeded on an occupied port")
 	}
 }
 
 func TestExtensionServeWithoutListen(t *testing.T) {
 	t.Parallel()
 	logger := zerolog.Nop()
-	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, &fakeEnqueuer{}, &logger)
+	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, nil, &fakeEnqueuer{}, &logger)
 
 	if err := srv.Serve(t.Context()); err == nil {
 		t.Error("Serve succeeded without a listener")

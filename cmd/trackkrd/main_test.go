@@ -290,3 +290,53 @@ extension_token = %q`, blocker.Addr().String(), token))
 		t.Fatal("run did not return; the daemon kept going without its listener")
 	}
 }
+
+// NewReporter loads pending.json and deletes it, so a bind failure after
+// that point would destroy records that were safely on disk. Binding
+// first is what keeps them.
+func TestRunPreservesPendingRecordsWhenListenerCannotBind(t *testing.T) {
+	var lc net.ListenConfig
+	blocker, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Close() }()
+
+	token, err := tracker.GenerateExtensionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := writeConfig(t, "http://127.0.0.1:1", fmt.Sprintf(`poll_interval = "10ms"
+extension_enabled = true
+extension_addr = %q
+extension_token = %q`, blocker.Addr().String(), token))
+
+	// A queue left behind by an earlier run.
+	pending := filepath.Join(filepath.Dir(path), "pending.json")
+	saved := `[{"app_name":"firefox","title":"docs","started_at":"2026-05-04T10:00:00Z",` +
+		`"ended_at":"2026-05-04T10:05:00Z","duration_s":300}]`
+	if err := os.WriteFile(pending, []byte(saved), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	d := detectors{
+		newWindow: func() (tracker.WindowDetector, error) {
+			return fakeWindow{info: tracker.WindowInfo{AppName: testFirefoxApp}}, nil
+		},
+		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+	}
+
+	logger := zerolog.Nop()
+	if err := run(t.Context(), &logger, path, d); err == nil {
+		t.Fatal("run returned nil; a listener that cannot bind must fail")
+	}
+
+	got, err := os.ReadFile(pending)
+	if err != nil {
+		t.Fatalf("pending.json is gone after a failed start: %v", err)
+	}
+	if !strings.Contains(string(got), "docs") {
+		t.Errorf("pending.json = %s, want the queued record intact", got)
+	}
+}

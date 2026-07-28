@@ -81,9 +81,30 @@ type ExtensionServer struct {
 	logger   *zerolog.Logger
 }
 
-// NewExtensionServer builds the listener. It does not bind until Run.
-func NewExtensionServer(cfg *Config, reporter enqueuer, logger *zerolog.Logger) *ExtensionServer {
+// ListenExtension binds the configured address.
+//
+// Binding is deliberately separate from the server so a caller can do it
+// before constructing anything that holds state. NewReporter loads
+// pending.json and deletes it, so a bind failure after that point would
+// discard records that were safely on disk a moment earlier.
+func ListenExtension(ctx context.Context, addr string) (net.Listener, error) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("listening on %s: %w", addr, err)
+	}
+	return ln, nil
+}
+
+// NewExtensionServer wraps an already-bound listener.
+func NewExtensionServer(
+	cfg *Config,
+	ln net.Listener,
+	reporter enqueuer,
+	logger *zerolog.Logger,
+) *ExtensionServer {
 	e := &ExtensionServer{
+		listener: ln,
 		reporter: reporter,
 		token:    cfg.ExtensionToken,
 		logger:   logger,
@@ -101,23 +122,10 @@ func NewExtensionServer(cfg *Config, reporter enqueuer, logger *zerolog.Logger) 
 	return e
 }
 
-// Listen binds the port. It is separate from Serve so that a squatted
-// port fails startup the way invalid config does, rather than surfacing
-// asynchronously once the daemon is already running.
-func (e *ExtensionServer) Listen(ctx context.Context) error {
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", e.server.Addr)
-	if err != nil {
-		return fmt.Errorf("listening on %s: %w", e.server.Addr, err)
-	}
-	e.listener = ln
-	return nil
-}
-
-// Serve serves until ctx is cancelled. Listen must have succeeded first.
+// Serve serves until ctx is cancelled.
 func (e *ExtensionServer) Serve(ctx context.Context) error {
 	if e.listener == nil {
-		return errors.New("extension listener: Serve called before Listen")
+		return errors.New("extension listener: no listener")
 	}
 
 	go func() {
