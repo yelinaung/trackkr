@@ -172,6 +172,65 @@ func (q *Queries) GetAppTotals(ctx context.Context, userID int64, start, end tim
 	return totals, rows.Err()
 }
 
+// SiteTotalLimit caps how many sites the summary lists.
+const SiteTotalLimit = 25
+
+// siteExpr derives a display host from a URL: scheme and path stripped,
+// and a leading "www." removed so a site is one row rather than two.
+const siteExpr = `regexp_replace(substring(ar.url from '^[a-z]+://([^/?#]+)'), '^www\.', '')`
+
+// GetSiteTotals sums browsing time per site within [start, end).
+//
+// Records from the desktop tracker have no URL and are excluded: the
+// question this answers is which pages the time went to, and an app
+// with no URL cannot contribute to it.
+func (q *Queries) GetSiteTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]SiteTotalRow, error) {
+	var rows pgx.Rows
+	var err error
+
+	if deviceID != nil {
+		rows, err = q.pool.Query(ctx,
+			`SELECT `+siteExpr+` AS site,
+			        SUM(EXTRACT(EPOCH FROM (LEAST(ar.ended_at, $3) - GREATEST(ar.started_at, $2))))::bigint
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
+			   AND ar.device_id = $4 AND ar.url IS NOT NULL AND ar.url <> ''
+			 GROUP BY 1
+			 HAVING `+siteExpr+` IS NOT NULL
+			 ORDER BY 2 DESC, 1
+			 LIMIT $5`,
+			userID, start, end, *deviceID, SiteTotalLimit)
+	} else {
+		rows, err = q.pool.Query(ctx,
+			`SELECT `+siteExpr+` AS site,
+			        SUM(EXTRACT(EPOCH FROM (LEAST(ar.ended_at, $3) - GREATEST(ar.started_at, $2))))::bigint
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
+			   AND ar.url IS NOT NULL AND ar.url <> ''
+			 GROUP BY 1
+			 HAVING `+siteExpr+` IS NOT NULL
+			 ORDER BY 2 DESC, 1
+			 LIMIT $4`,
+			userID, start, end, SiteTotalLimit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var totals []SiteTotalRow
+	for rows.Next() {
+		var t SiteTotalRow
+		if err := rows.Scan(&t.Site, &t.Seconds); err != nil {
+			return nil, err
+		}
+		totals = append(totals, t)
+	}
+	return totals, rows.Err()
+}
+
 func (q *Queries) GetUserByID(ctx context.Context, id int64) (*UserRow, error) {
 	row := q.pool.QueryRow(ctx,
 		`SELECT id, username, password, created_at FROM users WHERE id = $1`, id)

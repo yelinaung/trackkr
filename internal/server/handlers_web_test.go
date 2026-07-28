@@ -27,6 +27,7 @@ type fakeWeb struct {
 	devices []db.DeviceRow
 	records []db.ActivityRecordRow
 	totals  []db.AppTotalRow
+	sites   []db.SiteTotalRow
 	deleted []int64
 	nextID  int64
 
@@ -129,6 +130,10 @@ func (f *fakeWeb) GetActivityRecords(context.Context, int64, time.Time, time.Tim
 
 func (f *fakeWeb) GetAppTotals(context.Context, int64, time.Time, time.Time, *int64) ([]db.AppTotalRow, error) {
 	return f.totals, nil
+}
+
+func (f *fakeWeb) GetSiteTotals(context.Context, int64, time.Time, time.Time, *int64) ([]db.SiteTotalRow, error) {
+	return f.sites, nil
 }
 
 // webServer builds a Server with only the session and web dependencies

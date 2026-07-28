@@ -58,6 +58,7 @@ type WebQuerier interface {
 	DeleteDevice(ctx context.Context, id, userID int64) error
 	GetActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]db.ActivityRecordRow, error)
 	GetAppTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]db.AppTotalRow, error)
+	GetSiteTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]db.SiteTotalRow, error)
 }
 
 // webHandlers carries what every dashboard handler needs.
@@ -349,6 +350,20 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 		return nil, err
 	}
 
+	sites, err := h.queries.GetSiteTotals(r.Context(), user.ID, start, end, deviceID)
+	if err != nil {
+		return nil, err
+	}
+
+	siteViews := make([]TotalView, 0, len(sites))
+	for _, site := range sites {
+		siteViews = append(siteViews, TotalView{
+			AppName: site.Site,
+			Seconds: site.Seconds,
+			Fill:    appColor(site.Site),
+		})
+	}
+
 	views := make([]TotalView, 0, len(totals))
 	for _, t := range totals {
 		data.TotalSeconds += t.Seconds
@@ -370,6 +385,7 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 
 	data.Devices = devices
 	data.Totals = views
+	data.Sites = siteViews
 	data.Chart = layout(records, devices, day)
 	data.Date = start.Format("2006-01-02")
 	data.Today = time.Now().In(h.loc).Format("2006-01-02")

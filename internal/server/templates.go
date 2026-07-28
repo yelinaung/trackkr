@@ -29,6 +29,7 @@ type pageData struct {
 	SelectedDevice int64
 	Chart          Chart
 	Totals         []TotalView
+	Sites          []TotalView
 	TotalSeconds   int64
 	Truncated      bool
 	RecordLimit    int

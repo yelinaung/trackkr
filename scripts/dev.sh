@@ -87,7 +87,14 @@ if [ -z "$API_KEY" ]; then
   exit 1
 fi
 
-EXT_TOKEN="$(go run ./cmd/trackkrd -print-extension-token)"
+# Persist the token across runs. Regenerating it every time means the
+# extension silently stops working after any restart, and the popup can
+# only report "token rejected" -- which is accurate but tedious.
+TOKEN_FILE="$DEV_DIR/extension-token"
+if [ ! -s "$TOKEN_FILE" ]; then
+  go run ./cmd/trackkrd -print-extension-token > "$TOKEN_FILE"
+fi
+EXT_TOKEN="$(cat "$TOKEN_FILE")"
 
 cat > "$CONFIG" <<EOF
 # Written by scripts/dev.sh on each run. Not the file the daemon uses

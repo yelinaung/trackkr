@@ -538,3 +538,78 @@ func insertRecord(t *testing.T, q *Queries, deviceID int64, app string, start, e
 		t.Fatalf("InsertActivityRecords: %v", err)
 	}
 }
+
+// The dashboard groups desktop activity by app, which collapses every
+// browser record into one "Firefox" row. Sites answer the question that
+// actually matters for browsing: which pages the time went to.
+func TestGetSiteTotals(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+
+	insertRecordWithURL(t, q, device.ID, "https://www.youtube.com/watch?v=abc",
+		day.Add(10*time.Hour), day.Add(10*time.Hour+30*time.Minute))
+	insertRecordWithURL(t, q, device.ID, "https://youtube.com/watch?v=def",
+		day.Add(11*time.Hour), day.Add(11*time.Hour+10*time.Minute))
+	insertRecordWithURL(t, q, device.ID, "https://github.com/yelinaung/trackkr",
+		day.Add(12*time.Hour), day.Add(12*time.Hour+5*time.Minute))
+	// A desktop record has no URL and must not appear.
+	insertRecord(t, q, device.ID, "ghostty", day.Add(13*time.Hour), day.Add(14*time.Hour))
+
+	totals, err := q.GetSiteTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetSiteTotals: %v", err)
+	}
+	if len(totals) != 2 {
+		t.Fatalf("sites = %+v, want youtube.com and github.com only", totals)
+	}
+
+	// www. is stripped, so one site is one row rather than two.
+	if totals[0].Site != "youtube.com" || totals[0].Seconds != 2400 {
+		t.Errorf("first = %+v, want youtube.com with 2400s", totals[0])
+	}
+	if totals[1].Site != "github.com" || totals[1].Seconds != 300 {
+		t.Errorf("second = %+v, want github.com with 300s", totals[1])
+	}
+}
+
+// A record spanning midnight must contribute only its share, as the app
+// totals do.
+func TestGetSiteTotalsCountsOnlyOverlap(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
+	insertRecordWithURL(t, q, device.ID, "https://example.com/late",
+		day.Add(-10*time.Minute), day.Add(20*time.Minute))
+
+	totals, err := q.GetSiteTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetSiteTotals: %v", err)
+	}
+	if len(totals) != 1 || totals[0].Seconds != 1200 {
+		t.Errorf("totals = %+v, want 1200s inside the day", totals)
+	}
+}
+
+func insertRecordWithURL(t *testing.T, q *Queries, deviceID int64, url string, start, end time.Time) {
+	t.Helper()
+
+	_, err := q.InsertActivityRecords(context.Background(), []ActivityRecordRow{{
+		DeviceID:  deviceID,
+		AppName:   testFirefoxApp,
+		Title:     "a page",
+		URL:       &url,
+		StartedAt: start,
+		EndedAt:   end,
+		DurationS: int(end.Sub(start).Seconds()),
+	}})
+	if err != nil {
+		t.Fatalf("InsertActivityRecords: %v", err)
+	}
+}

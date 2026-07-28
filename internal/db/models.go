@@ -31,6 +31,12 @@ type AppTotalRow struct {
 	Seconds int64
 }
 
+// SiteTotalRow is one row of the per-site browsing summary.
+type SiteTotalRow struct {
+	Site    string
+	Seconds int64
+}
+
 type UserRow struct {
 	ID        int64
 	Username  string

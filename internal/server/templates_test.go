@@ -182,6 +182,38 @@ func TestTimelineHourMarksMatchDaySpan(t *testing.T) {
 	}
 }
 
+// Every browser record is app_name "Firefox", so an app breakdown alone
+// cannot answer where the browsing time went.
+func TestTimelineListsSitesSeparatelyFromApps(t *testing.T) {
+	t.Parallel()
+	html := renderPartial(t, "timeline", sampleTimelineData())
+
+	if !strings.Contains(html, "Which pages") {
+		t.Error("no per-site section rendered")
+	}
+	for _, want := range []string{"youtube.com", "github.com", "20m", "10m"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("site list is missing %q", want)
+		}
+	}
+	// The two sections are distinct: apps still summarise the day.
+	if !strings.Contains(html, "Where the day went") {
+		t.Error("the app summary disappeared")
+	}
+}
+
+// A day with no browsing must not render an empty section.
+func TestTimelineOmitsSitesWhenThereAreNone(t *testing.T) {
+	t.Parallel()
+
+	data := sampleTimelineData()
+	data.Sites = nil
+
+	if strings.Contains(renderPartial(t, "timeline", data), "Which pages") {
+		t.Error("an empty site section was rendered")
+	}
+}
+
 func TestTimelineShowsTruncationNotice(t *testing.T) {
 	t.Parallel()
 
@@ -259,15 +291,19 @@ func sampleTimelineData() *pageData {
 	devices := []db.DeviceRow{{ID: 7, Name: testLaptop}}
 
 	return &pageData{
-		User:         &db.UserRow{ID: 1, Username: "ye"},
-		CSRFToken:    testCSRFValue,
-		Timezone:     "UTC",
-		Date:         "2026-05-04",
-		Today:        "2026-05-04",
-		DateLabel:    "Monday, 4 May 2026",
-		Devices:      devices,
-		Chart:        layout(records, devices, day),
-		Totals:       []TotalView{{AppName: testFirefoxLower, Seconds: 1800, Fill: appColor(testFirefoxLower)}},
+		User:      &db.UserRow{ID: 1, Username: "ye"},
+		CSRFToken: testCSRFValue,
+		Timezone:  "UTC",
+		Date:      "2026-05-04",
+		Today:     "2026-05-04",
+		DateLabel: "Monday, 4 May 2026",
+		Devices:   devices,
+		Chart:     layout(records, devices, day),
+		Totals:    []TotalView{{AppName: testFirefoxLower, Seconds: 1800, Fill: appColor(testFirefoxLower)}},
+		Sites: []TotalView{
+			{AppName: "youtube.com", Seconds: 1200, Fill: appColor("youtube.com")},
+			{AppName: "github.com", Seconds: 600, Fill: appColor("github.com")},
+		},
 		TotalSeconds: 1800,
 	}
 }
