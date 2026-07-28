@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -459,5 +460,136 @@ func TestExtensionServeWithoutListen(t *testing.T) {
 
 	if err := srv.Serve(t.Context()); err == nil {
 		t.Error("Serve succeeded without a listener")
+	}
+}
+
+// Serve returns as soon as Shutdown begins, so returning there would let
+// the daemon flush and persist while a handler is still enqueueing. The
+// record would then exist only in memory and die with the process.
+func TestExtensionServeWaitsForInFlightRequest(t *testing.T) {
+	t.Parallel()
+	logger := zerolog.Nop()
+	queue := &fakeEnqueuer{}
+	cfg := &Config{ExtensionAddr: "127.0.0.1:0", ExtensionToken: testExtensionToken}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ln, err := ListenExtension(ctx, cfg.ExtensionAddr)
+	if err != nil {
+		t.Fatalf("ListenExtension: %v", err)
+	}
+	srv := NewExtensionServer(cfg, ln, queue, &logger)
+
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(ctx) }()
+
+	// A request whose body arrives in two parts, so the handler is
+	// still inside Decode when the context is cancelled.
+	pr, pw := io.Pipe()
+	req, err := http.NewRequestWithContext(
+		context.Background(), http.MethodPost, "http://"+srv.Addr()+"/extension/activity", pr,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testExtensionToken)
+
+	responded := make(chan int, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			responded <- 0
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		responded <- resp.StatusCode
+	}()
+
+	start := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	head := fmt.Sprintf(`{"records":[{"url":%q,"title":"slow","started_at":%q,`, testPageURL,
+		start.Format(time.RFC3339))
+	if _, err := pw.Write([]byte(head)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Shut down with the request mid-flight.
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case err := <-served:
+		t.Fatalf("Serve returned %v while a handler was still running", err)
+	default:
+	}
+
+	tail := fmt.Sprintf(`"ended_at":%q}]}`, start.Add(time.Minute).Format(time.RFC3339))
+	if _, err := pw.Write([]byte(tail)); err != nil {
+		t.Fatal(err)
+	}
+	_ = pw.Close()
+
+	if code := <-responded; code != http.StatusAccepted {
+		t.Errorf("status = %d, want 202", code)
+	}
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("Serve returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after the handler finished")
+	}
+
+	// The record must be queued before the caller is free to flush.
+	if got := queue.all(); len(got) != 1 {
+		t.Fatalf("queued %d records, want the in-flight one", len(got))
+	}
+}
+
+// The loopback invariant must not depend on name resolution.
+func TestListenExtensionRefusesNonLoopback(t *testing.T) {
+	t.Parallel()
+
+	ln, err := ListenExtension(t.Context(), "0.0.0.0:0")
+	if err == nil {
+		_ = ln.Close()
+		t.Fatal("bound 0.0.0.0; the listener must be loopback-only")
+	}
+	if !strings.Contains(err.Error(), "non-loopback") {
+		t.Errorf("error = %v, want it to name the reason", err)
+	}
+}
+
+// A single Decode stops at the first value, so trailing data would be
+// silently dropped while the response claimed success.
+func TestExtensionRejectsTrailingData(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	valid := oneRecordBody(start, start.Add(time.Minute), testPageURL)
+
+	bodies := map[string]string{
+		"trailing garbage": valid + "garbage",
+		"second object":    valid + valid,
+		"trailing array":   valid + `[1,2,3]`,
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv, queue := testExtensionServer(t)
+
+			rec := httptest.NewRecorder()
+			srv.server.Handler.ServeHTTP(rec, activityRequest(t, body))
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", rec.Code)
+			}
+			if n := len(queue.all()); n != 0 {
+				t.Errorf("queued %d records from a malformed payload", n)
+			}
+		})
 	}
 }

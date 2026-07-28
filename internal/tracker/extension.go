@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -35,7 +36,13 @@ const (
 	maxRecordDuration = 12 * time.Hour
 
 	extensionReadTimeout = 5 * time.Second
-	extensionMaxBody     = 1 << 20
+	// extensionBodyTimeout bounds a slow upload; ReadHeaderTimeout only
+	// covers the headers.
+	extensionBodyTimeout = 30 * time.Second
+	// extensionShutdownGrace is how long an in-flight handler has to
+	// finish enqueueing before connections are forced closed.
+	extensionShutdownGrace = 10 * time.Second
+	extensionMaxBody       = 1 << 20
 
 	schemeHTTP  = "http"
 	schemeHTTPS = "https"
@@ -93,6 +100,16 @@ func ListenExtension(ctx context.Context, addr string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listening on %s: %w", addr, err)
 	}
+
+	// Config validation accepts "localhost" by name, but the name is
+	// resolved by the system: a doctored /etc/hosts or NSS setup could
+	// point it at a LAN address. Check what was actually bound, so the
+	// loopback-only invariant does not depend on name resolution.
+	tcp, ok := ln.Addr().(*net.TCPAddr)
+	if !ok || !tcp.IP.IsLoopback() {
+		_ = ln.Close()
+		return nil, fmt.Errorf("refusing to serve on non-loopback address %s", ln.Addr())
+	}
 	return ln, nil
 }
 
@@ -118,31 +135,49 @@ func NewExtensionServer(
 		Addr:              cfg.ExtensionAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: extensionReadTimeout,
+		ReadTimeout:       extensionBodyTimeout,
 	}
 	return e
 }
 
-// Serve serves until ctx is cancelled.
+// Serve serves until ctx is cancelled, and does not return until every
+// in-flight handler has finished.
+//
+// That wait is the point: Serve returns the moment Shutdown *begins*, so
+// returning there would let the caller run Reporter.Shutdown while a
+// request is still decoding and enqueueing. Records added after the
+// final flush would live only in memory and vanish with the process.
 func (e *ExtensionServer) Serve(ctx context.Context) error {
 	if e.listener == nil {
 		return errors.New("extension listener: no listener")
 	}
 
+	shutdown := make(chan error, 1)
 	go func() {
 		<-ctx.Done()
 		// ctx is already cancelled here, so the shutdown deadline hangs
 		// off WithoutCancel rather than a fresh Background.
 		shutdownCtx, cancel := context.WithTimeout(
-			context.WithoutCancel(ctx), extensionReadTimeout,
+			context.WithoutCancel(ctx), extensionShutdownGrace,
 		)
 		defer cancel()
-		_ = e.server.Shutdown(shutdownCtx)
+		shutdown <- e.server.Shutdown(shutdownCtx)
 	}()
 
 	e.logger.Info().Str("addr", e.Addr()).Msg("extension listener started")
 
-	if err := e.server.Serve(e.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err := e.server.Serve(e.listener)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("extension listener: %w", err)
+	}
+
+	// Serve stopped because Shutdown started; wait for it to drain.
+	if err := <-shutdown; err != nil {
+		// The grace period expired with handlers still running. Close
+		// the connections out from under them and say so, rather than
+		// blocking the daemon's shutdown indefinitely.
+		_ = e.server.Close()
+		return fmt.Errorf("extension listener shutdown: %w", err)
 	}
 	return nil
 }
@@ -186,9 +221,18 @@ func (e *ExtensionServer) handleActivity(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// One Decode stops at the end of the first JSON value, so
+	// `{"records":[…]}garbage` would report every record accepted while
+	// silently ignoring the rest -- and the size limit would never see
+	// the unread tail. Require the stream to end where the value does.
 	var req extensionRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, extensionMaxBody)).Decode(&req); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, extensionMaxBody))
+	if err := dec.Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		http.Error(w, `{"error":"unexpected data after request body"}`, http.StatusBadRequest)
 		return
 	}
 	if len(req.Records) == 0 {
