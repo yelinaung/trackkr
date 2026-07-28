@@ -117,7 +117,8 @@ trackkr/
 │   ├── plan.md                     # This file
 │   ├── phase2-plan.md              # Linux daemon design
 │   ├── phase3-plan.md              # Web dashboard design
-│   └── phase4-plan.md              # Firefox extension design
+│   ├── phase4-plan.md              # Firefox extension design
+│   └── phase5-plan.md              # macOS support design
 ├── go.mod
 ├── go.sum
 ├── mise.toml                       # Task runner
@@ -340,10 +341,14 @@ admin password hash: users live in the `users` table, created with
 3. Popup showing connection status
 4. Test tab tracking end-to-end
 
-### Phase 5: macOS Support + Polish
-1. `window_darwin.go` + `idle_darwin.go` via cgo
-2. launchd plist for auto-start
-3. Dockerfile + docker-compose for production
+### Phase 5: macOS Support + Polish (planned — see `phase5-plan.md`)
+1. `idle_darwin.go` via cgo — no permission needed
+2. `window_darwin.go` — frontmost app with no permission, titles behind
+   Accessibility
+3. Signed `.app` bundle, since TCC grants attach to a code signature and
+   bundle id rather than to a bare binary
+4. launchd user agent for auto-start
+5. Dockerfile + docker-compose for production
 
 The systemd unit, graceful shutdown, and disk-persisted queue originally
 listed here all landed in Phase 2.
