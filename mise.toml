@@ -46,7 +46,15 @@ run = ["gofumpt -w ./cmd/ ./internal/"]
 
 [tasks.ext-lint]
 description = "Validate the browser extension with web-ext"
-run = ["web-ext lint --source-dir extension --warnings-as-errors"]
+run = [
+  "web-ext lint --source-dir extension --warnings-as-errors --ignore-files 'tests/**'",
+]
+
+[tasks.ext-test]
+description = "Run the extension's logic tests"
+# The glob is quoted deliberately: node --test treats a bare directory
+# as a module path and fails to resolve it.
+run = ["node --test 'extension/tests/*.test.js'"]
 
 [tasks.ext-run]
 description = "Launch Firefox with the extension loaded"

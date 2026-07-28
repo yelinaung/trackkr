@@ -13,32 +13,15 @@
 // This is an MV3 event page, so it is unloaded between events and can
 // hold nothing in module scope.
 
+// The decision rules -- trackable, shouldSwitch, buildRecord,
+// idleEndedAt, trimQueue -- come from logic.js, which is free of
+// browser APIs so node:test can cover them. This file is the plumbing
+// around them: storage, events, and delivery.
+
 const CURRENT_KEY = "current";
 const QUEUE_KEY = "queue";
 
-// MIN_DURATION_MS drops flicks through the tab strip. The daemon
-// enforces the same floor.
-const MIN_DURATION_MS = 1000;
-
-// IDLE_SECONDS mirrors the daemon's idle_threshold. Without an idle
-// rule a tab left focused over lunch would report the whole absence,
-// inflating browser rows against desktop ones.
-const IDLE_SECONDS = 300;
-
-// QUEUE_LIMIT caps what an offline browser accumulates.
-const QUEUE_LIMIT = 500;
-
 api.idle.setDetectionInterval(IDLE_SECONDS);
-
-function isWebUrl(url) {
-  return typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"));
-}
-
-// trackable decides whether a tab should be timed at all. Private
-// windows never are: nothing from them is stored or sent.
-function trackable(tab) {
-  return Boolean(tab) && !tab.incognito && isWebUrl(tab.url);
-}
 
 async function readCurrent() {
   const stored = await api.storage.session.get(CURRENT_KEY);
@@ -59,7 +42,7 @@ async function readQueue() {
 }
 
 async function writeQueue(queue) {
-  await api.storage.local.set({ [QUEUE_KEY]: queue.slice(-QUEUE_LIMIT) });
+  await api.storage.local.set({ [QUEUE_KEY]: trimQueue(queue) });
 }
 
 // startTracking begins timing a tab, replacing whatever was current.
@@ -84,20 +67,13 @@ async function finalize(endedAt = Date.now()) {
   const current = await readCurrent();
   await writeCurrent(null);
 
-  if (!current || !isWebUrl(current.url)) {
-    return;
-  }
-  if (endedAt - current.startedAt < MIN_DURATION_MS) {
+  const record = buildRecord(current, endedAt);
+  if (record === null) {
     return;
   }
 
   const queue = await readQueue();
-  queue.push({
-    url: current.url,
-    title: current.title,
-    started_at: new Date(current.startedAt).toISOString(),
-    ended_at: new Date(endedAt).toISOString(),
-  });
+  queue.push(record);
   await writeQueue(queue);
 }
 
@@ -168,8 +144,7 @@ api.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!tab.active || (!changeInfo.url && !changeInfo.title)) {
     return;
   }
-  const current = await readCurrent();
-  if (current && current.tabId === tabId && current.url === tab.url && current.title === (tab.title || "")) {
+  if (!shouldSwitch(await readCurrent(), tab)) {
     return;
   }
   await switchTo(tab);
@@ -190,9 +165,9 @@ api.windows.onFocusChanged.addListener(async (windowId) => {
 
 api.idle.onStateChanged.addListener(async (state) => {
   if (state === "idle" || state === "locked") {
-    // The browser reports idleness IDLE_SECONDS after it began, so the
+    // The browser reports idleness one interval after it began, so the
     // segment ended then, not now.
-    await finalize(Date.now() - IDLE_SECONDS * 1000);
+    await finalize(idleEndedAt(Date.now()));
     await deliver();
     return;
   }

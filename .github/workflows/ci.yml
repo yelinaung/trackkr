@@ -206,6 +206,12 @@ jobs:
       - name: Lint the browser extension
         run: mise ext-lint
 
+      # The rules that decide what gets recorded live in logic.js,
+      # free of browser APIs precisely so they can be checked here --
+      # Playwright cannot load Firefox extensions.
+      - name: Test the extension's logic
+        run: mise ext-test
+
   test-race:
     name: Race Detection
     runs-on: [self-hosted, Linux, X64, playground-ubuntu]

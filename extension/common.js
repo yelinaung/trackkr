@@ -4,26 +4,17 @@
 // keeps the file usable if it is ever loaded under a chrome-only shim.
 globalThis.api = globalThis.browser ?? globalThis.chrome;
 
-// DEFAULT_DAEMON_URL matches extension_addr's default in the daemon's
-// config. Both are configurable, which is why the host permission is
-// requested at runtime for whatever URL is stored rather than pinned in
-// the manifest.
-globalThis.DEFAULT_DAEMON_URL = "http://127.0.0.1:7600";
+// The pure helpers -- DEFAULT_DAEMON_URL, normalizeDaemonUrl, originFor
+// -- live in logic.js, which loads first. What is left here needs the
+// browser.
 
-// settings returns the configured daemon URL and token.
+// getSettings returns the configured daemon URL and token.
 globalThis.getSettings = async function getSettings() {
   const stored = await api.storage.local.get(["daemonUrl", "token"]);
   return {
-    daemonUrl: (stored.daemonUrl || DEFAULT_DAEMON_URL).replace(/\/+$/, ""),
+    daemonUrl: normalizeDaemonUrl(stored.daemonUrl),
     token: stored.token || "",
   };
-};
-
-// originFor turns a daemon URL into the origin pattern a host
-// permission is granted against.
-globalThis.originFor = function originFor(daemonUrl) {
-  const url = new URL(daemonUrl);
-  return `${url.protocol}//${url.hostname}/*`;
 };
 
 // hasHostPermission reports whether the extension may talk to the
