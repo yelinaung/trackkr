@@ -25,7 +25,7 @@ async function load() {
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  const daemonUrl = urlEl.value.trim().replace(/\/+$/, "");
+  const daemonUrl = normalizeDaemonUrl(urlEl.value);
   const token = tokenEl.value.trim();
 
   let origin;

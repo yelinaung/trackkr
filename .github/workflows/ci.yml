@@ -190,7 +190,7 @@ jobs:
           docker rm -f "${container_name}" 2>/dev/null || true
 
   extension:
-    name: Extension (web-ext lint)
+    name: Extension (lint + logic tests)
     runs-on: [self-hosted, Linux, X64, playground-ubuntu]
     steps:
       - name: Harden the runner (Audit all outbound calls)

@@ -253,7 +253,32 @@ api.tabs.onRemoved.addListener((tabId) =>
 // durable before this point rather than during it.
 api.runtime.onSuspend.addListener(() => serialize(deliver));
 
-// Deliver anything left over from a previous run as soon as the event
-// page wakes.
-api.runtime.onStartup.addListener(() => serialize(deliver));
-api.runtime.onInstalled.addListener(() => serialize(deliver));
+// resume picks up tracking when the extension starts.
+//
+// Delivery alone is not enough: after a browser restart the user may
+// simply read a restored tab, and no activation, navigation, focus, or
+// idle event ever fires. Without this, that whole session goes
+// unrecorded until they happen to switch tabs.
+async function resume() {
+  await deliver();
+
+  // An existing segment survives event-page suspension and continues;
+  // only a genuinely empty state needs seeding.
+  if (await readCurrent()) {
+    return;
+  }
+
+  try {
+    const win = await api.windows.getLastFocused({ populate: false });
+    if (!win || win.focused !== true) {
+      return;
+    }
+    await startTracking(await activeTabIn(win.id));
+  } catch (err) {
+    // No window yet, which is normal early in startup. The next focus
+    // or activation event will seed it.
+  }
+}
+
+api.runtime.onStartup.addListener(() => serialize(resume));
+api.runtime.onInstalled.addListener(() => serialize(resume));
