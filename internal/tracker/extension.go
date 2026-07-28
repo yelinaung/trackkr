@@ -221,6 +221,14 @@ func toRecord(in *extensionRecord) (*Record, bool) {
 		return nil, false
 	}
 
+	// A missing timestamp decodes to year 1, and the subtraction then
+	// saturates past the cap, so an absent started_at would be clamped
+	// into a plausible-looking 12-hour record beginning in year 1 and
+	// inserted by a server that does no temporal validation of its own.
+	if in.StartedAt.IsZero() || in.EndedAt.IsZero() {
+		return nil, false
+	}
+
 	ended := in.EndedAt
 	if d := ended.Sub(in.StartedAt); d > maxRecordDuration {
 		ended = in.StartedAt.Add(maxRecordDuration)

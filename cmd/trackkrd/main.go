@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -115,11 +116,17 @@ func run(
 	var wg sync.WaitGroup
 	wg.Go(func() { reporter.Run(ctx) })
 
+	// A listener that cannot bind is a failure, not a warning: in
+	// extension-only mode the daemon would otherwise sit on ctx.Done
+	// capturing nothing, and alongside a window detector it would run
+	// quietly without the feature the config asked for.
+	listenerErr := make(chan error, 1)
 	if cfg.ExtensionEnabled {
 		ext := tracker.NewExtensionServer(cfg, reporter, logger)
 		wg.Go(func() {
 			if err := ext.Run(ctx); err != nil {
-				logger.Error().Err(err).Msg("extension listener stopped")
+				listenerErr <- err
+				cancel()
 			}
 		})
 	}
@@ -144,5 +151,11 @@ func run(
 	// do not send at once.
 	wg.Wait()
 
-	return reporter.Shutdown()
+	var extErr error
+	select {
+	case extErr = <-listenerErr:
+	default:
+	}
+
+	return errors.Join(extErr, reporter.Shutdown())
 }

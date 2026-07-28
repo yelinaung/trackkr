@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +20,8 @@ import (
 // clearTrackkrEnv unsets every TRACKKR_* override so a test is not
 // affected by the caller's environment. It uses t.Setenv, so callers
 // must not be parallel.
+const testFirefoxApp = "firefox"
+
 func clearTrackkrEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("TRACKKR_SERVER_URL", "")
@@ -137,7 +140,7 @@ flush_interval = "20ms"`)
 	done := make(chan error, 1)
 	logger := zerolog.Nop()
 	go func() {
-		done <- run(ctx, &logger, path, fakeDetectors(tracker.WindowInfo{AppName: "firefox"}))
+		done <- run(ctx, &logger, path, fakeDetectors(tracker.WindowInfo{AppName: testFirefoxApp}))
 	}()
 
 	time.Sleep(50 * time.Millisecond)
@@ -180,7 +183,7 @@ flush_interval = "50ms"`)
 	defer cancel()
 
 	logger := zerolog.Nop()
-	if err := run(ctx, &logger, path, fakeDetectors(tracker.WindowInfo{AppName: "firefox"})); err != nil {
+	if err := run(ctx, &logger, path, fakeDetectors(tracker.WindowInfo{AppName: testFirefoxApp})); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -254,5 +257,55 @@ func TestRunWithoutWindowDetectorOrExtensionFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "window detection unavailable") {
 		t.Errorf("error = %v, want it to mention window detection", err)
+	}
+}
+
+// A listener that cannot bind must stop the daemon rather than leave it
+// running without the feature the config enabled.
+func TestRunFailsWhenListenerCannotBind(t *testing.T) {
+	// Occupy the port first, so the daemon's listener cannot have it.
+	var lc net.ListenConfig
+	blocker, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Close() }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	token, err := tracker.GenerateExtensionToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := writeConfig(t, srv.URL, fmt.Sprintf(`poll_interval = "10ms"
+extension_enabled = true
+extension_addr = %q
+extension_token = %q`, blocker.Addr().String(), token))
+
+	d := detectors{
+		newWindow: func() (tracker.WindowDetector, error) {
+			return fakeWindow{info: tracker.WindowInfo{AppName: testFirefoxApp}}, nil
+		},
+		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+	}
+
+	logger := zerolog.Nop()
+	done := make(chan error, 1)
+	go func() { done <- run(context.Background(), &logger, path, d) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("run returned nil; a listener that cannot bind must fail")
+		}
+		if !strings.Contains(err.Error(), "listening on") {
+			t.Errorf("error = %v, want it to name the bind failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return; the daemon kept going without its listener")
 	}
 }

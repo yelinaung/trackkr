@@ -386,3 +386,42 @@ func TestExtensionServerRunStopsOnCancel(t *testing.T) {
 		t.Fatal("Run did not return within 5s of cancellation")
 	}
 }
+
+// A missing started_at decodes to year 1. The gap to a real ended_at
+// saturates past the cap, so without an explicit check the record would
+// be clamped into a plausible 12-hour session beginning in year 1 and
+// inserted by a server that validates no timestamps of its own.
+func TestExtensionRejectsZeroTimestamps(t *testing.T) {
+	t.Parallel()
+
+	end := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
+
+	bodies := map[string]string{
+		"missing started_at": fmt.Sprintf(
+			`{"records":[{"url":%q,"title":"t","ended_at":%q}]}`, testPageURL, end,
+		),
+		"missing ended_at": fmt.Sprintf(
+			`{"records":[{"url":%q,"title":"t","started_at":%q}]}`, testPageURL, end,
+		),
+		"both missing": fmt.Sprintf(
+			`{"records":[{"url":%q,"title":"t"}]}`, testPageURL,
+		),
+	}
+
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			srv, queue := testExtensionServer(t)
+
+			rec := httptest.NewRecorder()
+			srv.server.Handler.ServeHTTP(rec, activityRequest(t, body))
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202", rec.Code)
+			}
+			if got := queue.all(); len(got) != 0 {
+				t.Errorf("queued %+v, want nothing", got)
+			}
+		})
+	}
+}
