@@ -47,6 +47,7 @@ func clearTrackkrEnv(t *testing.T) {
 	t.Setenv("TRACKKR_SERVER_URL", "")
 	t.Setenv("TRACKKR_API_KEY", "")
 	t.Setenv("TRACKKR_DEVICE_NAME", "")
+	t.Setenv("TRACKKR_EXTENSION_TOKEN", "")
 }
 
 func TestLoadConfig(t *testing.T) {

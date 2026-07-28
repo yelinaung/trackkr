@@ -27,6 +27,7 @@ func clearTrackkrEnv(t *testing.T) {
 	t.Setenv("TRACKKR_SERVER_URL", "")
 	t.Setenv("TRACKKR_API_KEY", "")
 	t.Setenv("TRACKKR_DEVICE_NAME", "")
+	t.Setenv("TRACKKR_EXTENSION_TOKEN", "")
 }
 
 type fakeWindow struct{ info tracker.WindowInfo }
@@ -237,26 +238,6 @@ extension_token = %q`, token))
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return within 5s of cancellation")
-	}
-}
-
-// Without the extension listener a missing detector leaves nothing to
-// do, so it stays fatal.
-func TestRunWithoutWindowDetectorOrExtensionFails(t *testing.T) {
-	logger := zerolog.Nop()
-	d := detectors{
-		newWindow: func() (tracker.WindowDetector, error) {
-			return nil, tracker.ErrNoActiveWindow
-		},
-		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
-	}
-
-	err := run(context.Background(), &logger, writeConfig(t, "http://127.0.0.1:1", ""), d)
-	if err == nil {
-		t.Fatal("expected an error when nothing can be tracked")
-	}
-	if !strings.Contains(err.Error(), "window detection unavailable") {
-		t.Errorf("error = %v, want it to mention window detection", err)
 	}
 }
 

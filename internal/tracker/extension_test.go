@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -360,7 +361,7 @@ func TestExtensionRejectsEverythingWithoutAConfiguredToken(t *testing.T) {
 	}
 }
 
-func TestExtensionServerRunStopsOnCancel(t *testing.T) {
+func TestExtensionServerServeStopsOnCancel(t *testing.T) {
 	t.Parallel()
 	logger := zerolog.Nop()
 	cfg := &Config{
@@ -371,8 +372,15 @@ func TestExtensionServerRunStopsOnCancel(t *testing.T) {
 	srv := NewExtensionServer(cfg, &fakeEnqueuer{}, &logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	if err := srv.Listen(ctx); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	if srv.Addr() == cfg.ExtensionAddr {
+		t.Errorf("Addr = %q, want the port the OS actually assigned", srv.Addr())
+	}
+
 	done := make(chan error, 1)
-	go func() { done <- srv.Run(ctx) }()
+	go func() { done <- srv.Serve(ctx) }()
 
 	time.Sleep(50 * time.Millisecond)
 	cancel()
@@ -423,5 +431,39 @@ func TestExtensionRejectsZeroTimestamps(t *testing.T) {
 				t.Errorf("queued %+v, want nothing", got)
 			}
 		})
+	}
+}
+
+// Binding is what fails when the port is taken, and it must fail before
+// anything starts serving.
+func TestExtensionListenReportsBindFailure(t *testing.T) {
+	t.Parallel()
+	logger := zerolog.Nop()
+
+	var lc net.ListenConfig
+	blocker, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Close() }()
+
+	cfg := &Config{
+		ExtensionAddr:  blocker.Addr().String(),
+		ExtensionToken: testExtensionToken,
+	}
+	srv := NewExtensionServer(cfg, &fakeEnqueuer{}, &logger)
+
+	if err := srv.Listen(t.Context()); err == nil {
+		t.Fatal("Listen succeeded on an occupied port")
+	}
+}
+
+func TestExtensionServeWithoutListen(t *testing.T) {
+	t.Parallel()
+	logger := zerolog.Nop()
+	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, &fakeEnqueuer{}, &logger)
+
+	if err := srv.Serve(t.Context()); err == nil {
+		t.Error("Serve succeeded without a listener")
 	}
 }

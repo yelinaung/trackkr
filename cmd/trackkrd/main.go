@@ -103,6 +103,17 @@ func run(
 	client := &http.Client{Timeout: httpTimeout}
 	reporter := tracker.NewReporter(cfg, client, logger)
 
+	// Bind before anything starts: a squatted port should fail startup
+	// the way invalid config does, not leave a daemon running with no
+	// activity source at all.
+	var ext *tracker.ExtensionServer
+	if cfg.ExtensionEnabled {
+		ext = tracker.NewExtensionServer(cfg, reporter, logger)
+		if err := ext.Listen(ctx); err != nil {
+			return err
+		}
+	}
+
 	var trk *tracker.Tracker
 	if window != nil {
 		trk = tracker.NewTracker(cfg, window, d.newIdle(logger), reporter, logger)
@@ -116,15 +127,13 @@ func run(
 	var wg sync.WaitGroup
 	wg.Go(func() { reporter.Run(ctx) })
 
-	// A listener that cannot bind is a failure, not a warning: in
-	// extension-only mode the daemon would otherwise sit on ctx.Done
-	// capturing nothing, and alongside a window detector it would run
-	// quietly without the feature the config asked for.
+	// The bind already succeeded, so a failure here is a serving fault:
+	// still fatal, since the daemon would otherwise run without the
+	// feature the config asked for.
 	listenerErr := make(chan error, 1)
-	if cfg.ExtensionEnabled {
-		ext := tracker.NewExtensionServer(cfg, reporter, logger)
+	if ext != nil {
 		wg.Go(func() {
-			if err := ext.Run(ctx); err != nil {
+			if err := ext.Serve(ctx); err != nil {
 				listenerErr <- err
 				cancel()
 			}

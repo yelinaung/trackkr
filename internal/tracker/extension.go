@@ -75,6 +75,7 @@ type enqueuer interface {
 // batching, retry, and on-disk persistence.
 type ExtensionServer struct {
 	server   *http.Server
+	listener net.Listener
 	reporter enqueuer
 	token    string
 	logger   *zerolog.Logger
@@ -100,12 +101,23 @@ func NewExtensionServer(cfg *Config, reporter enqueuer, logger *zerolog.Logger) 
 	return e
 }
 
-// Run serves until ctx is cancelled.
-func (e *ExtensionServer) Run(ctx context.Context) error {
+// Listen binds the port. It is separate from Serve so that a squatted
+// port fails startup the way invalid config does, rather than surfacing
+// asynchronously once the daemon is already running.
+func (e *ExtensionServer) Listen(ctx context.Context) error {
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", e.server.Addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", e.server.Addr, err)
+	}
+	e.listener = ln
+	return nil
+}
+
+// Serve serves until ctx is cancelled. Listen must have succeeded first.
+func (e *ExtensionServer) Serve(ctx context.Context) error {
+	if e.listener == nil {
+		return errors.New("extension listener: Serve called before Listen")
 	}
 
 	go func() {
@@ -119,16 +131,22 @@ func (e *ExtensionServer) Run(ctx context.Context) error {
 		_ = e.server.Shutdown(shutdownCtx)
 	}()
 
-	e.logger.Info().Str("addr", ln.Addr().String()).Msg("extension listener started")
+	e.logger.Info().Str("addr", e.Addr()).Msg("extension listener started")
 
-	if err := e.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := e.server.Serve(e.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("extension listener: %w", err)
 	}
 	return nil
 }
 
-// Addr reports the bound address (for tests).
-func (e *ExtensionServer) Addr() string { return e.server.Addr }
+// Addr reports the address actually bound, which differs from the
+// configured one when the port is 0.
+func (e *ExtensionServer) Addr() string {
+	if e.listener == nil {
+		return e.server.Addr
+	}
+	return e.listener.Addr().String()
+}
 
 func (e *ExtensionServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
