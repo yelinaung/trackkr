@@ -189,6 +189,23 @@ jobs:
           container_name="test-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker rm -f "${container_name}" 2>/dev/null || true
 
+  extension:
+    name: Extension (web-ext lint)
+    runs-on: [self-hosted, Linux, X64, playground-ubuntu]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Mozilla's own validator: it checks the manifest and the APIs the
+      # code uses against strict_min_version, which no amount of reading
+      # the source will tell you.
+      - name: Lint the browser extension
+        run: mise ext-lint
+
   test-race:
     name: Race Detection
     runs-on: [self-hosted, Linux, X64, playground-ubuntu]

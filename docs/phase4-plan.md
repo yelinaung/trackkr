@@ -259,6 +259,14 @@ data usable for the deduplication parked in Phase 6.
 
 1. `mise test` and `mise test-race` pass; coverage stays at or above 50%.
 2. `mise lint` clean.
+3. `mise ext-lint` clean. This is Mozilla's own `web-ext lint`, and it is
+   the only check that validates the manifest and the APIs the code uses
+   against `strict_min_version` -- reading the source cannot tell you
+   that `optional_host_permissions` needs Firefox 128 and
+   `data_collection_permissions` needs 142. Playwright cannot load
+   Firefox extensions at all (Chromium only), so this static pass plus
+   `mise ext-run` for manual checks is the practical ceiling until
+   Selenium's `install_addon` is wired up.
 3. `curl` against the listener: no token is 401, wrong token is 401, a web
    `Origin` is 403, `text/plain` is 415, a valid record is 202.
 4. `ss -ltn` (or `lsof -i`) shows the listener bound to `127.0.0.1`, not

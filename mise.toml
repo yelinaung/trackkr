@@ -6,6 +6,11 @@ go = "1.26.5"
 golangci-lint = "2.12.2"
 gofumpt = "0.10.0"
 prek = "0.4.11"
+# Node exists solely for the browser extension's tooling: web-ext is
+# Mozilla's own validator and is the only thing that checks the manifest
+# and API usage against strict_min_version.
+node = "24.18.0"
+"npm:web-ext" = "10.5.0"
 
 [tasks.test]
 description = "Run Go tests"
@@ -38,6 +43,14 @@ run = [
 [tasks.format]
 description = "Format Go code"
 run = ["gofumpt -w ./cmd/ ./internal/"]
+
+[tasks.ext-lint]
+description = "Validate the browser extension with web-ext"
+run = ["web-ext lint --source-dir extension --warnings-as-errors"]
+
+[tasks.ext-run]
+description = "Launch Firefox with the extension loaded"
+run = ["web-ext run --source-dir extension"]
 
 [tasks.hooks]
 description = "Run prek hooks"
