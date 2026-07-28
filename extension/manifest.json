@@ -3,34 +3,35 @@
   "name": "trackkr",
   "version": "0.1.0",
   "description": "Reports the active tab to a trackkrd daemon running on this machine.",
-
   "browser_specific_settings": {
     "gecko": {
       "id": "trackkr@yelinaung.com",
-
-      "//strict_min_version": "Set by what the manifest keys need, not by guesswork: optional_host_permissions landed in 128 and data_collection_permissions in 142. A lower floor lets the extension install where the runtime permission request cannot work.",
       "strict_min_version": "142.0",
-
-      "//data_collection_permissions": "Recording which pages were open and for how long is the entire point, so browsingActivity is required rather than optional; page titles are read off the page, hence websiteContent.",
       "data_collection_permissions": {
-        "required": ["browsingActivity", "websiteContent"]
+        "required": [
+          "browsingActivity",
+          "websiteContent"
+        ]
       }
     }
   },
-
-  "permissions": ["tabs", "storage", "idle"],
-
-  "//optional_host_permissions": "Must cover every address the daemon's own validation accepts, or a config it considers valid leaves the extension permanently unable to request access. It accepts any loopback address; these are the ones a match pattern can express.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "idle"
+  ],
   "optional_host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*",
     "http://[::1]/*"
   ],
-
   "background": {
-    "scripts": ["logic.js", "common.js", "background.js"]
+    "scripts": [
+      "logic.js",
+      "common.js",
+      "background.js"
+    ]
   },
-
   "action": {
     "default_popup": "popup.html",
     "default_title": "trackkr",
@@ -39,12 +40,10 @@
       "96": "icons/icon-96.png"
     }
   },
-
   "options_ui": {
     "page": "options.html",
     "open_in_tab": false
   },
-
   "icons": {
     "48": "icons/icon-48.png",
     "96": "icons/icon-96.png"
