@@ -112,6 +112,44 @@
     return latest.filter((record) => !sent.has(recordKey(record)));
   }
 
+  // hostFor returns the comparable hostname of a URL: lowercase, no
+  // port, no "www." prefix. Returns "" for anything unparseable.
+  function hostFor(rawUrl) {
+    try {
+      return new URL(rawUrl).hostname.toLowerCase().replace(/^www\./, "");
+    } catch (err) {
+      return "";
+    }
+  }
+
+  // parseIgnoreList turns the textarea into patterns: one per line,
+  // blanks and # comments dropped, normalized the same way hosts are so
+  // "WWW.Example.com " and "example.com" are the same rule.
+  function parseIgnoreList(text) {
+    return String(text || "")
+      .split("\n")
+      .map((line) => line.trim().toLowerCase())
+      .filter((line) => line !== "" && !line.startsWith("#"))
+      .map((line) => line.replace(/^\*\./, "").replace(/^www\./, ""));
+  }
+
+  // isIgnored reports whether a URL should never be recorded.
+  //
+  // A pattern covers its subdomains: "gov.sg" ignores
+  // "login.id.singpass.gov.sg". That is the expectation people bring
+  // from hosts files and ad blockers, and the alternative -- listing
+  // every subdomain a bank redirects through -- is unusable.
+  function isIgnored(rawUrl, patterns) {
+    if (!patterns || patterns.length === 0) {
+      return false;
+    }
+    const host = hostFor(rawUrl);
+    if (host === "") {
+      return false;
+    }
+    return patterns.some((pattern) => host === pattern || host.endsWith(`.${pattern}`));
+  }
+
   function normalizeDaemonUrl(raw) {
     return String(raw || DEFAULT_DAEMON_URL).trim().replace(/\/+$/, "");
   }
@@ -138,6 +176,9 @@
     trimQueue,
     recordKey,
     removeDelivered,
+    hostFor,
+    parseIgnoreList,
+    isIgnored,
     normalizeDaemonUrl,
     originFor,
   };

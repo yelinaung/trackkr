@@ -114,6 +114,7 @@ function optionsPage(options = {}) {
       form: {},
       daemonUrl: { value: "http://127.0.0.1:7600" },
       token: { value: "a-token" },
+      ignored: { value: "" },
       status: { className: "", textContent: "" },
     },
     ...options,
@@ -141,6 +142,7 @@ test("saving stores the normalized URL and token", async () => {
       form: {},
       daemonUrl: { value: "  http://127.0.0.1:7600///  " },
       token: { value: "  a-token  " },
+      ignored: { value: "" },
       status: { className: "", textContent: "" },
     },
   });
@@ -166,6 +168,7 @@ test("an unparseable URL is rejected before storing anything", async () => {
       form: {},
       daemonUrl: { value: "not a url" },
       token: { value: "a-token" },
+      ignored: { value: "" },
       status: { className: "", textContent: "" },
     },
   });
@@ -215,4 +218,28 @@ test("the popup offers the grant button only for a missing permission", async ()
   const ok = popupPage({ granted: true });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ok.nodes.grant.hidden, true, "no button once granted");
+});
+
+test("the ignore list is parsed on save and restored on load", async () => {
+  const page = optionsPage({
+    elements: {
+      form: {},
+      daemonUrl: { value: "http://127.0.0.1:7600" },
+      token: { value: "a-token" },
+      ignored: { value: "  Bank.Example \n\n# a note\n*.gov.sg\n" },
+      status: { className: "", textContent: "" },
+    },
+  });
+
+  await page.fire("form", "submit");
+
+  // Array.from crosses the vm realm boundary: the page builds its
+  // array with the context's own Array, which deepStrictEqual treats
+  // as a different type despite identical contents.
+  assert.deepEqual(Array.from(page.storage.ignored), ["bank.example", "gov.sg"]);
+
+  // A second page load shows the cleaned-up list back to the user.
+  const reopened = optionsPage({ storage: page.storage });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(reopened.nodes.ignored.value, "bank.example\ngov.sg");
 });

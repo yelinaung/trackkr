@@ -21,6 +21,20 @@ mise ext-lint                 # web-ext lint, warnings are errors
 mise ext-test                 # logic and background tests, no browser
 ```
 
+## Ignoring sites
+
+The options page takes a list of hosts that must never be recorded, one
+per line. A host covers its subdomains, so `gov.sg` also ignores
+`login.id.singpass.gov.sg` -- listing every host a bank redirects
+through would be unusable. Blank lines and `#` comments are dropped, a
+leading `*.` or `www.` is stripped, and matching is case-insensitive.
+
+The check runs in the browser, before anything is stored or queued.
+That placement is the point: an ignored page never reaches the daemon,
+so it cannot appear in the daemon's logs, the database, or the
+dashboard. Filtering on the daemon instead would mean the URL had
+already left the browser.
+
 ## Manifest decisions
 
 JSON has no comments and Firefox warns about any key it does not

@@ -10,10 +10,11 @@ globalThis.api = globalThis.browser ?? globalThis.chrome;
 
 // getSettings returns the configured daemon URL and token.
 globalThis.getSettings = async function getSettings() {
-  const stored = await api.storage.local.get(["daemonUrl", "token"]);
+  const stored = await api.storage.local.get(["daemonUrl", "token", "ignored"]);
   return {
     daemonUrl: normalizeDaemonUrl(stored.daemonUrl),
     token: stored.token || "",
+    ignored: stored.ignored || [],
   };
 };
 

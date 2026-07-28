@@ -97,6 +97,15 @@ async function startTracking(tab, startedAt = Date.now()) {
     await writeCurrent(null);
     return;
   }
+
+  // Filtering here rather than on the daemon is the point: an ignored
+  // host is never stored, never sent, and never appears in a log. The
+  // daemon cannot un-see a URL it has already received.
+  const { ignored } = await getSettings();
+  if (isIgnored(tab.url, ignored)) {
+    await writeCurrent(null);
+    return;
+  }
   await writeCurrent({
     tabId: tab.id,
     windowId: tab.windowId,

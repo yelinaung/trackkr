@@ -43,7 +43,7 @@ function createHarness(options = {}) {
 
   const state = {
     session: {},
-    local: { token, daemonUrl: "http://127.0.0.1:7600" },
+    local: { token, daemonUrl: "http://127.0.0.1:7600", ignored: [] },
     tabs: { ...tabs },
     windows: { ...windows },
     focusedWindowId,

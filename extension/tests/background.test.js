@@ -303,3 +303,54 @@ test("startup does not disturb an existing segment", async () => {
 
   assert.equal(h.current().startedAt, startedAt, "the running segment was not restarted");
 });
+
+// An ignored host must never be recorded at all: filtering in the
+// browser means the daemon cannot log what it never receives.
+test("an ignored site is never tracked", async () => {
+  const h = twoWindows();
+  h.state.local.ignored = ["private.example"];
+  h.state.tabs[40] = {
+    id: 40,
+    windowId: FOCUSED,
+    active: true,
+    url: "https://login.private.example/session",
+    title: "Bank",
+  };
+
+  await h.fire("tabs.onActivated", { tabId: 40, windowId: FOCUSED });
+  await h.settled();
+
+  assert.equal(h.current(), null, "no segment started for an ignored host");
+  assert.equal(h.queue().length, 0);
+  assert.equal(h.state.requests.length, 0, "nothing was sent");
+});
+
+// Navigating from a recorded page to an ignored one must close the
+// first segment rather than silently continuing it.
+test("navigating to an ignored site ends the previous segment", async () => {
+  const h = twoWindows();
+  h.state.local.ignored = ["private.example"];
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.state.session.current.startedAt -= 60_000;
+
+  const tab = {
+    id: 10,
+    windowId: FOCUSED,
+    active: true,
+    url: "https://private.example/secret",
+    title: "Secret",
+  };
+  await h.fire("tabs.onUpdated", 10, { url: tab.url }, tab);
+  await h.settled();
+
+  assert.equal(h.current(), null, "the ignored page is not being timed");
+
+  const sent = h.state.requests.flatMap((r) => r.body.records);
+  assert.equal(sent.length, 1, "the earlier page was still recorded");
+  assert.equal(sent[0].url, "https://focused.example");
+  for (const record of sent) {
+    assert.equal(record.url.includes("private.example"), false, "an ignored URL was sent");
+  }
+});

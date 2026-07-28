@@ -35,7 +35,15 @@ label {
   font-weight: 600;
 }
 
-input {
+textarea {
+  min-height: 6rem;
+  resize: vertical;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+input,
+textarea {
   padding: 0.45rem 0.55rem;
   font: inherit;
   color: var(--ink);
@@ -45,6 +53,7 @@ input {
 }
 
 input:focus-visible,
+textarea:focus-visible,
 .btn:focus-visible {
   outline: 2px solid var(--ok);
   outline-offset: 2px;

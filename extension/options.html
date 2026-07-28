@@ -20,6 +20,16 @@
     same value in <code>extension_token</code>.
   </p>
 
+  <label for="ignored">Never record these sites</label>
+  <textarea id="ignored" name="ignored" rows="5"
+            placeholder="bank.example&#10;login.id.singpass.gov.sg&#10;# lines starting with # are notes"></textarea>
+  <p class="hint">
+    One host per line. A host covers its subdomains, so
+    <code>gov.sg</code> also ignores <code>login.id.singpass.gov.sg</code>.
+    Matching happens in the browser: ignored pages are never sent to the
+    daemon, so they cannot appear in its logs or the dashboard.
+  </p>
+
   <button type="submit" class="btn">Save and grant access</button>
 </form>
 

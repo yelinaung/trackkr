@@ -9,6 +9,7 @@
 const form = document.getElementById("form");
 const urlEl = document.getElementById("daemonUrl");
 const tokenEl = document.getElementById("token");
+const ignoredEl = document.getElementById("ignored");
 const statusEl = document.getElementById("status");
 
 function report(kind, text) {
@@ -17,9 +18,10 @@ function report(kind, text) {
 }
 
 async function load() {
-  const { daemonUrl, token } = await getSettings();
+  const { daemonUrl, token, ignored } = await getSettings();
   urlEl.value = daemonUrl;
   tokenEl.value = token;
+  ignoredEl.value = ignored.join("\n");
 }
 
 form.addEventListener("submit", async (event) => {
@@ -49,7 +51,11 @@ form.addEventListener("submit", async (event) => {
     granted = false;
   }
 
-  await api.storage.local.set({ daemonUrl, token });
+  await api.storage.local.set({
+    daemonUrl,
+    token,
+    ignored: parseIgnoreList(ignoredEl.value),
+  });
 
   if (!granted) {
     report("error", `Saved, but Firefox is still blocking ${origin}. Requests will fail until it is allowed.`);

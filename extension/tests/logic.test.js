@@ -228,3 +228,52 @@ test("removeDelivered tolerates duplicates and empty input", () => {
   assert.deepEqual(removeDelivered([record], []), [record]);
   assert.deepEqual(removeDelivered([record, record], [record]), []);
 });
+
+test("hostFor normalizes the comparable hostname", () => {
+  const { hostFor } = require("../logic.js");
+
+  assert.equal(hostFor("https://www.YouTube.com/watch?v=x"), "youtube.com");
+  assert.equal(hostFor("https://example.com:8443/a"), "example.com");
+  assert.equal(hostFor("https://user:pw@intranet.example.com/a"), "intranet.example.com");
+  assert.equal(hostFor("http://[::1]:7600/status"), "[::1]");
+  assert.equal(hostFor("not a url"), "");
+  assert.equal(hostFor(""), "");
+});
+
+test("parseIgnoreList reads the textarea forgivingly", () => {
+  const { parseIgnoreList } = require("../logic.js");
+
+  const text = [
+    "  Bank.Example  ",
+    "",
+    "# a note about the next line",
+    "*.gov.sg",
+    "www.reddit.com",
+  ].join("\n");
+
+  assert.deepEqual(parseIgnoreList(text), ["bank.example", "gov.sg", "reddit.com"]);
+  assert.deepEqual(parseIgnoreList(""), []);
+  assert.deepEqual(parseIgnoreList(undefined), []);
+});
+
+// A pattern has to cover subdomains, or ignoring a bank means listing
+// every host it redirects through.
+test("isIgnored matches a host and its subdomains", () => {
+  const { isIgnored } = require("../logic.js");
+
+  const patterns = ["gov.sg", "bank.example"];
+
+  assert.equal(isIgnored("https://login.id.singpass.gov.sg/x", patterns), true);
+  assert.equal(isIgnored("https://gov.sg/", patterns), true);
+  assert.equal(isIgnored("https://www.bank.example/accounts", patterns), true);
+  assert.equal(isIgnored("https://BANK.EXAMPLE/accounts", patterns), true);
+
+  assert.equal(isIgnored("https://youtube.com/", patterns), false);
+  // A suffix that is not a domain boundary must not match.
+  assert.equal(isIgnored("https://notgov.sg/", patterns), false);
+  assert.equal(isIgnored("https://mybank.example.org/", patterns), false);
+
+  assert.equal(isIgnored("https://gov.sg/", []), false);
+  assert.equal(isIgnored("https://gov.sg/", undefined), false);
+  assert.equal(isIgnored("not a url", patterns), false);
+});
