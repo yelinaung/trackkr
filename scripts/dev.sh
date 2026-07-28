@@ -114,14 +114,24 @@ EOF
 say "starting the server on http://127.0.0.1:$DEV_PORT"
 go run ./cmd/server &
 SERVER_PID=$!
+DAEMON_PID=""
 
 cleanup() {
+  # Disarm first. Anything that signals this shell -- directly or via
+  # its process group -- would otherwise re-enter this function through
+  # the TERM trap and never reach the kills below.
+  trap - EXIT INT TERM
+
   say "stopping"
-  # go run execs a child, so killing the process group is what actually
-  # stops the server rather than orphaning it on the port.
-  kill -- "-$$" 2>/dev/null || true
-  kill "$SERVER_PID" 2>/dev/null || true
-  wait "$SERVER_PID" 2>/dev/null || true
+  for pid in "$DAEMON_PID" "$SERVER_PID"; do
+    [ -n "$pid" ] || continue
+    # Kill the child before the parent: "go run" execs the compiled
+    # binary, and killing only the go process orphans that binary,
+    # still holding its port.
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -145,4 +155,10 @@ cat <<EOF
 EOF
 
 say "starting the daemon (Ctrl-C stops everything)"
-go run ./cmd/trackkrd -config "$CONFIG"
+# Backgrounded and waited on rather than run in the foreground: bash
+# defers trap handlers until a foreground child exits, so a signal sent
+# to this script would otherwise be ignored until the daemon happened
+# to stop on its own -- leaving both processes holding their ports.
+go run ./cmd/trackkrd -config "$CONFIG" &
+DAEMON_PID=$!
+wait "$DAEMON_PID"

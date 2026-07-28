@@ -203,14 +203,28 @@ func TestTimelineListsSitesSeparatelyFromApps(t *testing.T) {
 }
 
 // A day with no browsing must not render an empty section.
+//
+// Both shapes are covered on purpose: the handler builds the slice with
+// make(...), so it hands the template an empty *non-nil* slice on a day
+// of desktop-only activity. Go template truth for a slice is len > 0,
+// not nil-ness, so both are falsy -- but only a test says so out loud.
 func TestTimelineOmitsSitesWhenThereAreNone(t *testing.T) {
 	t.Parallel()
 
-	data := sampleTimelineData()
-	data.Sites = nil
+	for name, sites := range map[string][]TotalView{
+		"nil":           nil,
+		"empty non-nil": make([]TotalView, 0, 4),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 
-	if strings.Contains(renderPartial(t, "timeline", data), "Which pages") {
-		t.Error("an empty site section was rendered")
+			data := sampleTimelineData()
+			data.Sites = sites
+
+			if strings.Contains(renderPartial(t, "timeline", data), "Which pages") {
+				t.Errorf("%s site list rendered an empty section", name)
+			}
+		})
 	}
 }
 
