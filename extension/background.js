@@ -61,6 +61,21 @@ async function writeQueue(queue) {
   await api.storage.local.set({ [QUEUE_KEY]: trimQueue(queue) });
 }
 
+// userIsActive reports whether the person is actually at the machine.
+//
+// Focus alone is not enough: a live-updating page can change its title
+// while the user is away, and without this check that event would start
+// a fresh segment and quietly record the rest of their absence.
+async function userIsActive() {
+  try {
+    return (await api.idle.queryState(IDLE_SECONDS)) === "active";
+  } catch (err) {
+    // If the state cannot be read, assume presence rather than
+    // silently stopping all tracking.
+    return true;
+  }
+}
+
 // isFocused reports whether a window currently has the user's
 // attention.
 //
@@ -149,10 +164,16 @@ async function deliver() {
 
 // switchTo finalizes the current segment and starts a new one in a
 // single step, which is what every event below actually wants.
+//
+// The new segment only starts if the user is present. Ending the old
+// one is unconditional: whatever prompted the event, the previous tab
+// stopped being watched.
 async function switchTo(tab) {
   const now = Date.now();
   await finalize(now);
-  await startTracking(tab, now);
+  if (await userIsActive()) {
+    await startTracking(tab, now);
+  }
   await deliver();
 }
 
@@ -209,9 +230,11 @@ api.windows.onFocusChanged.addListener((windowId) =>
 api.idle.onStateChanged.addListener((state) =>
   serialize(async () => {
     if (state === "idle" || state === "locked") {
-      // The browser reports idleness one interval after it began, so
-      // the segment ended then, not now.
-      await finalize(idleEndedAt(Date.now()));
+      // Idleness is reported one interval after it began, so that
+      // segment ended then. A lock happens the moment the user asks
+      // for it, and backdating it would end a young segment before it
+      // started -- discarding real browsing.
+      await finalize(idleEndsAt(state, Date.now()));
       await deliver();
       return;
     }

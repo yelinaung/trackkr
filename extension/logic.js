@@ -76,6 +76,17 @@
     return now - idleSeconds * 1000;
   }
 
+  // idleEndsAt picks the end time for an idle-state transition.
+  //
+  // Only "idle" is backdated. A lock is an instant, deliberate act --
+  // the user hit the shortcut now, not five minutes ago -- so
+  // backdating it would place the end before the start for any segment
+  // younger than the interval, and buildRecord would discard perfectly
+  // real browsing.
+  function idleEndsAt(state, now, idleSeconds = IDLE_SECONDS) {
+    return state === "idle" ? idleEndedAt(now, idleSeconds) : now;
+  }
+
   // trimQueue keeps the newest records when an offline browser has been
   // accumulating for a long time.
   function trimQueue(queue, limit = QUEUE_LIMIT) {
@@ -123,6 +134,7 @@
     shouldSwitch,
     buildRecord,
     idleEndedAt,
+    idleEndsAt,
     trimQueue,
     recordKey,
     removeDelivered,
