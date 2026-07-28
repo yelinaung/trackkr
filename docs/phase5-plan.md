@@ -31,17 +31,22 @@ internal/tracker/
   macos_darwin.m               # //go:build darwin && cgo
   platform_nocgo_darwin.go     # //go:build darwin && !cgo, both factories
 deploy/
-  com.trackkr.daemon.plist     # launchd user agent
-  trackkr.app/                 # bundle skeleton: Info.plist, wrapper
+  Info.plist                   # bundle template: id, LSUIElement
+  README-macos.md              # install, permissions, launchctl, signing
 scripts/
-  bundle-macos.sh              # build, assemble the .app, ad-hoc sign
+  bundle-macos.sh              # build, assemble the .app, sign, emit the plist
 ```
+
+There is no wrapper script and no checked-in plist: launchd runs the
+bundled binary directly, and the agent plist is generated per user
+because `$HOME` cannot appear in one.
 
 Modified: `window.go` (takes ownership of `ErrUnsupportedPlatform`),
 `window_other.go` and `idle_other.go` (tags become
-`!linux && !darwin`), `config.go` (macOS keys), `cmd/trackkrd/main.go`
-and `main_test.go` (the detector factories take config), `mise.toml`
-(a bundling task), `docs/plan.md`.
+`!linux && !darwin`), `config.go` and `config_test.go` (macOS keys, and the
+`DefaultConfigPath` comment that misdescribes macOS),
+`cmd/trackkrd/main.go` and `main_test.go` (factories take config and
+logger), `mise.toml` (a bundling task), `docs/plan.md`.
 
 Every filename above matters. Go applies implicit build constraints
 from `_darwin` suffixes, and `_test.go` files inherit them, so anything
@@ -109,17 +114,28 @@ provides the C boundary.
 lookup needs a pid and happens only when trusted:
 
 ```c
-// Fills the caller's struct. Returns 0 on success, 1 when no
-// application is frontmost. Strings are malloc'd UTF-8 and owned by
-// the caller; both are NULL on failure.
 typedef struct { char *name; char *bundleID; pid_t pid; } trackkr_app;
+
+#define TRACKKR_OK        0  // out is populated
+#define TRACKKR_NO_APP    1  // nobody is frontmost: ErrNoActiveWindow
+#define TRACKKR_FAILED    2  // allocation or conversion failed: a real error
+
+// Zero-initializes *out before doing anything. On any non-OK return,
+// every partial allocation is freed and both pointers are NULL, so the
+// caller never frees a dangling pointer and never mistakes a failed
+// conversion for an empty desktop.
 int trackkr_frontmost_app(trackkr_app *out);
 
 // Returns a malloc'd UTF-8 title, or NULL when the application has no
 // focused window, exposes no title, or the AX call fails. NULL is not
-// an error the caller reports; it means "no title".
+// an error; it means "no title".
 char *trackkr_focused_window_title(pid_t pid);
 ```
+
+Three statuses, not two. "Nobody is frontmost" is an ordinary state
+that maps to `ErrNoActiveWindow`; a failed `CFStringGetCString` is a
+fault worth surfacing. Collapsing them would report an empty desktop
+whenever a conversion failed.
 
 Both wrap their bodies in `@autoreleasepool`, since a daemon polling
 every three seconds without one leaks steadily. Every `AXUIElementRef`
@@ -165,18 +181,31 @@ applications' UI. One cgo call; every decision around it is ordinary Go
 in `titles.go`, which is what the Linux runner tests.
 
 ```go
+// trustState is tri-valued on purpose: the zero value is "not yet
+// asked", so the first observation is distinguishable from a cached
+// untrusted answer and can be logged.
+type trustState int
+
+const (
+    trustUnknown trustState = iota
+    trustGranted
+    trustDenied
+)
+
 // titlePolicy decides whether to attempt a title read. It caches the
 // answer because AXIsProcessTrusted is a syscall and the poll runs
 // every three seconds.
 type titlePolicy struct {
-    enabled   bool                 // macos_read_titles
-    isTrusted func() bool          // the cgo call, or a fake
-    now       func() time.Time     // injected, so tests need no sleeps
-    log       func(trusted bool)   // called only on a transition
+    enabled       bool               // macos_read_titles
+    promptEnabled bool               // macos_prompt_for_accessibility
+    isTrusted     func() bool        // the cgo call, or a fake
+    prompt        func()             // AXIsProcessTrustedWithOptions, or a fake
+    now           func() time.Time   // injected, so tests need no sleeps
+    log           func(trusted bool) // first observation, then changes only
 
     mu        sync.Mutex
-    checked   bool
-    trusted   bool
+    state     trustState
+    prompted  bool
     nextCheck time.Time
 }
 
@@ -194,10 +223,20 @@ The rules, each one a test:
   `nextCheck`, two minutes later. Granting permission takes effect
   within that window with no restart, and a denied permission costs one
   syscall per two minutes rather than one per poll;
-- `log` fires on transitions only -- untrusted-to-trusted and back --
-  which answers "log once" precisely: once per untrusted period, not
-  once per process. A permission revoked and re-granted says so both
-  times;
+- `log` fires on the first observation and on every change after it.
+  A two-valued cache cannot do this: an initial `false` looks identical
+  to a cached `false`, so the warning the operator needs at startup
+  never appears. `trustUnknown` as the zero value makes "not yet asked"
+  a state rather than an accident. "Log once" therefore means once per
+  untrusted period, and a permission revoked and re-granted says so
+  both times;
+- the prompt is separate from the check. On the first denied
+  observation, if `promptEnabled` and not `prompted`, call `prompt()`,
+  set `prompted`, and keep the denied answer -- the API returns the
+  pre-prompt value, so believing it would be wrong. Any later grant
+  arrives through the ordinary recheck. Without `prompted` in the
+  struct there is no way to express "at most once per process", let
+  alone test it;
 - the mutex is not decoration. `ActiveWindow` is called from the
   tracker's single goroutine today, but a detector that silently
   requires that is a trap for the next caller.
@@ -325,13 +364,20 @@ session to see a frontmost application at all.
 
 ### Step 6: config, and getting it to the detector
 
-New client keys, defaulting to today's behaviour so an existing config
-keeps working:
+New client keys. Their defaults describe the behaviour this phase
+introduces, since macOS has no window detector today and nothing to
+preserve:
 
 ```toml
-macos_read_titles = true                # false = app names only
-macos_prompt_for_accessibility = false  # true = ask on first run
+macos_read_titles = true                # false = app names only, no AX at all
+macos_prompt_for_accessibility = false  # true = ask once on first denial
 ```
+
+Titles default on because they are what makes a record useful, and the
+cost of leaving them on without permission is an empty string. The
+prompt defaults off because a background agent that throws a system
+dialog at an operator who never asked for one is an unpleasant
+surprise; `mise` output and the README point at the setting.
 
 Exposing them is not enough: `cmd/trackkrd` holds
 `newWindow func() (tracker.WindowDetector, error)`, a zero-argument
@@ -340,10 +386,18 @@ implementation. Both factories gain a config parameter:
 
 ```go
 type detectors struct {
-    newWindow func(*tracker.Config) (tracker.WindowDetector, error)
+    newWindow func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error)
     newIdle   func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector
 }
 ```
+
+The window factory takes the logger too. The darwin detector has to
+explain a missing Accessibility permission exactly once, and `run`
+already holds both values -- passing one and not the other would leave
+the detector reaching for a package-level logger, which is the global
+this codebase has avoided everywhere else. The trust checker and the
+clock stay private constructor seams with production defaults; only
+tests supply them.
 
 Every implementation changes signature -- linux, darwin, the no-cgo
 darwin fallback, the `!linux && !darwin` fallback -- along with
@@ -362,28 +416,60 @@ note, and the macOS section of the daemon design.
 ## Testing
 
 cgo code that talks to the window server cannot run on the Linux CI
-runner, and mocking `NSWorkspace` proves nothing. The split that makes
-this testable is the same one the extension uses: keep the cgo surface
-to a single function that returns `(app, title string, err error)`, and
-put every decision above it in ordinary Go.
+runner, and mocking `NSWorkspace` proves nothing. Three layers keep the
+untestable part small:
 
-That leaves these covered by tests in `titles_test.go` and
-`config_test.go`, both of which the Linux runner executes:
+```go
+// Portable, in titles.go. Every decision lives here.
+type appInfo struct {
+    Name     string
+    BundleID string
+    PID      int
+}
+
+type detectorCore struct {
+    policy    *titlePolicy
+    frontmost func() (appInfo, error)  // darwin: one C call
+    titleFor  func(pid int) string     // darwin: the other C call
+}
+
+func (d *detectorCore) ActiveWindow(context.Context) (WindowInfo, error)
+```
+
+`window_darwin.go` builds a `detectorCore` with the two C calls wrapped
+as Go functions and nothing else. `ActiveWindow` -- which bundle
+identifiers mean `ErrNoActiveWindow`, whether to consult the policy,
+what to do when a trusted read yields no title -- is ordinary Go the
+Linux runner executes with fakes for both seams.
+
+That is the difference from the sketch this plan started with: the cgo
+boundary is two narrow adapters, not one function returning a finished
+answer, so the interesting logic sits above it rather than behind it.
+
+Covered by `titles_test.go` and `config_test.go`, both of which run in
+CI:
 
 - the trust cache: first call checks, the next ten reuse, and a call
   past `trustRecheckInterval` checks again, all driven by a fake
   `now()` with no sleeping;
-- the untrusted-to-trusted transition mid-run, and back, asserting the
-  log fires once per period rather than once per process or once per
-  poll;
-- `macos_read_titles = false` short-circuiting before `isTrusted` is
-  called at all, which is what proves the config reaches the detector
-  and that titles-off also means prompt-off;
-- the prompt firing at most once per process while the state stays
-  untrusted, since the API answers with the pre-prompt value;
+- the first observation logging even though it is not a change, then
+  transitions in both directions logging once each;
+- the prompt firing at most once per process, with the denied answer
+  retained, and never firing when `promptEnabled` is false;
+- `macos_read_titles = false` short-circuiting before `isTrusted` or
+  `prompt` is called at all, which proves the config reaches the
+  detector and that titles-off means prompt-off;
 - `ErrNoActiveWindow` for a nil application, an empty name, and each
-  listed bundle identifier;
-- a trusted read that yields no title keeping the application record.
+  listed bundle identifier, via the injected `frontmost`;
+- a trusted read whose `titleFor` returns "" keeping the application
+  record with an empty title;
+- an operational failure from `frontmost` surfacing as an error rather
+  than as an empty desktop;
+- the config keys and their defaults.
+
+A daemon test in `cmd/trackkrd` asserts the loaded config and the
+logger both reach the factory, since a factory that silently ignores
+its arguments would pass every test above.
 
 What stays manual, on a Mac: the cgo calls themselves, the permission
 prompt, the bundle's TCC identity, and whether a rebuild keeps the
@@ -399,23 +485,27 @@ Phase 6 has a signal it can use.
 ## Verification
 
 1. `mise test` and `mise test-race` pass; coverage stays at or above 50%.
-2. `mise lint` clean, and `CGO_ENABLED=0 GOOS=darwin go build ./...`
-   still compiles on the Linux runner -- the check that the no-cgo
-   fallback, the relocated sentinel, and the constrained `.m` file all
-   line up.
-3. `mise run-daemon` on this Mac logs neither `window detection
+2. `mise lint` clean, and on the Linux runner both
+   `CGO_ENABLED=0 GOOS=darwin go build ./...` (the no-cgo fallback, the
+   relocated sentinel, and the constrained `.m` file) and
+   `CGO_ENABLED=0 GOOS=windows go build ./...` (the
+   `!linux && !darwin` row, which nothing else exercises) compile.
+3. On a Mac: `go build ./...` with cgo on, and `mise bundle-macos`
+   produces a signed bundle. Neither runs in CI, so both belong in the
+   phase's checklist rather than its assumptions.
+4. `mise run-daemon` on this Mac logs neither `window detection
    unavailable` nor `idle detection not implemented`.
-4. Switch between applications and confirm records appear on the
+5. Switch between applications and confirm records appear on the
    dashboard with app names beside the existing browser rows.
-5. Without Accessibility granted: records carry app names and empty
+6. Without Accessibility granted: records carry app names and empty
    titles, and the log says so once, not every poll.
-6. Grant Accessibility to the bundled app, wait for the re-check, and
+7. Grant Accessibility to the bundled app, wait for the re-check, and
    confirm titles start appearing without restarting the daemon.
-7. Walk away past the idle threshold and confirm the record ends when
+8. Walk away past the idle threshold and confirm the record ends when
    you stopped, not when you came back.
-8. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
+9. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
    the daemon restarts and keeps its Accessibility grant.
-9. Rebuild, re-sign, and re-bundle, then confirm whether the grant
+10. Rebuild, re-sign, and re-bundle, then confirm whether the grant
    survives. With `TRACKKR_SIGN_IDENTITY` set it should; ad-hoc is the
    case that may ask again, and the answer belongs in the README
    rather than in a surprise.
