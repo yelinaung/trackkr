@@ -174,8 +174,25 @@ func TestTimelineHourMarksMatchDaySpan(t *testing.T) {
 	data.Chart.Lanes = sampleTimelineData().Chart.Lanes
 
 	html := renderPartial(t, "timeline", data)
-	if got := strings.Count(html, `class="timeline__hour"`); got != 23 {
+	if got := strings.Count(html, `class="timeline__hour timeline__hour--1"`); got != 23 {
 		t.Errorf("hour labels = %d, want 23 on a spring-forward day", got)
+	}
+}
+
+func TestDashboardViewSwitchReflectsSelection(t *testing.T) {
+	t.Parallel()
+
+	data := sampleTimelineData()
+	data.View = dashboardViewWeek
+	html := renderPage(t, pageDashboard, data)
+
+	for _, want := range []string{
+		`name="view" type="radio" value="day"`,
+		`name="view" type="radio" value="week" checked`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("dashboard view switch is missing %q", want)
+		}
 	}
 }
 
@@ -258,7 +275,7 @@ func TestTimelineShowsTruncationNotice(t *testing.T) {
 	data.RecordLimit = 5000
 
 	html := renderPartial(t, "timeline", data)
-	if !strings.Contains(html, "5000") || !strings.Contains(html, "totals below cover the whole day") {
+	if !strings.Contains(html, "5000") || !strings.Contains(html, "totals below cover the selected range") {
 		t.Errorf("truncation notice missing or unclear:\n%s", html)
 	}
 }
@@ -276,7 +293,7 @@ func TestTimelineShowsSourceTruncationNotice(t *testing.T) {
 		!strings.Contains(html, "totals show") {
 		t.Errorf("source truncation notice missing or unclear:\n%s", html)
 	}
-	if strings.Contains(html, "totals below cover the whole day") {
+	if strings.Contains(html, "totals below cover the selected range") {
 		t.Error("source-truncated totals are described as complete")
 	}
 }
@@ -285,7 +302,7 @@ func TestTimelineEmptyState(t *testing.T) {
 	t.Parallel()
 	html := renderPartial(t, "timeline", &pageData{Chart: Chart{SpanMin: 1440}})
 
-	if !strings.Contains(html, "Nothing tracked on this day") {
+	if !strings.Contains(html, "Nothing tracked in this period") {
 		t.Errorf("empty state missing:\n%s", html)
 	}
 }
@@ -352,6 +369,7 @@ func sampleTimelineData() *pageData {
 		Date:      "2026-05-04",
 		Today:     "2026-05-04",
 		DateLabel: "Monday, 4 May 2026",
+		View:      dashboardViewDay,
 		Devices:   devices,
 		Chart:     layout(records, devices, day),
 		Totals: []TotalView{{

@@ -288,10 +288,51 @@ button:focus-visible {
   gap: 0.4rem;
 }
 
-.filters__field label {
+.filters__field label,
+.filters__field legend {
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--ink-soft);
+}
+
+.filters__period {
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.view-switch {
+  display: flex;
+  padding: 0.2rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background-color: #f5f6f7;
+}
+
+.view-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.view-switch label {
+  padding: 0.3rem 0.75rem;
+  border-radius: calc(var(--radius) - 3px);
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.view-switch input:checked + label {
+  color: var(--ink);
+  background-color: var(--paper-raised);
+  box-shadow: 0 1px 2px rgb(22 25 29 / 12%);
+}
+
+.view-switch input:focus-visible + label {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* htmx-config disables htmx's own injected indicator styles, so the
@@ -325,13 +366,17 @@ button:focus-visible {
   font-size: 0.72rem;
 }
 
-/* One flex cell per hour: a 23- or 25-hour DST day gets the right count
-   from the server, and equal cells still line up with the bars. */
+/* Cells are weighted by their real duration. Daily hour cells are equal;
+   weekly day cells stay aligned across 23- and 25-hour DST days. */
 .timeline__hour {
   flex: 1 1 0;
   border-left: 1px solid var(--edge);
   padding-left: 4px;
 }
+
+.timeline__hour--23 { flex-grow: 23; }
+.timeline__hour--24 { flex-grow: 24; }
+.timeline__hour--25 { flex-grow: 25; }
 
 .lane {
   display: flex;

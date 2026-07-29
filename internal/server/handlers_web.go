@@ -33,8 +33,10 @@ const (
 	maxPasswordBytes = 72
 
 	// uniqueViolation is PostgreSQL's SQLSTATE for a duplicate key.
-	uniqueViolation = "23505"
-	flashKindError  = "error"
+	uniqueViolation   = "23505"
+	flashKindError    = "error"
+	dashboardViewDay  = "day"
+	dashboardViewWeek = "week"
 )
 
 // isUniqueViolation reports whether err is a duplicate-key error rather
@@ -306,7 +308,7 @@ func (h *webHandlers) handleDashboard() http.HandlerFunc {
 	}
 }
 
-// handleTimeline serves the htmx partial for the date and device filter.
+// handleTimeline serves the htmx partial for the view, date, and device filters.
 func (h *webHandlers) handleTimeline() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		data, err := h.timelineData(w, r)
@@ -322,7 +324,7 @@ func (h *webHandlers) handleTimeline() http.HandlerFunc {
 	}
 }
 
-// timelineData gathers one day of activity for the signed-in user.
+// timelineData gathers the selected day or week for the signed-in user.
 func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pageData, error) {
 	user := UserFromContext(r.Context())
 	if user == nil {
@@ -336,7 +338,11 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	data := h.base(r, token)
 
 	day := h.parseDay(r.URL.Query().Get("date"))
+	view := parseDashboardView(r.URL.Query().Get("view"))
 	start, end := dayBounds(day)
+	if view == dashboardViewWeek {
+		start, end = weekBounds(day)
+	}
 
 	deviceID := parseDeviceID(r.URL.Query().Get("device"))
 	if deviceID != nil {
@@ -421,10 +427,18 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	data.Devices = devices
 	data.Totals = views
 	data.Sites = siteViews
-	data.Chart = layout(records, devices, day)
-	data.Date = start.Format("2006-01-02")
+	if view == dashboardViewWeek {
+		data.Chart = layoutWeek(records, devices, start, end)
+	} else {
+		data.Chart = layout(records, devices, day)
+	}
+	data.Date = day.Format("2006-01-02")
 	data.Today = time.Now().In(h.loc).Format("2006-01-02")
 	data.DateLabel = start.Format("Monday, 2 January 2006")
+	if view == dashboardViewWeek {
+		data.DateLabel = weekLabel(start, end)
+	}
+	data.View = view
 	data.Truncated = activity.TimelineTruncated
 	data.SourceTruncated = activity.SourceTruncated
 
@@ -456,6 +470,32 @@ func (h *webHandlers) parseDay(raw string) time.Time {
 		}
 	}
 	return time.Now().In(h.loc)
+}
+
+func parseDashboardView(raw string) string {
+	if raw == dashboardViewWeek {
+		return dashboardViewWeek
+	}
+	return dashboardViewDay
+}
+
+// weekBounds returns the Monday-based calendar week containing day.
+func weekBounds(day time.Time) (start, end time.Time) {
+	start, _ = dayBounds(day)
+	daysSinceMonday := (int(start.Weekday()) + 6) % 7
+	start = start.AddDate(0, 0, -daysSinceMonday)
+	return start, start.AddDate(0, 0, 7)
+}
+
+func weekLabel(start, end time.Time) string {
+	last := end.AddDate(0, 0, -1)
+	if start.Year() != last.Year() {
+		return fmt.Sprintf("%s - %s", start.Format("2 January 2006"), last.Format("2 January 2006"))
+	}
+	if start.Month() != last.Month() {
+		return fmt.Sprintf("%s - %s", start.Format("2 January"), last.Format("2 January 2006"))
+	}
+	return fmt.Sprintf("%d-%s", start.Day(), last.Format("2 January 2006"))
 }
 
 func parseDeviceID(raw string) *int64 {

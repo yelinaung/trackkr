@@ -10,13 +10,13 @@
 
 {{if .SourceTruncated}}
 <p class="notice" role="status">
-  This day exceeds {{.SourceLimit}} source records. The chart and totals show
-  the earliest bounded portion rather than the complete day.
+  This range exceeds {{.SourceLimit}} source records. The chart and totals show
+  the earliest bounded portion rather than the complete range.
 </p>
 {{else if .Truncated}}
 <p class="notice" role="status">
-  Showing the first {{.RecordLimit}} records of this day, so the chart stops
-  early. The totals below cover the whole day.
+  Showing the first {{.RecordLimit}} records of this range, so the chart stops
+  early. The totals below cover the selected range.
 </p>
 {{end}}
 
@@ -24,7 +24,7 @@
 <section class="timeline" aria-label="Activity timeline">
   <div class="timeline__scroll">
     <div class="timeline__axis" aria-hidden="true">
-      {{range $chart.HourMarks}}<span class="timeline__hour">{{.Label}}</span>{{end}}
+      {{range $chart.HourMarks}}<span class="timeline__hour timeline__hour--{{.SpanHours}}">{{.Label}}</span>{{end}}
     </div>
 
     {{range $chart.Lanes}}
@@ -92,7 +92,7 @@
 </div>
 {{else}}
 <p class="empty">
-  Nothing tracked on this day. Once <code>trackkrd</code> reports activity for
+  Nothing tracked in this period. Once <code>trackkrd</code> reports activity for
   one of your devices, it shows up here.
 </p>
 {{end}}

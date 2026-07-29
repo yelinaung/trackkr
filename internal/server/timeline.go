@@ -9,8 +9,8 @@ import (
 	"github.com/yelinaung/trackkr/internal/db"
 )
 
-// minBarFraction floors a bar's width as a fraction of the day rather
-// than as a fixed number of minutes.
+// minBarFraction floors a bar's width as a fraction of the visible range
+// rather than as a fixed number of minutes.
 //
 // A one-minute floor is meaningless on screen: the chart is 1440 units
 // wide, so at its minimum rendered width a minute is under half a
@@ -23,8 +23,8 @@ const (
 	monogramLight  = "#ffffff"
 )
 
-// Bar is one activity block, positioned in minutes from the start of the
-// day. Geometry travels to the template as SVG presentation attributes,
+// Bar is one activity block, positioned in minutes from the visible range.
+// Geometry travels to the template as SVG presentation attributes,
 // never as inline CSS, so the page needs no style-src concession.
 type Bar struct {
 	X         float64
@@ -56,12 +56,12 @@ type Chart struct {
 	Lanes       []Lane
 }
 
-// HourMark labels one hour cell of the axis. The axis is HTML rather
+// HourMark labels one time cell of the axis. The axis is HTML rather
 // than SVG text, which would be distorted by the non-uniform scaling the
-// bars need, so equal-width cells carry the position and only the label
-// travels.
+// bars need. SpanHours keeps DST-short or DST-long days aligned in a week.
 type HourMark struct {
-	Label string
+	Label     string
+	SpanHours int
 }
 
 // dayBounds returns the wall-clock day containing t in its own location.
@@ -174,13 +174,33 @@ func ceilHour(t time.Time) time.Time {
 func layout(records []db.ActivityRecordRow, devices []db.DeviceRow, day time.Time) Chart {
 	dayStart, dayEnd := dayBounds(day)
 	start, end := chartWindow(records, dayStart, dayEnd)
+	return layoutRange(records, devices, start, end, hourMarks(start, end), false)
+}
+
+// layoutWeek draws a fixed calendar week with one proportional axis cell per
+// local day. Unlike a day chart, it does not trim quiet days from either end.
+func layoutWeek(
+	records []db.ActivityRecordRow,
+	devices []db.DeviceRow,
+	start, end time.Time,
+) Chart {
+	return layoutRange(records, devices, start, end, dayMarks(start, end), true)
+}
+
+func layoutRange(
+	records []db.ActivityRecordRow,
+	devices []db.DeviceRow,
+	start, end time.Time,
+	marks []HourMark,
+	showDates bool,
+) Chart {
 	span := end.Sub(start).Minutes()
 
 	chart := Chart{
 		WindowStart: start,
 		WindowEnd:   end,
 		SpanMin:     span,
-		HourMarks:   hourMarks(start, end),
+		HourMarks:   marks,
 	}
 
 	names := make(map[int64]string, len(devices))
@@ -193,7 +213,7 @@ func layout(records []db.ActivityRecordRow, devices []db.DeviceRow, day time.Tim
 	byDevice := make(map[int64][]Bar)
 	for i := range records {
 		rec := &records[i]
-		bar, ok := toBar(rec, start, end, span, i)
+		bar, ok := toBar(rec, start, end, span, i, showDates)
 		if !ok {
 			continue
 		}
@@ -218,9 +238,15 @@ func layout(records []db.ActivityRecordRow, devices []db.DeviceRow, day time.Tim
 	return chart
 }
 
-// toBar clamps one record to the day window and positions it. It reports
+// toBar clamps one record to the visible window and positions it. It reports
 // false for records that fall outside the window entirely.
-func toBar(rec *db.ActivityRecordRow, start, end time.Time, span float64, index int) (Bar, bool) {
+func toBar(
+	rec *db.ActivityRecordRow,
+	start, end time.Time,
+	span float64,
+	index int,
+	showDates bool,
+) (Bar, bool) {
 	from := rec.StartedAt
 	if from.Before(start) {
 		from = start
@@ -245,14 +271,23 @@ func toBar(rec *db.ActivityRecordRow, start, end time.Time, span float64, index 
 		return Bar{}, false
 	}
 
+	timeFormat := "15:04"
+	if showDates {
+		timeFormat = "Mon 2 15:04"
+	}
+
 	return Bar{
-		X:         x,
-		Width:     width,
-		Fill:      appColor(rec.AppName),
-		AppName:   rec.AppName,
-		Title:     rec.Title,
-		TimeRange: fmt.Sprintf("%s - %s", rec.StartedAt.In(start.Location()).Format("15:04"), rec.EndedAt.In(start.Location()).Format("15:04")),
-		Bucket:    index % 12,
+		X:       x,
+		Width:   width,
+		Fill:    appColor(rec.AppName),
+		AppName: rec.AppName,
+		Title:   rec.Title,
+		TimeRange: fmt.Sprintf(
+			"%s - %s",
+			rec.StartedAt.In(start.Location()).Format(timeFormat),
+			rec.EndedAt.In(start.Location()).Format(timeFormat),
+		),
+		Bucket: index % 12,
 	}, true
 }
 
@@ -261,7 +296,20 @@ func toBar(rec *db.ActivityRecordRow, start, end time.Time, span float64, index 
 func hourMarks(start, end time.Time) []HourMark {
 	var marks []HourMark
 	for t := start; t.Before(end); t = t.Add(time.Hour) {
-		marks = append(marks, HourMark{Label: t.Format("15")})
+		marks = append(marks, HourMark{Label: t.Format("15"), SpanHours: 1})
+	}
+	return marks
+}
+
+func dayMarks(start, end time.Time) []HourMark {
+	var marks []HourMark
+	for day := start; day.Before(end); {
+		next := day.AddDate(0, 0, 1)
+		marks = append(marks, HourMark{
+			Label:     day.Format("Mon 2"),
+			SpanHours: int(next.Sub(day) / time.Hour),
+		})
+		day = next
 	}
 	return marks
 }

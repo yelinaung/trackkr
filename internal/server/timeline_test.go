@@ -58,6 +58,98 @@ func TestDayBoundsSpans(t *testing.T) {
 	}
 }
 
+func TestWeekBoundsUseMondayAndFollowDST(t *testing.T) {
+	t.Parallel()
+	loc := newYork(t)
+
+	tests := []struct {
+		name      string
+		day       time.Time
+		wantStart time.Time
+		wantHours float64
+	}{
+		{
+			"midweek",
+			time.Date(2026, 5, 6, 14, 30, 0, 0, loc),
+			time.Date(2026, 5, 4, 0, 0, 0, 0, loc),
+			168,
+		},
+		{
+			"sunday",
+			time.Date(2026, 5, 10, 14, 30, 0, 0, loc),
+			time.Date(2026, 5, 4, 0, 0, 0, 0, loc),
+			168,
+		},
+		{
+			testSpringForward,
+			time.Date(2026, 3, 8, 14, 30, 0, 0, loc),
+			time.Date(2026, 3, 2, 0, 0, 0, 0, loc),
+			167,
+		},
+		{
+			testFallBack,
+			time.Date(2026, 11, 1, 14, 30, 0, 0, loc),
+			time.Date(2026, 10, 26, 0, 0, 0, 0, loc),
+			169,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			start, end := weekBounds(tt.day)
+			if !start.Equal(tt.wantStart) {
+				t.Errorf("start = %v, want %v", start, tt.wantStart)
+			}
+			if start.Weekday() != time.Monday || end.Weekday() != time.Monday {
+				t.Errorf("range = %v..%v, want Monday boundaries", start, end)
+			}
+			if got := end.Sub(start).Hours(); got != tt.wantHours {
+				t.Errorf("span = %vh, want %vh", got, tt.wantHours)
+			}
+		})
+	}
+}
+
+func TestWeekLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		start time.Time
+		want  string
+	}{
+		{"same month", time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC), "4-10 May 2026"},
+		{"across months", time.Date(2026, 4, 27, 0, 0, 0, 0, time.UTC), "27 April - 3 May 2026"},
+		{"across years", time.Date(2025, 12, 29, 0, 0, 0, 0, time.UTC), "29 December 2025 - 4 January 2026"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := weekLabel(tt.start, tt.start.AddDate(0, 0, 7)); got != tt.want {
+				t.Errorf("weekLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDashboardView(t *testing.T) {
+	t.Parallel()
+
+	for raw, want := range map[string]string{
+		"":      dashboardViewDay,
+		"day":   dashboardViewDay,
+		"month": dashboardViewDay,
+		"week":  dashboardViewWeek,
+		"WEEK":  dashboardViewDay,
+	} {
+		if got := parseDashboardView(raw); got != want {
+			t.Errorf("parseDashboardView(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestHourMarksFollowDSTSpan(t *testing.T) {
 	t.Parallel()
 	loc := newYork(t)
@@ -81,6 +173,71 @@ func TestHourMarksFollowDSTSpan(t *testing.T) {
 				t.Errorf("hour marks = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDayMarksFollowDSTSpan(t *testing.T) {
+	t.Parallel()
+	loc := newYork(t)
+	start, end := weekBounds(time.Date(2026, 3, 8, 12, 0, 0, 0, loc))
+	marks := dayMarks(start, end)
+
+	if len(marks) != 7 {
+		t.Fatalf("day marks = %d, want 7", len(marks))
+	}
+	var spanHours int
+	for _, mark := range marks {
+		spanHours += mark.SpanHours
+	}
+	if spanHours != 167 {
+		t.Errorf("axis span = %dh, want 167h", spanHours)
+	}
+	if marks[0].Label != "Mon 2" || marks[6].Label != "Sun 8" {
+		t.Errorf("labels = %q..%q, want Mon 2..Sun 8", marks[0].Label, marks[6].Label)
+	}
+	if marks[6].SpanHours != 23 {
+		t.Errorf("spring-forward day span = %dh, want 23h", marks[6].SpanHours)
+	}
+}
+
+func TestLayoutWeekDrawsFullRangeWithDatedTooltips(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 7)
+	records := []db.ActivityRecordRow{
+		{
+			DeviceID:  7,
+			AppName:   testFirefoxLower,
+			StartedAt: start.Add(time.Hour),
+			EndedAt:   start.Add(2 * time.Hour),
+		},
+		{
+			DeviceID:  7,
+			AppName:   testAppCode,
+			StartedAt: start.Add(6*24*time.Hour + time.Hour),
+			EndedAt:   start.Add(6*24*time.Hour + 2*time.Hour),
+		},
+	}
+	devices := []db.DeviceRow{{ID: 7, Name: testLaptop}}
+
+	chart := layoutWeek(records, devices, start, end)
+	if !chart.WindowStart.Equal(start) || !chart.WindowEnd.Equal(end) {
+		t.Errorf("window = %v..%v, want %v..%v", chart.WindowStart, chart.WindowEnd, start, end)
+	}
+	if chart.SpanMin != 7*24*60 {
+		t.Errorf("span = %v minutes, want %d", chart.SpanMin, 7*24*60)
+	}
+	if len(chart.HourMarks) != 7 {
+		t.Fatalf("marks = %d, want 7", len(chart.HourMarks))
+	}
+	if len(chart.Lanes) != 1 || len(chart.Lanes[0].Bars) != 2 {
+		t.Fatalf("lanes = %+v, want one lane with two bars", chart.Lanes)
+	}
+	if got := chart.Lanes[0].Bars[0].TimeRange; got != "Mon 4 01:00 - Mon 4 02:00" {
+		t.Errorf("first tooltip = %q", got)
+	}
+	if got := chart.Lanes[0].Bars[1].TimeRange; got != "Sun 10 01:00 - Sun 10 02:00" {
+		t.Errorf("last tooltip = %q", got)
 	}
 }
 

@@ -25,6 +25,7 @@ type pageData struct {
 	Date            string
 	Today           string
 	DateLabel       string
+	View            string
 	Devices         []db.DeviceRow
 	SelectedDevice  int64
 	Chart           Chart
@@ -41,8 +42,7 @@ type pageData struct {
 	Partial bool
 }
 
-// TotalView is one row of the per-app summary, carrying the same colour
-// the timeline bars use so the swatch matches.
+// TotalView is one app or website summary row with icon fallback metadata.
 type TotalView struct {
 	AppName      string
 	Seconds      int64

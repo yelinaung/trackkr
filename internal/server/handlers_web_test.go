@@ -33,6 +33,11 @@ type fakeWeb struct {
 	icons   []db.AppIconRow
 	iconErr error
 
+	activityStart time.Time
+	activityEnd   time.Time
+	siteStart     time.Time
+	siteEnd       time.Time
+
 	// lookupErr and createErr stand in for operational failures, as
 	// opposed to the pgx.ErrNoRows a missing row produces.
 	lookupErr error
@@ -126,7 +131,14 @@ func (f *fakeWeb) DeleteDevice(_ context.Context, id, _ int64) error {
 	return nil
 }
 
-func (f *fakeWeb) GetActivitySummary(context.Context, int64, time.Time, time.Time, *int64) (*db.ActivitySummary, error) {
+func (f *fakeWeb) GetActivitySummary(
+	_ context.Context,
+	_ int64,
+	start, end time.Time,
+	_ *int64,
+) (*db.ActivitySummary, error) {
+	f.activityStart = start
+	f.activityEnd = end
 	records := f.records
 	truncated := len(records) > db.ActivityRecordLimit
 	if truncated {
@@ -139,7 +151,14 @@ func (f *fakeWeb) GetActivitySummary(context.Context, int64, time.Time, time.Tim
 	}, nil
 }
 
-func (f *fakeWeb) GetSiteTotals(context.Context, int64, time.Time, time.Time, *int64) ([]db.SiteTotalRow, error) {
+func (f *fakeWeb) GetSiteTotals(
+	_ context.Context,
+	_ int64,
+	start, end time.Time,
+	_ *int64,
+) ([]db.SiteTotalRow, error) {
+	f.siteStart = start
+	f.siteEnd = end
 	return f.sites, nil
 }
 
@@ -450,6 +469,58 @@ func TestDashboardRendersTimeline(t *testing.T) {
 	}
 }
 
+func TestDashboardWeeklyViewUsesCalendarWeek(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "weekly", testPassword)
+	weekStart := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+	weekEnd := time.Date(2026, 5, 11, 0, 0, 0, 0, time.UTC)
+	fake.devices = []db.DeviceRow{{ID: 7, UserID: user.ID, Name: testLaptop}}
+	fake.records = []db.ActivityRecordRow{{
+		DeviceID: 7, AppName: testFirefoxLower,
+		StartedAt: weekStart.Add(6*24*time.Hour + time.Hour),
+		EndedAt:   weekStart.Add(6*24*time.Hour + 2*time.Hour),
+	}}
+
+	srv := webServer(t, fake, false)
+	session, csrf := signIn(t, srv, user.ID)
+
+	r := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/?date=2026-05-06&view=week",
+		nil,
+	)
+	r.AddCookie(session)
+	r.AddCookie(csrf)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !fake.activityStart.Equal(weekStart) || !fake.activityEnd.Equal(weekEnd) {
+		t.Errorf("activity range = %v..%v, want %v..%v", fake.activityStart, fake.activityEnd, weekStart, weekEnd)
+	}
+	if !fake.siteStart.Equal(weekStart) || !fake.siteEnd.Equal(weekEnd) {
+		t.Errorf("site range = %v..%v, want %v..%v", fake.siteStart, fake.siteEnd, weekStart, weekEnd)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`value="week" checked`,
+		`value="2026-05-06"`,
+		"4-10 May 2026",
+		"Mon 4",
+		"Sun 10",
+		"Sun 10 01:00 - Sun 10 02:00",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("weekly dashboard is missing %q", want)
+		}
+	}
+}
+
 func TestDashboardSignsOnlyFetchableSiteIcons(t *testing.T) {
 	t.Parallel()
 
@@ -727,7 +798,7 @@ func TestDashboardTruncationBoundary(t *testing.T) {
 			srv.ServeHTTP(rec, r)
 
 			body := rec.Body.String()
-			gotNotice := strings.Contains(body, "totals below cover the whole day")
+			gotNotice := strings.Contains(body, "totals below cover the selected range")
 			if gotNotice != tt.wantNotic {
 				t.Errorf("truncation notice = %v, want %v", gotNotice, tt.wantNotic)
 			}

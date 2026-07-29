@@ -5,6 +5,16 @@
 
 <form class="filters" hx-get="/timeline" hx-target="#timeline" hx-swap="innerHTML"
       hx-trigger="change" hx-indicator="#timeline-loading">
+  <fieldset class="filters__field filters__period">
+    <legend>View</legend>
+    <div class="view-switch">
+      <input id="view-day" name="view" type="radio" value="day" {{if ne .View "week"}}checked{{end}}>
+      <label for="view-day">Day</label>
+      <input id="view-week" name="view" type="radio" value="week" {{if eq .View "week"}}checked{{end}}>
+      <label for="view-week">Week</label>
+    </div>
+  </fieldset>
+
   <div class="filters__field">
     <label for="date">Date</label>
     <input id="date" name="date" type="date" value="{{.Date}}" max="{{.Today}}">
