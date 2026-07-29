@@ -175,3 +175,22 @@ func TestCheckCSRF(t *testing.T) {
 		})
 	}
 }
+
+func TestSiteIconSignatureIsUserAndSiteScoped(t *testing.T) {
+	t.Parallel()
+
+	codec := newSessionCodec(testSecret, false)
+	signature := codec.siteIconSignature(7, testSiteHost)
+	if !codec.validSiteIconSignature(7, testSiteHost, signature) {
+		t.Fatal("valid site icon signature was rejected")
+	}
+	if codec.validSiteIconSignature(8, testSiteHost, signature) {
+		t.Error("signature was accepted for another user")
+	}
+	if codec.validSiteIconSignature(7, "other.example", signature) {
+		t.Error("signature was accepted for another site")
+	}
+	if codec.validSiteIconSignature(7, testSiteHost, "") {
+		t.Error("empty signature was accepted")
+	}
+}

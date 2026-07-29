@@ -95,6 +95,20 @@ func (c *sessionCodec) sign(payload string) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func (c *sessionCodec) siteIconSignature(userID int64, site string) string {
+	return c.sign(fmt.Sprintf("site-icon.%d.%s", userID, site))
+}
+
+func (c *sessionCodec) validSiteIconSignature(userID int64, site, signature string) bool {
+	if signature == "" {
+		return false
+	}
+	return hmac.Equal(
+		[]byte(signature),
+		[]byte(c.siteIconSignature(userID, site)),
+	)
+}
+
 // setSession issues the session cookie.
 func (c *sessionCodec) setSession(w http.ResponseWriter, userID int64) {
 	exp := time.Now().Add(sessionTTL)

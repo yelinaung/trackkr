@@ -228,7 +228,7 @@ func TestMonogramForegroundMeetsContrastTarget(t *testing.T) {
 	for hue := range 360 {
 		background := hslRelativeLuminance(hue, 0.62, 0.48)
 		foreground := 1.0
-		if monogramForeground(hue) == "#000000" {
+		if monogramForeground(hue) == monogramDark {
 			foreground = 0
 		}
 		lighter := max(background, foreground)

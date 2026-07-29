@@ -1,0 +1,265 @@
+package favicon
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/sergeymakinen/go-ico"
+	"github.com/yelinaung/trackkr/internal/icon"
+)
+
+const testSite = "example.com"
+
+func TestCanonicalSite(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{name: "canonical", raw: testSite, want: testSite},
+		{name: "uppercase", raw: "EXAMPLE.com", want: testSite},
+		{name: "unicode", raw: "bücher.de", want: "xn--bcher-kva.de"},
+		{name: "empty", raw: "", wantErr: true},
+		{name: "whitespace", raw: " example.com", wantErr: true},
+		{name: "trailing dot", raw: "example.com.", wantErr: true},
+		{name: "single label", raw: "localhost", wantErr: true},
+		{name: "IPv4", raw: "127.0.0.1", wantErr: true},
+		{name: "credentials", raw: "user@example.com", wantErr: true},
+		{name: "port", raw: "example.com:443", wantErr: true},
+		{name: "empty label", raw: "example..com", wantErr: true},
+		{name: "leading hyphen", raw: "-bad.example", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := CanonicalSite(test.raw)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("CanonicalSite(%q) error = %v, wantErr %v", test.raw, err, test.wantErr)
+			}
+			if got != test.want {
+				t.Errorf("CanonicalSite(%q) = %q, want %q", test.raw, got, test.want)
+			}
+		})
+	}
+}
+
+func TestIsPublicAddress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		address string
+		want    bool
+	}{
+		{address: "93.184.216.34", want: true},
+		{address: "2606:2800:220:1:248:1893:25c8:1946", want: true},
+		{address: "127.0.0.1", want: false},
+		{address: "10.0.0.1", want: false},
+		{address: "100.64.0.1", want: false},
+		{address: "169.254.169.254", want: false},
+		{address: "192.0.2.1", want: false},
+		{address: "::1", want: false},
+		{address: "fc00::1", want: false},
+		{address: "2001:db8::1", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.address, func(t *testing.T) {
+			t.Parallel()
+			if got := isPublicAddress(netip.MustParseAddr(test.address)); got != test.want {
+				t.Errorf("isPublicAddress(%s) = %v, want %v", test.address, got, test.want)
+			}
+		})
+	}
+}
+
+func TestSafeDialerRejectsMixedPublicAndPrivateDNS(t *testing.T) {
+	t.Parallel()
+
+	dialer := &recordingDialer{}
+	safe := &safeDialer{
+		resolver: staticResolver{addresses: []netip.Addr{
+			netip.MustParseAddr("93.184.216.34"),
+			netip.MustParseAddr("127.0.0.1"),
+		}},
+		dialer: dialer,
+	}
+	if _, err := safe.dialContext(t.Context(), "tcp", "example.com:443"); err == nil {
+		t.Fatal("dialContext accepted a private DNS answer")
+	}
+	if len(dialer.addresses) != 0 {
+		t.Errorf("dialer reached %v before rejecting DNS", dialer.addresses)
+	}
+}
+
+func TestSafeDialerPinsResolvedAddress(t *testing.T) {
+	t.Parallel()
+
+	dialer := &recordingDialer{}
+	safe := &safeDialer{
+		resolver: staticResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}},
+		dialer:   dialer,
+	}
+	connection, err := safe.dialContext(t.Context(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("dialContext: %v", err)
+	}
+	_ = connection.Close()
+	if len(dialer.addresses) != 1 || dialer.addresses[0] != "93.184.216.34:443" {
+		t.Errorf("dialed %v, want resolved public address", dialer.addresses)
+	}
+}
+
+func TestNormalizeImage(t *testing.T) {
+	t.Parallel()
+
+	source := testImagePNG(t, 32, 16)
+	got, err := normalizeImage(source)
+	if err != nil {
+		t.Fatalf("normalizeImage: %v", err)
+	}
+	details, err := icon.ValidatePNG(got)
+	if err != nil {
+		t.Fatalf("normalized PNG: %v", err)
+	}
+	if details.Width != normalizedDimension || details.Height != normalizedDimension {
+		t.Errorf("dimensions = %dx%d, want 64x64", details.Width, details.Height)
+	}
+}
+
+func TestNormalizeImageAcceptsICO(t *testing.T) {
+	t.Parallel()
+
+	source := image.NewNRGBA(image.Rect(0, 0, 32, 32))
+	var encoded bytes.Buffer
+	if err := ico.Encode(&encoded, source); err != nil {
+		t.Fatalf("encoding ICO fixture: %v", err)
+	}
+	if _, err := normalizeImage(encoded.Bytes()); err != nil {
+		t.Fatalf("normalizeImage(ICO): %v", err)
+	}
+}
+
+func TestNormalizeImageRejectsOversizedDimensions(t *testing.T) {
+	t.Parallel()
+
+	source := testImagePNG(t, maxSourceDimension+1, 1)
+	if _, err := normalizeImage(source); err == nil {
+		t.Fatal("normalizeImage accepted oversized dimensions")
+	}
+}
+
+func TestIconLinksKeepsSafeHTTPSCandidates(t *testing.T) {
+	t.Parallel()
+
+	document := []byte(`<html><head>
+<link rel="icon" href="http://example.com/insecure.ico">
+<link rel="shortcut icon" href="/icon.svg">
+<link rel="icon" href="/icon.png">
+<link rel="icon" href="/icon.png">
+</head></html>`)
+	base, err := url.Parse("https://example.com/path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := iconLinks(document, base)
+	if len(got) != 2 {
+		t.Fatalf("links = %v, want two unique HTTPS links", got)
+	}
+	if got[0].String() != "https://example.com/icon.svg" || got[1].String() != "https://example.com/icon.png" {
+		t.Errorf("links = %v", got)
+	}
+}
+
+func TestFetcherFallsBackToHTMLIcon(t *testing.T) {
+	t.Parallel()
+
+	pngBytes := testImagePNG(t, 24, 24)
+	requests := make([]string, 0, 3)
+	fetcher := &Fetcher{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.URL.Path)
+		switch request.URL.Path {
+		case "/favicon.ico":
+			return testResponse(request, http.StatusNotFound, "text/plain", nil), nil
+		case "":
+			return testResponse(request, http.StatusOK, "text/html", []byte(`<link rel="icon" href="/assets/icon.png">`)), nil
+		case "/assets/icon.png":
+			return testResponse(request, http.StatusOK, "image/png", pngBytes), nil
+		default:
+			return nil, errors.New("unexpected request")
+		}
+	})}}
+
+	got, err := fetcher.Fetch(t.Context(), "example.com")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := icon.ValidatePNG(got); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if strings.Join(requests, ",") != "/favicon.ico,,/assets/icon.png" {
+		t.Errorf("requests = %v", requests)
+	}
+}
+
+type staticResolver struct {
+	addresses []netip.Addr
+}
+
+func (r staticResolver) LookupNetIP(context.Context, string, string) ([]netip.Addr, error) {
+	return r.addresses, nil
+}
+
+type recordingDialer struct {
+	addresses []string
+}
+
+func (d *recordingDialer) DialContext(_ context.Context, _, address string) (net.Conn, error) {
+	d.addresses = append(d.addresses, address)
+	client, server := net.Pipe()
+	_ = server.Close()
+	return client, nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func testResponse(request *http.Request, status int, contentType string, body []byte) *http.Response {
+	return &http.Response{
+		StatusCode:    status,
+		Header:        http.Header{"Content-Type": []string{contentType}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Request:       request,
+	}
+}
+
+func testImagePNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	canvas := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := range height {
+		for x := range width {
+			canvas.SetNRGBA(x, y, color.NRGBA{R: 0x1f, G: 0x6f, B: 0x5f, A: 0xff})
+		}
+	}
+	var output bytes.Buffer
+	if err := png.Encode(&output, canvas); err != nil {
+		t.Fatalf("encoding PNG fixture: %v", err)
+	}
+	return output.Bytes()
+}

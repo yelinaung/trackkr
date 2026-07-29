@@ -17,7 +17,11 @@ import (
 // pixel and a real visit is invisible. This is a visibility affordance,
 // not a claim about duration -- the tooltip carries the true range, and
 // the totals below the chart are computed from the data, not the bars.
-const minBarFraction = 1.0 / 480.0
+const (
+	minBarFraction = 1.0 / 480.0
+	monogramDark   = "#000000"
+	monogramLight  = "#ffffff"
+)
 
 // Bar is one activity block, positioned in minutes from the start of the
 // day. Geometry travels to the template as SVG presentation attributes,
@@ -279,9 +283,9 @@ func appPalette(app string) (string, string) {
 
 func monogramForeground(hue int) string {
 	if hslRelativeLuminance(hue, 0.62, 0.48) > 0.179 {
-		return "#000000"
+		return monogramDark
 	}
-	return "#ffffff"
+	return monogramLight
 }
 
 func hslRelativeLuminance(hue int, saturation, lightness float64) float64 {

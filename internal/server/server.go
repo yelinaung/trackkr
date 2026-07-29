@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/internal/favicon"
 	"github.com/yelinaung/trackkr/web"
 )
 
@@ -40,6 +41,8 @@ type Server struct {
 	web       WebQuerier
 	iconRead  appIconReader
 	iconWrite appIconWriter
+	siteIcons siteIconStore
+	favicons  siteFaviconFetcher
 
 	templates *templates
 	codec     *sessionCodec
@@ -76,6 +79,8 @@ func New(cfg *Config, pool *pgxpool.Pool, logger *zerolog.Logger) (*Server, erro
 		web:       queries,
 		iconRead:  queries,
 		iconWrite: queries,
+		siteIcons: queries,
+		favicons:  favicon.NewFetcher(),
 		templates: tmpl,
 		codec:     newSessionCodec(cfg.Auth.SessionSecret, cfg.Server.SecureCookies),
 		limiter:   newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),
@@ -104,6 +109,8 @@ func newRouter(s *Server) *chi.Mux {
 	h := &webHandlers{
 		queries:   s.web,
 		icons:     s.iconRead,
+		siteIcons: s.siteIcons,
+		favicons:  s.favicons,
 		templates: s.templates,
 		codec:     s.codec,
 		limiter:   s.limiter,
@@ -136,6 +143,7 @@ func newRouter(s *Server) *chi.Mux {
 		priv.Get("/", h.handleDashboard())
 		priv.Get("/timeline", h.handleTimeline())
 		priv.Get("/app-icons/{id}/{sha256}.png", h.handleAppIcon())
+		priv.Get("/site-icons/{site}", h.handleSiteIcon())
 		priv.Get("/devices", h.handleDevices())
 		priv.Post("/devices", h.handleCreateDevice())
 		priv.Delete("/devices/{id}", h.handleDeleteDevice())

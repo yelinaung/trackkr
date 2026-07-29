@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -230,6 +231,105 @@ func (q *Queries) GetSiteTotals(ctx context.Context, userID int64, start, end ti
 		totals = append(totals, t)
 	}
 	return totals, rows.Err()
+}
+
+// SiteIcon returns one user-scoped favicon cache entry.
+func (q *Queries) SiteIcon(ctx context.Context, userID int64, site string) (*SiteIconRow, error) {
+	return scanSiteIcon(q.pool.QueryRow(ctx,
+		`SELECT id, user_id, site, png, sha256, width, height, attempted_at,
+		        expires_at, claim_until, created_at, updated_at
+		 FROM site_icons
+		 WHERE user_id = $1 AND site = $2`,
+		userID, site))
+}
+
+// ClaimSiteIconRefresh atomically reserves an expired cache entry. The lease
+// prevents concurrent dashboard requests from fetching the same site.
+func (q *Queries) ClaimSiteIconRefresh(
+	ctx context.Context,
+	userID int64,
+	site string,
+	now, claimUntil time.Time,
+) (*SiteIconRow, bool, error) {
+	row, err := scanSiteIcon(q.pool.QueryRow(ctx,
+		`INSERT INTO site_icons (user_id, site, expires_at, claim_until, updated_at)
+		 VALUES ($1, $2, $3, $4, $3)
+		 ON CONFLICT (user_id, site) DO UPDATE SET
+		     claim_until = EXCLUDED.claim_until,
+		     updated_at = EXCLUDED.updated_at
+		 WHERE site_icons.expires_at <= $3
+		   AND (site_icons.claim_until IS NULL OR site_icons.claim_until <= $3)
+		 RETURNING id, user_id, site, png, sha256, width, height, attempted_at,
+		           expires_at, claim_until, created_at, updated_at`,
+		userID, site, now, claimUntil))
+	if err == nil {
+		return row, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+
+	row, err = q.SiteIcon(ctx, userID, site)
+	return row, false, err
+}
+
+// CompleteSiteIconRefresh records either a normalized PNG or a failed annual
+// attempt. A failed refresh retains an older icon if one exists.
+func (q *Queries) CompleteSiteIconRefresh(
+	ctx context.Context,
+	userID int64,
+	site string,
+	pngBytes []byte,
+	details *icon.Details,
+	attemptedAt, expiresAt, claimUntil time.Time,
+) (*SiteIconRow, error) {
+	var digest []byte
+	var width, height *int
+	if details != nil {
+		digest = details.Digest[:]
+		width = &details.Width
+		height = &details.Height
+	}
+
+	return scanSiteIcon(q.pool.QueryRow(ctx,
+		`UPDATE site_icons SET
+		     png = CASE WHEN $4::bytea IS NULL THEN png ELSE $4 END,
+		     sha256 = CASE WHEN $4::bytea IS NULL THEN sha256 ELSE $5 END,
+		     width = CASE WHEN $4::bytea IS NULL THEN width ELSE $6 END,
+		     height = CASE WHEN $4::bytea IS NULL THEN height ELSE $7 END,
+		     attempted_at = $8,
+		     expires_at = $9,
+		     claim_until = NULL,
+		     updated_at = $8
+		 WHERE user_id = $1 AND site = $2 AND claim_until = $3
+		 RETURNING id, user_id, site, png, sha256, width, height, attempted_at,
+		           expires_at, claim_until, created_at, updated_at`,
+		userID, site, claimUntil, pngBytes, digest, width, height, attemptedAt, expiresAt))
+}
+
+type siteIconScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSiteIcon(row siteIconScanner) (*SiteIconRow, error) {
+	var result SiteIconRow
+	if err := row.Scan(
+		&result.ID,
+		&result.UserID,
+		&result.Site,
+		&result.PNG,
+		&result.SHA256,
+		&result.Width,
+		&result.Height,
+		&result.AttemptedAt,
+		&result.ExpiresAt,
+		&result.ClaimUntil,
+		&result.CreatedAt,
+		&result.UpdatedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // UpsertAppIcons stores application icons and prunes the oldest rows above

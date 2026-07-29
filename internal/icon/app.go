@@ -51,14 +51,20 @@ func Validate(app App) (Details, error) {
 	if normalized := AppKey(app.Key); normalized != app.Key {
 		return Details{}, invalid("key %q is not canonical; expected %q", app.Key, normalized)
 	}
-	if len(app.PNG) > MaxPNGBytes {
-		return Details{}, invalid("PNG is %d bytes; maximum is %d", len(app.PNG), MaxPNGBytes)
+	return ValidatePNG(app.PNG)
+}
+
+// ValidatePNG checks normalized PNG artwork without imposing an application
+// identity. Site favicons use the same bounded image contract.
+func ValidatePNG(data []byte) (Details, error) {
+	if len(data) > MaxPNGBytes {
+		return Details{}, invalid("PNG is %d bytes; maximum is %d", len(data), MaxPNGBytes)
 	}
-	if !bytes.HasPrefix(app.PNG, pngHeader) {
+	if !bytes.HasPrefix(data, pngHeader) {
 		return Details{}, invalid("PNG signature is missing")
 	}
 
-	config, err := png.DecodeConfig(bytes.NewReader(app.PNG))
+	config, err := png.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return Details{}, invalid("decoding PNG configuration: %v", err)
 	}
@@ -68,12 +74,12 @@ func Validate(app App) (Details, error) {
 	if config.Height < 1 || config.Height > MaxDimension {
 		return Details{}, invalid("PNG height is %d; expected 1 through %d", config.Height, MaxDimension)
 	}
-	if _, err := png.Decode(bytes.NewReader(app.PNG)); err != nil {
+	if _, err := png.Decode(bytes.NewReader(data)); err != nil {
 		return Details{}, invalid("decoding complete PNG: %v", err)
 	}
 
 	return Details{
-		Digest: sha256.Sum256(app.PNG),
+		Digest: sha256.Sum256(data),
 		Width:  config.Width,
 		Height: config.Height,
 	}, nil

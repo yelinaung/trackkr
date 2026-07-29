@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/internal/favicon"
 	"github.com/yelinaung/trackkr/internal/icon"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -69,6 +70,8 @@ type WebQuerier interface {
 type webHandlers struct {
 	queries   WebQuerier
 	icons     appIconReader
+	siteIcons siteIconStore
+	favicons  siteFaviconFetcher
 	templates *templates
 	codec     *sessionCodec
 	limiter   *attemptLimiter
@@ -378,11 +381,23 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 
 	siteViews := make([]TotalView, 0, len(sites))
 	for _, site := range sites {
-		siteViews = append(siteViews, TotalView{
-			AppName: site.Site,
-			Seconds: site.Seconds,
-			Fill:    appColor(site.Site),
-		})
+		fill, monogramFill := appPalette(site.Site)
+		view := TotalView{
+			AppName:      site.Site,
+			Seconds:      site.Seconds,
+			Fill:         fill,
+			Monogram:     appMonogram(site.Site),
+			MonogramFill: monogramFill,
+		}
+		canonical, canonicalErr := favicon.CanonicalSite(site.Site)
+		if canonicalErr == nil && canonical == site.Site {
+			view.IconURL = fmt.Sprintf(
+				"/site-icons/%s?sig=%s",
+				site.Site,
+				h.codec.siteIconSignature(user.ID, site.Site),
+			)
+		}
+		siteViews = append(siteViews, view)
 	}
 
 	views := make([]TotalView, 0, len(totals))

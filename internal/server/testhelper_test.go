@@ -16,6 +16,7 @@ import (
 // have one obvious home.
 const (
 	testHost          = "127.0.0.1"
+	testSiteHost      = "example.com"
 	testLoginPath     = "/login"
 	testCSRFValue     = "tok"
 	testLimiterIP     = "10.0.0.1"
@@ -93,7 +94,7 @@ func unitServer(t *testing.T) (*Server, *mockQuerier) {
 	t.Helper()
 	mock := newMockQuerier()
 	cfg := &Config{
-		Server: ServerConfig{Host: "127.0.0.1", Port: 0},
+		Server: ServerConfig{Host: testHost, Port: 0},
 	}
 	logger := zerolog.Nop()
 

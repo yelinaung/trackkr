@@ -673,30 +673,15 @@ is introduced.
 
 ### Firefox Favicons
 
-Firefox favicons are discovery work, not part of this implementation plan.
-The WebExtensions contract exposes `Tab.favIconUrl` as a URL; the `tabs`
-permission does not grant cross-origin byte access. Under trackkr's privacy
-contract, adding tracked-site host permissions or asking the daemon/server to
-fetch remote favicons is not an acceptable fallback.
+Firefox favicon delivery remains outside Phase 6. Ordinary `favIconUrl` values
+are remote URLs, and the extension cannot read their bytes without tracked-site
+host permissions. Those permissions were not added.
 
-Run a standalone temporary-extension probe before writing a future favicon
-plan:
-
-1. Record `favIconUrl` schemes for normal PNG, ICO, SVG, default,
-   cross-origin, and literal data-URL favicons on the minimum and current
-   supported Firefox versions.
-2. Confirm whether any browser-owned URL form provides readable bytes without
-   host permissions or a network request to the tracked origin.
-3. For each readable format, test a bounded decode path using
-   `createImageBitmap` resize options and verify the browser does not allocate
-   intrinsic dimensions first. Reject formats for which bounded decoding
-   cannot be established.
-4. Record the result in a dedicated feasibility document before designing
-   queues, storage, or Node tests.
-
-If ordinary favicons remain remote URLs, the conclusion is final for the
-current privacy policy: site favicons do not ship. The next step is not another
-fetch mechanism.
+Phase 8 supersedes the earlier prohibition on server fetching with an explicit
+operator-visible privacy decision: the Trackkr server fetches bounded HTTPS
+favicons for canonical site totals and caches both success and failure for one
+year. See `phase8-site-favicons-plan.md` for that separate threat model and
+implementation contract.
 
 ### Linux Application Icons
 

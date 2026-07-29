@@ -429,10 +429,9 @@ listed here all landed in Phase 2.
 4. Best-effort delivery through the existing reporter loop
 5. AppKit icon rendering, bounded cache, and dashboard monogram fallback
 
-Firefox favicons remain out of scope: ordinary `favIconUrl` values need
-tracked-site host access to fetch, which conflicts with the extension's
-privacy contract. Linux application icons need a separately exercised Linux
-resolver.
+Firefox-delivered favicons remain out of scope for this phase. Phase 8 makes a
+separate, explicit privacy trade-off by fetching site icons from the server.
+Linux application icons still need a separately exercised Linux resolver.
 
 ### Phase 7: Desktop/Extension Deduplication (implemented — see `phase7-dedup-plan.md`)
 
@@ -441,7 +440,14 @@ resolver.
 3. Subtract only overlapping coverage from desktop Firefox records
 4. Apply the same effective intervals to timeline records and app totals
 
-### Phase 8: Future Enhancements (parked)
+### Phase 8: Server-Fetched Site Favicons (implemented — see `phase8-site-favicons-plan.md`)
+
+1. User-scoped positive and negative favicon cache with one-year expiry
+2. Signed authenticated image URLs derived from existing site totals
+3. HTTPS-only, DNS-pinned fetching with strict SSRF and decode bounds
+4. Lazy dashboard delivery with private caching and monogram fallback
+
+### Phase 9: Future Enhancements (parked)
 
 - Android app
 - Wayland support

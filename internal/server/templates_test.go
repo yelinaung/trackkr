@@ -202,6 +202,28 @@ func TestTimelineListsSitesSeparatelyFromApps(t *testing.T) {
 	}
 }
 
+func TestTimelineSiteMonogramFallback(t *testing.T) {
+	t.Parallel()
+
+	data := sampleTimelineData()
+	data.Sites = []TotalView{{
+		AppName:      testHost,
+		Seconds:      60,
+		Fill:         "hsl(20 62% 48%)",
+		Monogram:     "12",
+		MonogramFill: monogramDark,
+	}}
+	html := renderPartial(t, "timeline", data)
+
+	if strings.Contains(html, `src=""`) {
+		t.Error("site fallback emits an empty image source")
+	}
+	if !strings.Contains(html, `class="totals__icon totals__monogram"`) ||
+		!strings.Contains(html, `fill="`+monogramDark+`">12</text>`) {
+		t.Errorf("timeline lacks the site monogram fallback:\n%s", html)
+	}
+}
+
 // A day with no browsing must not render an empty section.
 //
 // Both shapes are covered on purpose: the handler builds the slice with
@@ -319,8 +341,8 @@ func sampleTimelineData() *pageData {
 			Fill: fill, Monogram: "FI", MonogramFill: monogramFill,
 		}},
 		Sites: []TotalView{
-			{AppName: "youtube.com", Seconds: 1200, Fill: appColor("youtube.com")},
-			{AppName: "github.com", Seconds: 600, Fill: appColor("github.com")},
+			{AppName: "youtube.com", Seconds: 1200, Fill: appColor("youtube.com"), IconURL: "/site-icons/youtube.com?sig=test"},
+			{AppName: "github.com", Seconds: 600, Fill: appColor("github.com"), IconURL: "/site-icons/github.com?sig=test"},
 		},
 		TotalSeconds: 1800,
 	}

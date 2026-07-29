@@ -445,6 +445,44 @@ func TestDashboardRendersTimeline(t *testing.T) {
 	}
 }
 
+func TestDashboardSignsOnlyFetchableSiteIcons(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeWeb()
+	user := fake.addUser(t, "site-dashboard", testPassword)
+	fake.records = []db.ActivityRecordRow{{
+		DeviceID: 1, AppName: testFirefoxLower,
+		StartedAt: time.Date(2026, 5, 4, 1, 0, 0, 0, time.UTC),
+		EndedAt:   time.Date(2026, 5, 4, 2, 0, 0, 0, time.UTC),
+	}}
+	fake.sites = []db.SiteTotalRow{
+		{Site: testSiteHost, Seconds: 300},
+		{Site: testHost, Seconds: 60},
+	}
+
+	srv := webServer(t, fake, false)
+	session, csrf := signIn(t, srv, user.ID)
+	request := newRequest(t, http.MethodGet, "/?date=2026-05-04", nil)
+	request.AddCookie(session)
+	request.AddCookie(csrf)
+	recorder := httptest.NewRecorder()
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, `src="/site-icons/example.com?sig=`) {
+		t.Error("canonical public site lacks a signed icon URL")
+	}
+	if strings.Contains(body, `/site-icons/127.0.0.1`) {
+		t.Error("IP site received a fetchable icon URL")
+	}
+	if !strings.Contains(body, `class="totals__icon totals__monogram"`) {
+		t.Error("non-fetchable site lacks a monogram fallback")
+	}
+}
+
 func TestTimelinePartialSwapsWithoutChrome(t *testing.T) {
 	t.Parallel()
 	fake := newFakeWeb()

@@ -46,8 +46,10 @@ restart derives it again. The dashboard uses a colour-matched monogram until
 an icon arrives, selecting black or white text from the generated background
 colour so the fallback remains legible.
 
-No icon is fetched from the network. This phase does not collect Firefox site
-favicons.
+Application icons are never fetched from the network. Site favicons are a
+separate server feature: when the dashboard first displays a public site, the
+server may fetch and cache its favicon for one year. The Firefox extension
+receives no additional host permissions.
 
 ## Accessibility
 

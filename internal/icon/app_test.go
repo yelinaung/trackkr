@@ -76,6 +76,19 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidatePNGDoesNotRequireAppKey(t *testing.T) {
+	t.Parallel()
+
+	pngBytes := testPNG(t, 32, 32)
+	details, err := ValidatePNG(pngBytes)
+	if err != nil {
+		t.Fatalf("ValidatePNG: %v", err)
+	}
+	if details.Width != 32 || details.Height != 32 {
+		t.Errorf("dimensions = %dx%d, want 32x32", details.Width, details.Height)
+	}
+}
+
 func TestValidateReturnsDetails(t *testing.T) {
 	t.Parallel()
 
