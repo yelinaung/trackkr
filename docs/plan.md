@@ -83,9 +83,12 @@ trackkr/
 │   │   ├── detector_core.go        # Portable active-app decision logic
 │   │   ├── titles.go               # Portable Accessibility trust policy
 │   │   ├── macos_darwin.m          # Objective-C boundary for app/title reads
+│   │   ├── macos_darwin.h          # C contract shared by the .m and cgo
+│   │   ├── platform_nocgo_darwin.go # darwin && !cgo: both factories
 │   │   ├── idle.go                 # IdleDetector interface
 │   │   ├── idle_linux.go           # Linux: xprintidle
 │   │   ├── idle_darwin.go          # macOS: CoreGraphics HID idle time via cgo
+│   │   ├── extension.go            # Loopback listener for the browser extension
 │   │   ├── reporter.go             # Batch sender (queue + flush)
 │   │   └── config.go               # Client config
 │   └── models/
@@ -115,7 +118,13 @@ trackkr/
 │   └── icons/
 ├── deploy/
 │   ├── trackkrd.service            # systemd unit
-│   └── com.trackkr.daemon.plist    # launchd plist
+│   ├── Info.plist                  # macOS bundle template
+│   └── README-macos.md             # install, permissions, launchctl, signing
+├── scripts/
+│   ├── dev.sh                      # whole stack: db, server, device, daemon
+│   ├── bundle-macos.sh             # build, sign, and install the .app
+│   ├── bundle-install.sh           # sourced: transactional bundle replacement
+│   └── bundle-macos_test.sh        # runs on Linux CI, no codesign needed
 ├── docs/
 │   ├── plan.md                     # This file
 │   ├── phase2-plan.md              # Linux daemon design
@@ -180,7 +189,7 @@ queries, so no separate `(device_id, started_at)` index is needed.
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/activity` | Submit batch of activity records |
-| `GET` | `/api/v1/devices` | List devices for authenticated user (planned, Phase 3) |
+| `GET` | `/api/v1/devices` | List devices for authenticated user |
 | `POST` | `/api/v1/heartbeat` | Daemon liveness ping |
 
 ### Web Dashboard (session cookie auth)
@@ -341,7 +350,7 @@ admin password hash: users live in the `users` table, created with
 4. Reporter with batch sending, disk-persisted queue, graceful shutdown
 5. End-to-end test: daemon → server → DB
 
-### Phase 3: Web Dashboard MVP (planned — see `phase3-plan.md`)
+### Phase 3: Web Dashboard MVP (done — see `phase3-plan.md`)
 
 0. No heavy web-framework
 1. Login page + session auth
@@ -350,12 +359,16 @@ admin password hash: users live in the `users` table, created with
 4. Device management page (create device + API key)
 5. Embed templates/static with Go embed
 
-### Phase 4: Firefox Extension (in progress — see `phase4-plan.md`)
+### Phase 4: Firefox Extension (done — see `phase4-plan.md`)
 
 1. Daemon localhost endpoint on :7600
 2. Extension background script with tab listeners
 3. Popup showing connection status
 4. Test tab tracking end-to-end
+5. Per-site ignore rules, applied in the browser before anything is stored
+
+Three behaviours still need a person driving Firefox: private windows,
+revoking the host permission mid-session, and the idle threshold.
 
 ### Phase 5: macOS Support (implemented — see `phase5-plan.md`)
 
@@ -364,6 +377,13 @@ admin password hash: users live in the `users` table, created with
    permission and reads titles behind an Accessibility trust policy
 3. `scripts/bundle-macos.sh` installs and signs a stable `.app` bundle path
 4. A generated launchd user agent runs the bundled daemon in the GUI session
+
+Three of the fourteen Verification steps in `phase5-plan.md` run in CI.
+The other eleven need a Mac, and most need a person at its keyboard: the
+Accessibility grant and the recheck that follows it, `launchctl
+bootstrap` across a logout, rapid application switching, an application
+with no windows, the lock screen, and whether a rebuild keeps the grant.
+Nothing in CI substitutes for them.
 
 Docker production packaging remains separate deployment polish.
 

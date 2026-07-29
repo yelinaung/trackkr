@@ -31,13 +31,23 @@ internal/tracker/
   window_darwin.go             # //go:build darwin && cgo
   idle_darwin.go               # //go:build darwin && cgo
   macos_darwin.m               # //go:build darwin && cgo
+  macos_darwin.h               # the C contract, shared by the .m and cgo
   platform_nocgo_darwin.go     # //go:build darwin && !cgo, both factories
 deploy/
   Info.plist                   # bundle template: id, LSUIElement
   README-macos.md              # install, permissions, launchctl, signing
 scripts/
   bundle-macos.sh              # build, assemble the .app, sign, emit the plist
+  bundle-install.sh            # sourced: the transactional replacement itself
+  bundle-macos_test.sh         # drives that replacement, no codesign, no Mac
 ```
+
+The install splits across two files so the part worth testing can be
+tested. Everything in `bundle-install.sh` is `mv` and `rm` against a
+directory path, which any Linux runner can execute; everything left in
+`bundle-macos.sh` needs `go build`, `codesign`, and `plutil`, which it
+cannot. A `trackkr_move_path` indirection lets the test force a rename
+failure and assert that the previous bundle comes back.
 
 No wrapper script and no checked-in plist appear here. launchd runs the
 bundled binary directly, and the agent plist is generated per user
@@ -48,7 +58,8 @@ Modified: `window.go` (takes ownership of `ErrUnsupportedPlatform`),
 `config.go` and `config_test.go` (macOS keys, and the
 `DefaultConfigPath` comment that misdescribes macOS),
 `cmd/trackkrd/main.go` and `main_test.go` (factories take config and
-logger), `mise.toml` (bundling and portability tasks), `docs/plan.md`.
+logger), `mise.toml` (bundling, bundle-test, and portability tasks),
+`.github/workflows/ci.yml` (a job invoking the last two), `docs/plan.md`.
 
 Every filename above matters. Go applies implicit build constraints
 from `_darwin` suffixes, and `_test.go` files inherit them, so anything
@@ -346,10 +357,11 @@ check portability, since cgo cannot cross-compile without an SDK. It is
 not how the runner checks anything today: `.github/workflows/ci.yml`
 runs `mise install`, `mise ext-lint`, `mise ext-test`, and `mise
 test-race`, and not one of them compiles for another platform. Phase 5
-adds a `mise portability` task running both cross-builds and a CI step
-invoking it, otherwise every claim below is enforced by nothing and the
-`darwin && !cgo` path rots the first time someone edits a neighbouring
-file.
+adds a `mise portability` task running both cross-builds, and a
+`Platform Fallback Builds` job that invokes it alongside
+`mise bundle-macos-test`. Without that job every claim below is enforced
+by nothing, and the `darwin && !cgo` path rots the first time someone
+edits a neighbouring file.
 
 Keeping that check working takes more than one fallback file, because
 four things break at once:
@@ -383,15 +395,20 @@ implementations with no flags.
 
 ```toml
 [tasks.portability]
-description = "Compile the platform fallbacks the CI runner cannot execute"
+description = "Compile platform fallbacks that CI cannot execute"
 run = [
-  "CGO_ENABLED=0 GOOS=darwin go build ./...",
-  "CGO_ENABLED=0 GOOS=windows go build ./...",
+  "mkdir -p .cache/go-build .cache/go-mod",
+  "CGO_ENABLED=0 GOOS=darwin GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build ./...",
+  "CGO_ENABLED=0 GOOS=windows GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build ./...",
 ]
 ```
 
 The task compiles; it runs nothing. Neither build produces a binary the
-runner could execute, and a compile failure is the whole signal.
+runner could execute, and a compile failure is the whole signal. The
+cache variables are not decoration: every other Go task in `mise.toml`
+keeps its build cache under `.cache/`, and one task quietly writing to
+the runner's shared cache instead is the kind of difference nobody
+notices until it matters.
 
 ### Step 5: the `.app` bundle and launchd
 
@@ -636,33 +653,34 @@ Phase 6 has a signal it can use.
    build covering the no-cgo fallback, the relocated sentinel, and the
    constrained `.m` file, the windows build covering the `!linux &&
    !darwin` row that nothing else exercises.
-3. On a Mac: `go build ./...` with cgo on, and `mise bundle-macos`
+3. `mise bundle-macos-test` passes in the same CI job: a fresh install,
+   a replacement, and a forced rename failure that has to put the
+   previous bundle back.
+4. On a Mac: `go build ./...` with cgo on, and `mise bundle-macos`
    produces a signed bundle. Neither runs in CI, so both belong in the
    phase's checklist and not in its assumptions.
-4. `mise run-daemon` on this Mac logs neither `window detection
+5. `mise run-daemon` on this Mac logs neither `window detection
    unavailable` nor `idle detection not implemented`.
-5. Switch between applications and confirm records appear on the
+6. Switch between applications and confirm records appear on the
    dashboard with app names beside the existing browser rows.
-6. Switch applications rapidly for a full minute, then read the
+7. Switch applications rapidly for a full minute, then read the
    timeline. Every application should be there. A frontmost lookup
    frozen on one application produces a plausible-looking record and no
    error anywhere, so only this catches it.
-7. Focus an application with no open windows and confirm the timeline
+8. Focus an application with no open windows and confirm the timeline
    attributes that interval to the frontmost visible window behind it,
    as documented, rather than to the menu-bar application.
-8. Lock the screen past `idle_threshold` and confirm the current record
+9. Lock the screen past `idle_threshold` and confirm the current record
    ends at the idle boundary. This detector does not claim a direct lock
    signal because lock-screen windows are above layer zero.
-9. Without Accessibility granted: records carry app names and empty
-   titles, and the log says so once, not every poll.
-10. Grant Accessibility to the bundled app, wait for the recheck, and
-
+10. Without Accessibility granted: records carry app names and empty
+    titles, and the log says so once, not every poll.
+11. Grant Accessibility to the bundled app, wait for the recheck, and
     confirm titles start appearing with no restart.
-11. Walk away past the idle threshold and confirm the record ends when
-
+12. Walk away past the idle threshold and confirm the record ends when
     you stopped, not when you came back.
-12. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
+13. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
     the daemon restarts and keeps its Accessibility grant.
-13. Rebuild, re-sign, and re-bundle, then confirm whether the grant
+14. Rebuild, re-sign, and re-bundle, then confirm whether the grant
     survives. With `TRACKKR_SIGN_IDENTITY` set it should; ad-hoc is the
     case that may ask again, and the README should say which.
