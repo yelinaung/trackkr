@@ -232,6 +232,8 @@ func TestFetcherFallsBackToHTMLIcon(t *testing.T) {
 		switch request.URL.Path {
 		case conventionalIconPath:
 			return testResponse(request, http.StatusNotFound, "text/plain", nil), nil
+		case conventionalPNGIconPath:
+			return testResponse(request, http.StatusNotFound, "text/plain", nil), nil
 		case "":
 			return testResponse(request, http.StatusOK, "text/html", []byte(`<link rel="icon" href="/assets/icon.png">`)), nil
 		case "/assets/icon.png":
@@ -248,7 +250,43 @@ func TestFetcherFallsBackToHTMLIcon(t *testing.T) {
 	if _, err := icon.ValidatePNG(got); err != nil {
 		t.Fatalf("result: %v", err)
 	}
-	if strings.Join(requests, ",") != "/favicon.ico,,/assets/icon.png" {
+	if strings.Join(requests, ",") != "/favicon.ico,/favicon.png,,/assets/icon.png" {
+		t.Errorf("requests = %v", requests)
+	}
+}
+
+func TestFetcherFallsBackToConventionalPNG(t *testing.T) {
+	t.Parallel()
+
+	pngBytes := testImagePNG(t, 32, 32)
+	requests := make([]string, 0, 2)
+	fetcher := &Fetcher{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests = append(requests, request.URL.Path)
+		switch request.URL.Path {
+		case conventionalIconPath:
+			return testResponse(request, http.StatusNotFound, "text/plain", nil), nil
+		case conventionalPNGIconPath:
+			return testResponse(request, http.StatusOK, "image/png", pngBytes), nil
+		case "":
+			return testResponse(
+				request,
+				http.StatusOK,
+				"text/html",
+				[]byte(`<meta http-equiv="refresh" content="0; url=./2026/index.html">`),
+			), nil
+		default:
+			return nil, errors.New("unexpected request")
+		}
+	})}}
+
+	got, err := fetcher.Fetch(t.Context(), "example.com")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, err := icon.ValidatePNG(got); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if strings.Join(requests, ",") != "/favicon.ico,/favicon.png" {
 		t.Errorf("requests = %v", requests)
 	}
 }

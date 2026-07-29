@@ -28,14 +28,20 @@ import (
 )
 
 const (
-	maxSourceBytes       = 256 << 10
-	maxHTMLBytes         = 128 << 10
-	maxSourceDimension   = 1024
-	maxSourcePixels      = 1024 * 1024
-	maxDiscoveredIcons   = 4
-	normalizedDimension  = 64
-	conventionalIconPath = "/favicon.ico"
+	maxSourceBytes          = 256 << 10
+	maxHTMLBytes            = 128 << 10
+	maxSourceDimension      = 1024
+	maxSourcePixels         = 1024 * 1024
+	maxDiscoveredIcons      = 4
+	normalizedDimension     = 64
+	conventionalIconPath    = "/favicon.ico"
+	conventionalPNGIconPath = "/favicon.png"
 )
+
+var conventionalIconPaths = [...]string{
+	conventionalIconPath,
+	conventionalPNGIconPath,
+}
 
 var (
 	// ErrNoFavicon means the site definitively has no icon usable under the
@@ -63,18 +69,21 @@ func (f *Fetcher) Fetch(ctx context.Context, site string) ([]byte, error) {
 	}
 
 	origin := &url.URL{Scheme: "https", Host: canonical}
-	direct := origin.ResolveReference(&url.URL{Path: conventionalIconPath})
-	directData, directErr := f.fetchImage(ctx, direct)
-	if directErr == nil {
-		return directData, nil
+	failures := make([]error, 0, len(conventionalIconPaths)+maxDiscoveredIcons+1)
+	for _, iconPath := range conventionalIconPaths {
+		direct := origin.ResolveReference(&url.URL{Path: iconPath})
+		directData, directErr := f.fetchImage(ctx, direct)
+		if directErr == nil {
+			return directData, nil
+		}
+		failures = append(failures, directErr)
 	}
 
 	candidates, discoverErr := f.discoverIcons(ctx, origin)
 	if discoverErr != nil {
-		return nil, classifyFaviconFailure(directErr, discoverErr)
+		return nil, classifyFaviconFailure(append(failures, discoverErr)...)
 	}
 
-	failures := []error{directErr}
 	for _, candidate := range candidates {
 		data, fetchErr := f.fetchImage(ctx, candidate)
 		if fetchErr == nil {
