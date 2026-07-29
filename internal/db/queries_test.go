@@ -306,6 +306,24 @@ func TestInsertActivityRecordsDuplicates(t *testing.T) {
 	}
 }
 
+func TestInsertActivityRecordsRejectsNonPositiveInterval(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	_, device := seedUserAndDevice(t, pool, q)
+	now := time.Now().Truncate(time.Second)
+
+	_, err := q.InsertActivityRecords(ctx, []ActivityRecordRow{{
+		DeviceID:  device.ID,
+		AppName:   testFirefoxApp,
+		StartedAt: now,
+		EndedAt:   now,
+	}})
+	if err == nil {
+		t.Fatal("InsertActivityRecords accepted a zero-length interval")
+	}
+}
+
 func TestGetActivitySummary(t *testing.T) {
 	pool := testPool(t)
 	q := NewQueries(pool)
@@ -501,6 +519,9 @@ func TestFirefoxDesktopExtensionOverlapIsDeduplicated(t *testing.T) {
 	summary, err := q.GetActivitySummary(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
 	if err != nil {
 		t.Fatalf("GetActivitySummary: %v", err)
+	}
+	if summary == nil {
+		t.Fatal("GetActivitySummary returned a nil summary")
 	}
 	records := summary.Records
 	if len(records) != 3 {

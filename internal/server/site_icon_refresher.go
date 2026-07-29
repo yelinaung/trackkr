@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog"
+	"github.com/yelinaung/trackkr/internal/favicon"
 	"github.com/yelinaung/trackkr/internal/icon"
 )
 
@@ -19,6 +20,7 @@ const (
 	siteIconRateLimit        = 60
 	siteIconRateWindow       = time.Hour
 	siteIconDatabaseBudget   = 3 * time.Second
+	siteIconTransientRetry   = time.Hour
 )
 
 type siteIconRefreshQueue interface {
@@ -216,11 +218,14 @@ func (r *siteIconRefresher) refresh(ctx context.Context, job siteIconRefreshJob)
 		// A fetcher may return partial bytes with an error. Never let those
 		// bytes reach the database without matching validated metadata.
 		pngBytes = nil
-		r.logger.Debug().Err(fetchErr).Msg("site favicon unavailable")
+		r.logger.Debug().Err(fetchErr).Str("site", job.site).Msg("site favicon unavailable")
 	}
 
 	attemptedAt := r.config.now()
-	expiresAt := attemptedAt.AddDate(1, 0, 0)
+	expiresAt := attemptedAt.Add(siteIconTransientRetry)
+	if fetchErr == nil || errors.Is(fetchErr, favicon.ErrNoFavicon) {
+		expiresAt = attemptedAt.AddDate(1, 0, 0)
+	}
 	databaseCtx, cancelDatabase = context.WithTimeout(ctx, siteIconDatabaseBudget)
 	_, err = r.store.CompleteSiteIconRefresh(
 		databaseCtx,

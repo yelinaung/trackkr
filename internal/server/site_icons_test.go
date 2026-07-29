@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/internal/favicon"
 	"github.com/yelinaung/trackkr/internal/icon"
 )
 
@@ -75,7 +76,7 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 	store := newMemorySiteIconStore()
 	fetcher := &fakeSiteFaviconFetcher{
 		png: serverTestPNG(t, color.NRGBA{R: 0xff, A: 0xff}),
-		err: errors.New("no favicon"),
+		err: favicon.ErrNoFavicon,
 	}
 	srv := siteIconWebServer(t, fake, store, fetcher)
 	session, _ := signIn(t, srv, user.ID)
@@ -92,6 +93,10 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 		t.Errorf("fallback lacks site monogram: %s", rec.Body.String())
 	}
 	store.waitForCompletion(t)
+	srv.Close()
+	queue := &recordingSiteIconQueue{}
+	srv.siteRefresh = queue
+	srv.router = newRouter(srv)
 
 	second := performSiteIconRequest(t, srv, session, path)
 	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), ">EX</text>") {
@@ -100,6 +105,20 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 	if fetcher.callCount() != 1 {
 		t.Errorf("negative cache fetched again; calls = %d", fetcher.callCount())
 	}
+	if queue.enqueued != 0 || queue.repairs != 0 {
+		t.Errorf("negative cache queued refreshes: normal=%d repair=%d", queue.enqueued, queue.repairs)
+	}
+	var cacheSeconds int64
+	if _, err := fmt.Sscanf(
+		second.Header().Get("Cache-Control"),
+		"private, max-age=%d",
+		&cacheSeconds,
+	); err != nil {
+		t.Fatalf("parsing Cache-Control: %v", err)
+	}
+	if cacheSeconds < int64((364*24*time.Hour)/time.Second) {
+		t.Errorf("negative cache max-age = %d, want annual cache", cacheSeconds)
+	}
 	row, err := store.SiteIcon(t.Context(), user.ID, testSiteHost)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +126,48 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 	if len(row.PNG) != 0 || len(row.SHA256) != 0 {
 		t.Error("bytes returned with a fetch error were cached")
 	}
+}
+
+func TestSiteIconRouteRetriesTransientFailureSoon(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeWeb()
+	user := fake.addUser(t, "site-icon-transient", testPassword)
+	store := newMemorySiteIconStore()
+	fetcher := &fakeSiteFaviconFetcher{err: context.DeadlineExceeded}
+	srv := siteIconWebServer(t, fake, store, fetcher)
+	session, _ := signIn(t, srv, user.ID)
+
+	path := signedSiteIconPath(srv, user.ID)
+	_ = performSiteIconRequest(t, srv, session, path)
+	store.waitForCompletion(t)
+
+	row, err := store.SiteIcon(t.Context(), user.ID, testSiteHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.AttemptedAt == nil {
+		t.Fatal("transient failure lacks attempted_at")
+	}
+	wantExpiry := row.AttemptedAt.Add(siteIconTransientRetry)
+	if !row.ExpiresAt.Equal(wantExpiry) {
+		t.Errorf("expiry = %s, want transient retry at %s", row.ExpiresAt, wantExpiry)
+	}
+}
+
+type recordingSiteIconQueue struct {
+	enqueued int
+	repairs  int
+}
+
+func (q *recordingSiteIconQueue) Enqueue(int64, string) bool {
+	q.enqueued++
+	return true
+}
+
+func (q *recordingSiteIconQueue) EnqueueRepair(int64, string) bool {
+	q.repairs++
+	return true
 }
 
 func TestSiteIconRouteRepairsFreshCorruptIcon(t *testing.T) {
@@ -293,6 +354,27 @@ func TestSiteIconRefresherRefundsNoopClaim(t *testing.T) {
 	store.waitForCompletion(t)
 	if got := fetcher.callCount(); got != 1 {
 		t.Errorf("fetches = %d, want only the successfully claimed site", got)
+	}
+}
+
+func TestSiteIconRefresherLogsUnavailableSite(t *testing.T) {
+	t.Parallel()
+
+	store := newMemorySiteIconStore()
+	fetcher := &fakeSiteFaviconFetcher{err: favicon.ErrNoFavicon}
+	var logs synchronizedBuffer
+	logger := zerolog.New(&logs)
+	config := defaultSiteIconRefresherConfig()
+	config.workers = 0
+	refresher := newSiteIconRefresher(store, fetcher, &logger, config)
+	t.Cleanup(refresher.Close)
+
+	const site = "missing.example"
+	if !refresher.refresh(t.Context(), siteIconRefreshJob{userID: 1, site: site}) {
+		t.Fatal("refresh did not claim the missing site")
+	}
+	if got := logs.String(); !strings.Contains(got, `"site":"`+site+`"`) {
+		t.Errorf("unavailable favicon log lacks site: %s", got)
 	}
 }
 

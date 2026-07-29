@@ -23,6 +23,7 @@ type ingestRecord struct {
 
 type ingestResponse struct {
 	Accepted int `json:"accepted"`
+	Rejected int `json:"rejected"`
 }
 
 // deviceView is the API's device representation. It deliberately omits
@@ -91,13 +92,20 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 			return
 		}
 
-		rows := make([]db.ActivityRecordRow, len(req.Records))
-		for i, rec := range req.Records {
+		rows := make([]db.ActivityRecordRow, 0, len(req.Records))
+		rejected := 0
+		for _, rec := range req.Records {
+			if !rec.StartedAt.Before(rec.EndedAt) {
+				// Permanently invalid rows are acknowledged and discarded so one
+				// stale pending record cannot wedge a reporter's retry queue.
+				rejected++
+				continue
+			}
 			var url *string
 			if rec.URL != "" {
 				url = &rec.URL
 			}
-			rows[i] = db.ActivityRecordRow{
+			rows = append(rows, db.ActivityRecordRow{
 				DeviceID:  device.ID,
 				AppName:   rec.AppName,
 				Title:     rec.Title,
@@ -105,18 +113,22 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 				StartedAt: rec.StartedAt,
 				EndedAt:   rec.EndedAt,
 				DurationS: rec.DurationS,
-			}
+			})
 		}
 
-		accepted, err := queries.InsertActivityRecords(r.Context(), rows)
-		if err != nil {
-			http.Error(w, `{"error":"failed to insert records"}`, http.StatusInternalServerError)
-			return
+		accepted := 0
+		if len(rows) > 0 {
+			var err error
+			accepted, err = queries.InsertActivityRecords(r.Context(), rows)
+			if err != nil {
+				http.Error(w, `{"error":"failed to insert records"}`, http.StatusInternalServerError)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(ingestResponse{Accepted: accepted})
+		_ = json.NewEncoder(w).Encode(ingestResponse{Accepted: accepted, Rejected: rejected})
 	}
 }
 

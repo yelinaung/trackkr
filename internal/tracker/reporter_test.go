@@ -112,6 +112,34 @@ func TestFlushNetworkFailure(t *testing.T) {
 	}
 }
 
+func TestFlushDropsServerAcknowledgedInvalidRecord(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"accepted":0,"rejected":1}`))
+	}))
+	defer srv.Close()
+
+	cfg := testReporterConfig(t)
+	cfg.ServerURL = srv.URL
+	logger := zerolog.Nop()
+	reporter := NewReporter(cfg, srv.Client(), &logger)
+	now := time.Now()
+	reporter.Enqueue(&Record{
+		AppName:   testFirefoxApp,
+		StartedAt: now,
+		EndedAt:   now,
+	})
+
+	if err := reporter.flush(t.Context()); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if reporter.QueueLen() != 0 {
+		t.Errorf("queue len = %d, want acknowledged invalid record removed", reporter.QueueLen())
+	}
+}
+
 func TestFlushEmptyQueue(t *testing.T) {
 	t.Parallel()
 	cfg := testReporterConfig(t)

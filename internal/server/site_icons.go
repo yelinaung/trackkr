@@ -65,7 +65,8 @@ func (h *webHandlers) handleSiteIcon() http.HandlerFunc {
 
 		now := time.Now()
 		row, err := h.siteIcons.SiteIcon(r.Context(), user.ID, site)
-		if err == nil && row.ExpiresAt.After(now) && siteIconPNGValid(row) {
+		fresh := err == nil && row.ExpiresAt.After(now)
+		if fresh && (siteIconPNGValid(row) || siteIconNegative(row)) {
 			h.serveSiteIcon(w, r, row, now)
 			return
 		}
@@ -75,7 +76,7 @@ func (h *webHandlers) handleSiteIcon() http.HandlerFunc {
 		}
 
 		if h.siteRefresh != nil {
-			if row != nil && row.ExpiresAt.After(now) {
+			if fresh {
 				h.siteRefresh.EnqueueRepair(user.ID, site)
 			} else {
 				h.siteRefresh.Enqueue(user.ID, site)
@@ -120,6 +121,10 @@ func siteIconPNGValid(row *db.SiteIconRow) bool {
 	}
 	details, err := icon.ValidatePNG(row.PNG)
 	return err == nil && bytes.Equal(details.Digest[:], row.SHA256)
+}
+
+func siteIconNegative(row *db.SiteIconRow) bool {
+	return row != nil && len(row.PNG) == 0 && len(row.SHA256) == 0
 }
 
 func (h *webHandlers) setSiteIconCacheHeaders(w http.ResponseWriter, ttl time.Duration) {

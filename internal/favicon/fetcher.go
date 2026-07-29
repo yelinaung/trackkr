@@ -28,15 +28,21 @@ import (
 )
 
 const (
-	maxSourceBytes      = 256 << 10
-	maxHTMLBytes        = 128 << 10
-	maxSourceDimension  = 1024
-	maxSourcePixels     = 1024 * 1024
-	maxDiscoveredIcons  = 4
-	normalizedDimension = 64
+	maxSourceBytes       = 256 << 10
+	maxHTMLBytes         = 128 << 10
+	maxSourceDimension   = 1024
+	maxSourcePixels      = 1024 * 1024
+	maxDiscoveredIcons   = 4
+	normalizedDimension  = 64
+	conventionalIconPath = "/favicon.ico"
 )
 
-var errNoFavicon = errors.New("no usable favicon")
+var (
+	// ErrNoFavicon means the site definitively has no icon usable under the
+	// fetcher's size, format, and transport policy.
+	ErrNoFavicon  = errors.New("no usable favicon")
+	errDefinitive = errors.New("definitive favicon failure")
+)
 
 // Fetcher retrieves favicons through an SSRF-restricted HTTP client.
 type Fetcher struct {
@@ -57,22 +63,46 @@ func (f *Fetcher) Fetch(ctx context.Context, site string) ([]byte, error) {
 	}
 
 	origin := &url.URL{Scheme: "https", Host: canonical}
-	direct := origin.ResolveReference(&url.URL{Path: "/favicon.ico"})
-	if data, err := f.fetchImage(ctx, direct); err == nil {
-		return data, nil
+	direct := origin.ResolveReference(&url.URL{Path: conventionalIconPath})
+	directData, directErr := f.fetchImage(ctx, direct)
+	if directErr == nil {
+		return directData, nil
 	}
 
-	candidates, err := f.discoverIcons(ctx, origin)
-	if err != nil {
-		return nil, errNoFavicon
+	candidates, discoverErr := f.discoverIcons(ctx, origin)
+	if discoverErr != nil {
+		return nil, classifyFaviconFailure(directErr, discoverErr)
 	}
+
+	failures := []error{directErr}
 	for _, candidate := range candidates {
 		data, fetchErr := f.fetchImage(ctx, candidate)
 		if fetchErr == nil {
 			return data, nil
 		}
+		failures = append(failures, fetchErr)
 	}
-	return nil, errNoFavicon
+	return nil, classifyFaviconFailure(failures...)
+}
+
+func classifyFaviconFailure(failures ...error) error {
+	for _, err := range failures {
+		if err != nil && !errors.Is(err, errDefinitive) {
+			return errors.Join(failures...)
+		}
+	}
+	return ErrNoFavicon
+}
+
+func definitiveFailure(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errDefinitive, fmt.Sprintf(format, args...))
+}
+
+func statusFailure(resource string, status int) error {
+	if status == http.StatusNotFound || status == http.StatusGone {
+		return definitiveFailure("%s returned status %d", resource, status)
+	}
+	return fmt.Errorf("%s returned status %d", resource, status)
 }
 
 // CanonicalSite validates and normalizes a DNS hostname used as a cache key.
@@ -128,10 +158,10 @@ func (f *Fetcher) discoverIcons(ctx context.Context, origin *url.URL) ([]*url.UR
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("home page returned status %d", response.StatusCode)
+		return nil, statusFailure("home page", response.StatusCode)
 	}
 	if response.ContentLength > maxHTMLBytes {
-		return nil, errors.New("home page is too large")
+		return nil, definitiveFailure("home page is too large")
 	}
 
 	limited := io.LimitReader(response.Body, maxHTMLBytes+1)
@@ -140,7 +170,7 @@ func (f *Fetcher) discoverIcons(ctx context.Context, origin *url.URL) ([]*url.UR
 		return nil, err
 	}
 	if len(data) > maxHTMLBytes {
-		return nil, errors.New("home page is too large")
+		return nil, definitiveFailure("home page is too large")
 	}
 	links := iconLinks(data, response.Request.URL)
 	slices.SortStableFunc(links, func(a, b *url.URL) int {
@@ -212,13 +242,13 @@ func (f *Fetcher) fetchImage(ctx context.Context, target *url.URL) ([]byte, erro
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("favicon returned status %d", response.StatusCode)
+		return nil, statusFailure("favicon", response.StatusCode)
 	}
 	if response.ContentLength > maxSourceBytes {
-		return nil, errors.New("favicon is too large")
+		return nil, definitiveFailure("favicon is too large")
 	}
 	if mediaType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type")); parseErr == nil && mediaType == "image/svg+xml" {
-		return nil, errors.New("SVG favicons are not accepted")
+		return nil, definitiveFailure("SVG favicons are not accepted")
 	}
 
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxSourceBytes+1))
@@ -226,9 +256,13 @@ func (f *Fetcher) fetchImage(ctx context.Context, target *url.URL) ([]byte, erro
 		return nil, err
 	}
 	if len(data) > maxSourceBytes {
-		return nil, errors.New("favicon is too large")
+		return nil, definitiveFailure("favicon is too large")
 	}
-	return normalizeImage(data)
+	normalized, err := normalizeImage(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errDefinitive, err)
+	}
+	return normalized, nil
 }
 
 func validateRemoteURL(target *url.URL) error {

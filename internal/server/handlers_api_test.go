@@ -74,6 +74,9 @@ func TestIngestActivity(t *testing.T) {
 	if resp.Accepted != 2 {
 		t.Errorf("accepted = %d, want 2", resp.Accepted)
 	}
+	if resp.Rejected != 0 {
+		t.Errorf("rejected = %d, want 0", resp.Rejected)
+	}
 	if mock.inserted != 2 {
 		t.Errorf("mock.inserted = %d, want 2", mock.inserted)
 	}
@@ -118,6 +121,94 @@ func TestIngestActivityEmptyRecords(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestIngestActivitySkipsNonPositiveIntervals(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name  string
+		shift time.Duration
+	}{
+		{name: "zero"},
+		{name: "negative", shift: -time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			srv, mock := unitServer(t)
+			fix := createMockFixtures(t, mock)
+			startedAt := time.Now().Truncate(time.Second)
+			body, err := json.Marshal(ingestRequest{Records: []ingestRecord{
+				{
+					AppName:   testFirefoxApp,
+					StartedAt: startedAt,
+					EndedAt:   startedAt.Add(test.shift),
+				},
+				{
+					AppName:   "Valid",
+					StartedAt: startedAt,
+					EndedAt:   startedAt.Add(time.Second),
+				},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req := newRequest(t, http.MethodPost, "/api/v1/activity", bytes.NewReader(body))
+			req.Header.Set("X-API-Key", fix.APIKey)
+			rec := httptest.NewRecorder()
+			srv.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+			}
+			var response ingestResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Accepted != 1 || response.Rejected != 1 {
+				t.Errorf("response = %+v, want one accepted and one rejected", response)
+			}
+			if mock.inserted != 1 {
+				t.Errorf("inserted = %d, want 1", mock.inserted)
+			}
+		})
+	}
+}
+
+func TestIngestActivityAcknowledgesAllInvalidBatch(t *testing.T) {
+	t.Parallel()
+
+	srv, mock := unitServer(t)
+	fix := createMockFixtures(t, mock)
+	startedAt := time.Now().Truncate(time.Second)
+	body, err := json.Marshal(ingestRequest{Records: []ingestRecord{{
+		AppName:   testFirefoxApp,
+		StartedAt: startedAt,
+		EndedAt:   startedAt,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := newRequest(t, http.MethodPost, "/api/v1/activity", bytes.NewReader(body))
+	req.Header.Set("X-API-Key", fix.APIKey)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	var response ingestResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Accepted != 0 || response.Rejected != 1 {
+		t.Errorf("response = %+v, want zero accepted and one rejected", response)
+	}
+	if mock.inserted != 0 {
+		t.Errorf("inserted = %d, want 0", mock.inserted)
 	}
 }
 

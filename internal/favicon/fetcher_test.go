@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -71,9 +72,19 @@ func TestIsPublicAddress(t *testing.T) {
 		{address: "100.64.0.1", want: false},
 		{address: "169.254.169.254", want: false},
 		{address: "192.0.2.1", want: false},
+		{address: "192.88.99.1", want: false},
 		{address: "::1", want: false},
 		{address: "fc00::1", want: false},
 		{address: "2001:db8::1", want: false},
+		{address: "64:ff9b::c000:201", want: false},
+		{address: "64:ff9b:1::1", want: false},
+		{address: "fec0::1", want: false},
+		{address: "2001:2::1", want: false},
+		{address: "2001:10::1", want: false},
+		{address: "2002:c000:201::1", want: false},
+		{address: "3fff::1", want: false},
+		{address: "5f00::1", want: false},
+		{address: "2001:3::1", want: true},
 	}
 	for _, test := range tests {
 		t.Run(test.address, func(t *testing.T) {
@@ -82,6 +93,34 @@ func TestIsPublicAddress(t *testing.T) {
 				t.Errorf("isPublicAddress(%s) = %v, want %v", test.address, got, test.want)
 			}
 		})
+	}
+}
+
+func TestSafeHTTPClientRejectsOversizedResponseHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Oversized", strings.Repeat("x", maxResponseHeaders+1))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newSafeHTTPClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	transport.DialContext = (&net.Dialer{}).DialContext
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("client accepted response headers above its configured bound")
 	}
 }
 
@@ -191,7 +230,7 @@ func TestFetcherFallsBackToHTMLIcon(t *testing.T) {
 	fetcher := &Fetcher{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests = append(requests, request.URL.Path)
 		switch request.URL.Path {
-		case "/favicon.ico":
+		case conventionalIconPath:
 			return testResponse(request, http.StatusNotFound, "text/plain", nil), nil
 		case "":
 			return testResponse(request, http.StatusOK, "text/html", []byte(`<link rel="icon" href="/assets/icon.png">`)), nil
@@ -211,6 +250,38 @@ func TestFetcherFallsBackToHTMLIcon(t *testing.T) {
 	}
 	if strings.Join(requests, ",") != "/favicon.ico,,/assets/icon.png" {
 		t.Errorf("requests = %v", requests)
+	}
+}
+
+func TestFetcherClassifiesDefinitiveAbsence(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &Fetcher{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return testResponse(request, http.StatusNotFound, "text/plain", nil), nil
+	})}}
+
+	_, err := fetcher.Fetch(t.Context(), testSite)
+	if !errors.Is(err, ErrNoFavicon) {
+		t.Fatalf("Fetch error = %v, want ErrNoFavicon", err)
+	}
+}
+
+func TestFetcherPreservesTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &Fetcher{client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == conventionalIconPath {
+			return nil, context.DeadlineExceeded
+		}
+		return testResponse(request, http.StatusServiceUnavailable, "text/plain", nil), nil
+	})}}
+
+	_, err := fetcher.Fetch(t.Context(), testSite)
+	if err == nil {
+		t.Fatal("Fetch unexpectedly succeeded")
+	}
+	if errors.Is(err, ErrNoFavicon) {
+		t.Fatalf("Fetch classified transient error as definitive: %v", err)
 	}
 }
 

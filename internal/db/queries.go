@@ -109,16 +109,17 @@ func (q *Queries) GetActivitySummary(
 		return nil, err
 	}
 
-	effective := deduplicateFirefoxActivity(records)
+	deduplicator := newActivityDeduplicator(records)
+	effective, effectiveTruncated := deduplicator.timeline(
+		ActivityRecordLimit,
+		activityDedupWorkLimit,
+	)
 	summary := &ActivitySummary{
-		Totals:            appTotals(effective, start, end),
-		TimelineTruncated: sourceTruncated || len(effective) > ActivityRecordLimit,
+		Records:           effective,
+		Totals:            deduplicator.totals(start, end),
+		TimelineTruncated: sourceTruncated || effectiveTruncated,
 		SourceTruncated:   sourceTruncated,
 	}
-	if len(effective) > ActivityRecordLimit {
-		effective = effective[:ActivityRecordLimit]
-	}
-	summary.Records = effective
 	return summary, nil
 }
 
@@ -214,6 +215,7 @@ func (q *Queries) GetSiteTotals(ctx context.Context, userID int64, start, end ti
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
+			   AND ar.ended_at > ar.started_at
 			   AND ar.device_id = $4 AND ar.url IS NOT NULL AND ar.url <> ''
 			 GROUP BY 1
 			 HAVING `+siteExpr+` IS NOT NULL
@@ -227,6 +229,7 @@ func (q *Queries) GetSiteTotals(ctx context.Context, userID int64, start, end ti
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
+			   AND ar.ended_at > ar.started_at
 			   AND ar.url IS NOT NULL AND ar.url <> ''
 			 GROUP BY 1
 			 HAVING `+siteExpr+` IS NOT NULL

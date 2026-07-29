@@ -87,7 +87,10 @@ func main() {
 type gracefulHTTPServer interface {
 	ListenAndServe() error
 	Shutdown(context.Context) error
+	Close() error
 }
+
+const serverShutdownTimeout = 15 * time.Second
 
 func serveUntilShutdown(
 	ctx context.Context,
@@ -107,13 +110,24 @@ func serveUntilShutdown(
 		return err
 	case <-ctx.Done():
 		logger.Info().Msg("shutting down")
-		if err := httpServer.Shutdown(context.Background()); err != nil {
-			return fmt.Errorf("shutting down HTTP server: %w", err)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		shutdownErr := httpServer.Shutdown(shutdownCtx)
+		cancel()
+		var resultErr error
+		if shutdownErr != nil {
+			if errors.Is(shutdownErr, context.DeadlineExceeded) {
+				logger.Warn().Dur("timeout", serverShutdownTimeout).Msg("forcing HTTP server shutdown")
+			} else {
+				resultErr = fmt.Errorf("shutting down HTTP server: %w", shutdownErr)
+			}
+			if err := httpServer.Close(); err != nil {
+				return fmt.Errorf("force-closing HTTP server: %w", err)
+			}
 		}
 		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
-		return nil
+		return resultErr
 	}
 }
 

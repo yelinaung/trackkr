@@ -59,8 +59,9 @@ type AppIconRow struct {
 	LastSeenAt time.Time
 }
 
-// SiteIconRow is one user-scoped annual favicon cache entry. A nil PNG records
-// a failed attempt so the server does not repeatedly contact the site.
+// SiteIconRow is one user-scoped favicon cache entry. A nil PNG records a
+// failed attempt; ExpiresAt distinguishes definitive absence from retryable
+// failures.
 type SiteIconRow struct {
 	ID          int64
 	UserID      int64

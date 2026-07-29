@@ -17,7 +17,7 @@ func TestDeduplicateFirefoxActivitySplitsDesktopRecord(t *testing.T) {
 		activityRecord(2, 1, testFirefoxApp, &url, start.Add(2*time.Minute), start.Add(8*time.Minute)),
 	}
 
-	got := deduplicateFirefoxActivity(records)
+	got := deduplicateActivityForTest(t, records)
 	if len(got) != 3 {
 		t.Fatalf("records = %+v, want three effective slices", got)
 	}
@@ -41,7 +41,7 @@ func TestDeduplicateFirefoxActivityMergesBrowserCoverage(t *testing.T) {
 		activityRecord(3, 1, testFirefoxApp, &secondURL, start.Add(7*time.Minute), start.Add(15*time.Minute)),
 	}
 
-	got := deduplicateFirefoxActivity(records)
+	got := deduplicateActivityForTest(t, records)
 	if len(got) != 4 {
 		t.Fatalf("records = %+v, want two browser records and two desktop slices", got)
 	}
@@ -60,7 +60,7 @@ func TestDeduplicateFirefoxActivityIsDeviceScoped(t *testing.T) {
 		activityRecord(3, 1, "Safari", nil, start, start.Add(10*time.Minute)),
 	}
 
-	got := deduplicateFirefoxActivity(records)
+	got := deduplicateActivityForTest(t, records)
 	if len(got) != len(records) {
 		t.Fatalf("records = %+v, want all records preserved", got)
 	}
@@ -76,7 +76,7 @@ func TestDeduplicateFirefoxActivityKeepsTouchingIntervals(t *testing.T) {
 		activityRecord(2, 1, testFirefoxApp, &url, start.Add(10*time.Minute), start.Add(20*time.Minute)),
 	}
 
-	got := deduplicateFirefoxActivity(records)
+	got := deduplicateActivityForTest(t, records)
 	if len(got) != len(records) {
 		t.Fatalf("records = %+v, want touching records preserved", got)
 	}
@@ -99,9 +99,17 @@ func TestDeduplicateFirefoxActivityDropsSubsecondDesktopSlices(t *testing.T) {
 		),
 	}
 
-	got := deduplicateFirefoxActivity(records)
+	deduplicator := newActivityDeduplicator(records)
+	got, truncated := deduplicator.timeline(1000, 10000)
+	if truncated {
+		t.Fatal("test fixture unexpectedly exceeded deduplication bounds")
+	}
 	if len(got) != 1 || got[0].URL == nil {
 		t.Errorf("records = %+v, want only the browser observation", got)
+	}
+	totals := deduplicator.totals(start, start.Add(10*time.Second))
+	if len(totals) != 1 || totals[0] != (AppTotalRow{AppName: testFirefoxApp, Seconds: 9}) {
+		t.Errorf("totals = %+v, want only the visible browser observation", totals)
 	}
 }
 
@@ -110,12 +118,12 @@ func TestAppTotalsUsesEffectiveSlices(t *testing.T) {
 
 	start := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	url := testActivityURL
-	records := deduplicateFirefoxActivity([]ActivityRecordRow{
+	records := []ActivityRecordRow{
 		activityRecord(1, 1, firefoxAppKey, nil, start.Add(-time.Minute), start.Add(10*time.Minute)),
 		activityRecord(2, 1, testFirefoxApp, &url, start.Add(2*time.Minute), start.Add(8*time.Minute)),
-	})
+	}
 
-	got := appTotals(records, start, start.Add(9*time.Minute))
+	got := newActivityDeduplicator(records).totals(start, start.Add(9*time.Minute))
 	if len(got) != 2 {
 		t.Fatalf("totals = %+v, want browser and desktop rows", got)
 	}
@@ -125,6 +133,96 @@ func TestAppTotalsUsesEffectiveSlices(t *testing.T) {
 	if got[1] != (AppTotalRow{AppName: firefoxAppKey, Seconds: 180}) {
 		t.Errorf("second total = %+v, want firefox 180", got[1])
 	}
+}
+
+func TestActivityDeduplicationBoundsExpansionWork(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	url := testActivityURL
+	records := make([]ActivityRecordRow, 0, 21)
+	records = append(records, activityRecord(1, 1, firefoxAppKey, nil, start, start.Add(time.Hour)))
+	for i := range 20 {
+		intervalStart := start.Add(time.Duration(i*2+1) * time.Minute)
+		records = append(records, activityRecord(
+			int64(i+2),
+			1,
+			testFirefoxApp,
+			&url,
+			intervalStart,
+			intervalStart.Add(time.Minute),
+		))
+	}
+
+	deduplicator := newActivityDeduplicator(records)
+	got, truncated := deduplicator.timeline(100, 5)
+	if !truncated {
+		t.Fatal("timeline was not truncated after exhausting its work budget")
+	}
+	if len(got) > 100 {
+		t.Errorf("records = %d, want at most 100", len(got))
+	}
+	totals := deduplicator.totals(start, start.Add(time.Hour))
+	if len(totals) != 2 {
+		t.Fatalf("totals = %+v, want browser and desktop totals", totals)
+	}
+	if totals[0].Seconds+totals[1].Seconds != int64(time.Hour/time.Second) {
+		t.Errorf("totals = %+v, want exact one-hour coverage", totals)
+	}
+}
+
+func TestActivityDeduplicationDropsInvalidRecords(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	records := []ActivityRecordRow{
+		activityRecord(1, 1, "Valid", nil, start, start.Add(time.Minute)),
+		activityRecord(2, 1, "Zero", nil, start, start),
+		activityRecord(3, 1, "Negative", nil, start, start.Add(-time.Minute)),
+	}
+
+	deduplicator := newActivityDeduplicator(records)
+	got, truncated := deduplicator.timeline(10, 10)
+	if truncated {
+		t.Fatal("invalid records unexpectedly caused truncation")
+	}
+	if len(got) != 1 || got[0].AppName != "Valid" {
+		t.Errorf("records = %+v, want only the valid interval", got)
+	}
+	if totals := deduplicator.totals(start, start.Add(time.Hour)); len(totals) != 1 || totals[0].AppName != "Valid" {
+		t.Errorf("totals = %+v, want only the valid interval", totals)
+	}
+}
+
+func TestVisibleUncoveredDurationDropsInternalSubsecondGaps(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	coverage := activityCoverage{
+		intervals: []activityInterval{
+			{start: start.Add(time.Second), end: start.Add(3 * time.Second)},
+			{start: start.Add(3500 * time.Millisecond), end: start.Add(5 * time.Second)},
+			{start: start.Add(7 * time.Second), end: start.Add(9 * time.Second)},
+		},
+		visibleGapPrefix: []time.Duration{0, 0, 2 * time.Second},
+	}
+
+	got := coverage.visibleUncoveredDuration(
+		activityInterval{start: start, end: start.Add(10 * time.Second)},
+		minEffectiveSliceDuration,
+	)
+	if got != 4*time.Second {
+		t.Errorf("visible uncovered duration = %s, want 4s", got)
+	}
+}
+
+func deduplicateActivityForTest(t *testing.T, records []ActivityRecordRow) []ActivityRecordRow {
+	t.Helper()
+	got, truncated := newActivityDeduplicator(records).timeline(1000, 10000)
+	if truncated {
+		t.Fatal("test fixture unexpectedly exceeded deduplication bounds")
+	}
+	return got
 }
 
 func activityRecord(id, deviceID int64, appName string, url *string, start, end time.Time) ActivityRecordRow {
