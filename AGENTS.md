@@ -76,21 +76,21 @@ Exception: If working within an existing website or design system, preserve the 
 ### Build/Test/Lint Commands
 
 - **Go version**: 1.26+
-- **Build**: `mise build` (server → `trackkr-backend`), `mise build-daemon`
+- **Build**: `mise run build` (server → `trackkr-backend`), `mise run build-daemon`
   (client → `trackkrd`)
-- **Run**: `mise run` (server), `mise run-daemon` (daemon), `mise db` (Postgres
+- **Run**: `mise run run` (server), `mise run run-daemon` (daemon), `mise run db` (Postgres
   via docker compose)
-- **Test**: `mise test`, `mise test-race`, `mise test-coverage`
+- **Test**: `mise run test`, `mise run test-race`, `mise run test-coverage`
 - **Lint**:
-    - Run `mise lint` and fix the issues
-- **Format**: `mise format`
-- **Hooks**: `mise hooks`
+    - Run `mise run lint` and fix the issues
+- **Format**: `mise run format`
+- **Hooks**: `mise run hooks`
 - `grep` is an alias to `rg`.
 
 ### Code Style Guidelines
 
 - **Imports**: Use goimports formatting, group stdlib, external, internal packages
-- **Formatting**: Use gofumpt (stricter than gofmt), enabled in golangci-lint with `mise format`.
+- **Formatting**: Use gofumpt (stricter than gofmt), enabled in golangci-lint with `mise run format`.
 - **Naming**: Standard Go conventions - PascalCase for exported, camelCase for unexported
 - **Types**: Prefer explicit types, use type aliases for clarity (e.g., `type AgentName string`)
 - **Error handling**: Return errors explicitly, use `fmt.Errorf` for wrapping
@@ -106,7 +106,7 @@ Exception: If working within an existing website or design system, preserve the 
 
 ### Testing
 
-ALWAYS run `mise test` and `mise test-race` before committing. Keep total
+ALWAYS run `mise run test` and `mise run test-race` before committing. Keep total
 coverage at or above 50% — CI fails below that.
 
 #### Unit Tests
@@ -135,9 +135,9 @@ coverage at or above 50% — CI fails below that.
 
 - Live in `internal/db`. `testPool(t)` (see `testhelper_test.go`) connects,
   runs migrations, and calls `t.Skipf` when Postgres is unreachable — so
-  `mise test` passes on a machine with no database.
+  `mise run test` passes on a machine with no database.
 - Override the DSN with `TRACKKR_TEST_DSN`; the default targets the
-  `mise db` compose service on port 5455.
+  `mise run db` compose service on port 5455.
 - Do NOT use `t.Parallel()` in database tests, and clean up rows you create
   (`cleanupUser`).
 
@@ -162,7 +162,7 @@ coverage at or above 50% — CI fails below that.
 
 ### Formatting
 
-- ALWAYS format any Go code you write with `mise format`
+- ALWAYS format any Go code you write with `mise run format`
 
 ### Comments
 
@@ -171,17 +171,17 @@ coverage at or above 50% — CI fails below that.
 
 ### Committing
 
-- ALWAYS run `mise test` and `mise test-race` before pushing. Database-backed
-  tests skip silently without Postgres, so start it with `mise db` when the
+- ALWAYS run `mise run test` and `mise run test-race` before pushing. Database-backed
+  tests skip silently without Postgres, so start it with `mise run db` when the
   change touches `internal/db`.
 - ALWAYS use semantic commits (`fix:`, `feat:`, `chore:`, `refactor:`, `docs:`, `sec:`, etc).
-- ALWAYS run prek hooks with `mise hooks` before pushing
+- ALWAYS run prek hooks with `mise run hooks` before pushing
 - NEVER add attribution trailers to commit messages. No `Co-Authored-By:`,
   no "Generated with" lines, no tool or model names. This applies to agents
   whose defaults say otherwise.
 - Try to keep commits to one line. Only use multi-line commits when additional
   context is truly necessary.
-- Push to all remotes with `mise push-all`.
+- Push to all remotes with `mise run push-all`.
 
 ### Starting Work
 
