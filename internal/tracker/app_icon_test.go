@@ -37,7 +37,6 @@ func TestAppIconCachePositiveAndNegativeExpiry(t *testing.T) {
 			value := trackerTestIcon(t, icon.AppKey(app.Name), 1)
 			return &value
 		},
-		nil,
 	)
 	t.Cleanup(cache.Close)
 
@@ -99,7 +98,6 @@ func TestAppIconCachePIDReuseAndImmutableResults(t *testing.T) {
 			value := trackerTestIcon(t, icon.AppKey(app.Name), 1)
 			return &value
 		},
-		nil,
 	)
 	t.Cleanup(cache.Close)
 
@@ -160,7 +158,6 @@ func TestAppIconCacheMissesDoNotWaitForNativeLoad(t *testing.T) {
 			loaded := icon.Clone(value)
 			return &loaded
 		},
-		nil,
 	)
 	t.Cleanup(cache.Close)
 
@@ -219,7 +216,6 @@ func TestAppIconCacheCloseDoesNotWaitForNativeLoad(t *testing.T) {
 			<-release
 			return nil
 		},
-		nil,
 	)
 
 	cache.iconForApp(t.Context(), appInfo{Name: testFinder, PID: 42})
@@ -254,7 +250,6 @@ func TestAppIconCacheBoundsPendingNativeLoads(t *testing.T) {
 			<-release
 			return nil
 		},
-		nil,
 	)
 	t.Cleanup(cache.Close)
 
@@ -290,7 +285,6 @@ func TestAppIconCacheRejectsInvalidAndBoundsEntries(t *testing.T) {
 			value := trackerTestIcon(t, icon.AppKey(app.Name), 1)
 			return &value
 		},
-		nil,
 	)
 	t.Cleanup(cache.Close)
 	invalid := appInfo{Name: "Invalid", PID: 1}

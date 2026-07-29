@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/icon"
 )
 
@@ -45,13 +44,11 @@ type appIconCache struct {
 	closed   bool
 	now      func() time.Time
 	load     func(context.Context, appInfo) *icon.App
-	logger   *zerolog.Logger
 }
 
 func newAppIconCache(
 	now func() time.Time,
 	load func(context.Context, appInfo) *icon.App,
-	logger *zerolog.Logger,
 ) *appIconCache {
 	cache := &appIconCache{
 		entries:  make(map[appIconCacheKey]appIconCacheEntry),
@@ -60,7 +57,6 @@ func newAppIconCache(
 		stop:     make(chan struct{}),
 		now:      now,
 		load:     load,
-		logger:   logger,
 	}
 	go cache.run()
 	return cache
@@ -145,32 +141,24 @@ func (c *appIconCache) loadAndCache(request appIconLoadRequest) {
 		lifetime = appIconNegativeLifetime
 	}
 	owned := cloneOptionalIcon(loaded)
-	stored := c.finishLoad(request.key, owned, c.now().Add(lifetime))
-
-	if stored && loaded == nil && c.logger != nil {
-		c.logger.Debug().
-			Str("app", request.app.Name).
-			Int("pid", request.app.PID).
-			Msg("application icon unavailable")
-	}
+	c.finishLoad(request.key, owned, c.now().Add(lifetime))
 }
 
 func (c *appIconCache) finishLoad(
 	key appIconCacheKey,
 	loaded *icon.App,
 	expiresAt time.Time,
-) bool {
+) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.inFlight, key)
 	if c.closed {
-		return false
+		return
 	}
 	if _, exists := c.entries[key]; !exists && len(c.entries) >= appIconCacheLimit {
 		c.evictOneLocked()
 	}
 	c.entries[key] = appIconCacheEntry{Icon: loaded, ExpiresAt: expiresAt}
-	return true
 }
 
 func (c *appIconCache) cancelLoad(key appIconCacheKey) {

@@ -62,7 +62,20 @@ func NewWindowDetector(cfg *Config, logger *zerolog.Logger) (WindowDetector, err
 			logger.Warn().Msg("Accessibility permission not granted; recording application names without titles")
 		},
 	)
-	iconCache := newAppIconCache(time.Now, loadDarwinAppIcon, logger)
+	loadAppIcon := loadDarwinAppIcon
+	if logger != nil {
+		loadAppIcon = func(ctx context.Context, app appInfo) *icon.App {
+			appIcon := loadDarwinAppIcon(ctx, app)
+			if appIcon == nil && ctx.Err() == nil {
+				logger.Debug().
+					Str("app", app.Name).
+					Int("pid", app.PID).
+					Msg("application icon unavailable")
+			}
+			return appIcon
+		}
+	}
+	iconCache := newAppIconCache(time.Now, loadAppIcon)
 
 	return &detectorCore{
 		policy:    policy,
