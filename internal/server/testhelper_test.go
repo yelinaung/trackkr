@@ -112,7 +112,7 @@ func unitServer(t *testing.T) (*Server, *mockQuerier) {
 		templates: tmpl,
 		codec:     newSessionCodec(testSecret, true),
 		limiter:   newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),
-		iconLimit: newAppIconRateLimiter(appIconRateLimit, appIconRateWindow),
+		iconLimit: newSlidingWindowLimiter(appIconRateLimit, appIconRateWindow),
 		loc:       time.UTC,
 	}
 	srv.router = newRouter(srv)

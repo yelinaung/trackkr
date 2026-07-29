@@ -3,6 +3,7 @@ package db
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -104,6 +105,97 @@ func TestSiteIconFailedRefreshRetainsStalePNG(t *testing.T) {
 	}
 	if !bytes.Equal(row.PNG, pngBytes) {
 		t.Error("failed refresh discarded the stale favicon")
+	}
+}
+
+func TestSiteIconCompletionIgnoresBytesWithoutDetails(t *testing.T) {
+	pool := testPool(t)
+	queries := NewQueries(pool)
+	user, _ := seedUserAndDevice(t, pool, queries)
+	ctx := t.Context()
+
+	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+	claimUntil := now.Add(time.Minute)
+	if _, claimed, err := queries.ClaimSiteIconRefresh(
+		ctx, user.ID, "partial.example", now, claimUntil,
+	); err != nil || !claimed {
+		t.Fatalf("claim = %v, %v", claimed, err)
+	}
+
+	row, err := queries.CompleteSiteIconRefresh(
+		ctx,
+		user.ID,
+		"partial.example",
+		databaseSiteIconPNG(t),
+		nil,
+		now,
+		now.AddDate(1, 0, 0),
+		claimUntil,
+	)
+	if err != nil {
+		t.Fatalf("CompleteSiteIconRefresh: %v", err)
+	}
+	if len(row.PNG) != 0 || len(row.SHA256) != 0 {
+		t.Error("unvalidated bytes were written without digest metadata")
+	}
+}
+
+func TestConcurrentSiteIconClaimsPreserveUserLimit(t *testing.T) {
+	pool := testPool(t)
+	queries := NewQueries(pool)
+	user, _ := seedUserAndDevice(t, pool, queries)
+	ctx := t.Context()
+	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO site_icons (user_id, site, expires_at, updated_at)
+		 SELECT $1, 'old-' || n || '.example', $2::timestamptz,
+		        $3::timestamptz - n * interval '1 second'
+		 FROM generate_series(1, $4) AS n`,
+		user.ID, now.AddDate(1, 0, 0), now, SiteIconUserLimit-1)
+	if err != nil {
+		t.Fatalf("seeding site icons: %v", err)
+	}
+
+	start := make(chan struct{})
+	errorsCh := make(chan error, 2)
+	var wait sync.WaitGroup
+	for _, site := range []string{"new-one.example", "new-two.example"} {
+		wait.Go(func() {
+			<-start
+			_, claimed, claimErr := queries.ClaimSiteIconRefresh(
+				ctx, user.ID, site, now, now.Add(time.Minute),
+			)
+			if claimErr != nil {
+				errorsCh <- claimErr
+				return
+			}
+			if !claimed {
+				errorsCh <- errors.New("new site was not claimed")
+			}
+		})
+	}
+	close(start)
+	wait.Wait()
+	close(errorsCh)
+	for claimErr := range errorsCh {
+		t.Fatal(claimErr)
+	}
+
+	var count int
+	if err := pool.QueryRow(
+		ctx,
+		`SELECT count(*) FROM site_icons WHERE user_id = $1`, user.ID,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting site icons: %v", err)
+	}
+	if count != SiteIconUserLimit {
+		t.Errorf("rows = %d, want cap %d", count, SiteIconUserLimit)
+	}
+	for _, site := range []string{"new-one.example", "new-two.example"} {
+		if _, err := queries.SiteIcon(ctx, user.ID, site); err != nil {
+			t.Errorf("new row %q was pruned: %v", site, err)
+		}
 	}
 }
 

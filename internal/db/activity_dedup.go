@@ -10,7 +10,10 @@ import (
 	"github.com/yelinaung/trackkr/internal/icon"
 )
 
-const firefoxAppKey = "firefox"
+const (
+	firefoxAppKey             = "firefox"
+	minEffectiveSliceDuration = time.Second
+)
 
 type activityInterval struct {
 	start time.Time
@@ -46,6 +49,9 @@ func deduplicateFirefoxActivity(records []ActivityRecordRow) []ActivityRecordRow
 			activityInterval{start: record.StartedAt, end: record.EndedAt},
 			coverage[record.DeviceID],
 		) {
+			if interval.end.Sub(interval.start) < minEffectiveSliceDuration {
+				continue
+			}
 			slice := *record
 			slice.StartedAt = interval.start
 			slice.EndedAt = interval.end

@@ -263,6 +263,24 @@ func TestTimelineShowsTruncationNotice(t *testing.T) {
 	}
 }
 
+func TestTimelineShowsSourceTruncationNotice(t *testing.T) {
+	t.Parallel()
+
+	data := sampleTimelineData()
+	data.Truncated = true
+	data.SourceTruncated = true
+	data.SourceLimit = db.ActivitySourceLimit
+
+	html := renderPartial(t, "timeline", data)
+	if !strings.Contains(html, "25000 source records") ||
+		!strings.Contains(html, "totals show") {
+		t.Errorf("source truncation notice missing or unclear:\n%s", html)
+	}
+	if strings.Contains(html, "totals below cover the whole day") {
+		t.Error("source-truncated totals are described as complete")
+	}
+}
+
 func TestTimelineEmptyState(t *testing.T) {
 	t.Parallel()
 	html := renderPartial(t, "timeline", &pageData{Chart: Chart{SpanMin: 1440}})

@@ -113,7 +113,7 @@ func TestAppIconUploadInvalidRequestConsumesRate(t *testing.T) {
 func TestAppIconRateLimiterIsAtomicAndSweeps(t *testing.T) {
 	t.Parallel()
 
-	limiter := newAppIconRateLimiter(appIconRateLimit, appIconRateWindow)
+	limiter := newSlidingWindowLimiter(appIconRateLimit, appIconRateWindow)
 	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
 	start := make(chan struct{})
 	var allowed atomic.Int64

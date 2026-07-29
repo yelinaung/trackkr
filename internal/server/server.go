@@ -36,18 +36,19 @@ type Server struct {
 
 	// Narrow dependencies rather than one wide interface, so a test
 	// populates only the fields whose routes it exercises.
-	api       APIQuerier
-	sessions  SessionQuerier
-	web       WebQuerier
-	iconRead  appIconReader
-	iconWrite appIconWriter
-	siteIcons siteIconStore
-	favicons  siteFaviconFetcher
+	api              APIQuerier
+	sessions         SessionQuerier
+	web              WebQuerier
+	iconRead         appIconReader
+	iconWrite        appIconWriter
+	siteIcons        siteIconStore
+	siteRefresh      siteIconRefreshQueue
+	closeSiteRefresh func()
 
 	templates *templates
 	codec     *sessionCodec
 	limiter   *attemptLimiter
-	iconLimit *appIconRateLimiter
+	iconLimit *slidingWindowLimiter
 	loc       *time.Location
 }
 
@@ -71,21 +72,28 @@ func New(cfg *Config, pool *pgxpool.Pool, logger *zerolog.Logger) (*Server, erro
 	}
 
 	queries := db.NewQueries(pool)
+	refresher := newSiteIconRefresher(
+		queries,
+		favicon.NewFetcher(),
+		logger,
+		defaultSiteIconRefresherConfig(),
+	)
 	s := &Server{
-		config:    cfg,
-		logger:    logger,
-		api:       queries,
-		sessions:  queries,
-		web:       queries,
-		iconRead:  queries,
-		iconWrite: queries,
-		siteIcons: queries,
-		favicons:  favicon.NewFetcher(),
-		templates: tmpl,
-		codec:     newSessionCodec(cfg.Auth.SessionSecret, cfg.Server.SecureCookies),
-		limiter:   newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),
-		iconLimit: newAppIconRateLimiter(appIconRateLimit, appIconRateWindow),
-		loc:       loc,
+		config:           cfg,
+		logger:           logger,
+		api:              queries,
+		sessions:         queries,
+		web:              queries,
+		iconRead:         queries,
+		iconWrite:        queries,
+		siteIcons:        queries,
+		siteRefresh:      refresher,
+		closeSiteRefresh: refresher.Close,
+		templates:        tmpl,
+		codec:            newSessionCodec(cfg.Auth.SessionSecret, cfg.Server.SecureCookies),
+		limiter:          newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),
+		iconLimit:        newSlidingWindowLimiter(appIconRateLimit, appIconRateWindow),
+		loc:              loc,
 	}
 	s.router = newRouter(s)
 	return s, nil
@@ -107,16 +115,16 @@ func newRouter(s *Server) *chi.Mux {
 	})
 
 	h := &webHandlers{
-		queries:   s.web,
-		icons:     s.iconRead,
-		siteIcons: s.siteIcons,
-		favicons:  s.favicons,
-		templates: s.templates,
-		codec:     s.codec,
-		limiter:   s.limiter,
-		loc:       s.loc,
-		logger:    s.logger,
-		allowReg:  s.config.Auth.AllowRegistration,
+		queries:     s.web,
+		icons:       s.iconRead,
+		siteIcons:   s.siteIcons,
+		siteRefresh: s.siteRefresh,
+		templates:   s.templates,
+		codec:       s.codec,
+		limiter:     s.limiter,
+		loc:         s.loc,
+		logger:      s.logger,
+		allowReg:    s.config.Auth.AllowRegistration,
 	}
 
 	// Static assets are public: gating them would load the login page
@@ -166,4 +174,11 @@ func noDirListing(next http.Handler) http.Handler {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.router.ServeHTTP(w, r)
+}
+
+// Close stops background favicon work and waits for cancellable requests.
+func (s *Server) Close() {
+	if s.closeSiteRefresh != nil {
+		s.closeSiteRefresh()
+	}
 }

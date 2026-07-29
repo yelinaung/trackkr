@@ -27,14 +27,21 @@ carry the page URL that desktop records cannot observe.
 
 ## Query Behavior
 
-`GetActivityRecords` loads the selected raw window, applies interval
-subtraction, orders the effective records, and only then applies the timeline
-limit. This prevents duplicate raw rows from hiding later effective activity or
-causing a false truncation warning.
+`GetActivitySummary` loads the selected raw window once, applies interval
+subtraction, and derives both the timeline and app totals from the same
+effective records. The SQL query fetches at most 25,001 source rows: 25,000 for
+processing and one truncation probe. The timeline then renders at most 5,000
+effective records.
 
-`GetAppTotals` uses the same effective records and clips them to the requested
-window before aggregation. Site totals already exclude desktop records because
-they group only URL-bearing activity, so their behavior does not change.
+This two-level bound prevents one dashboard request from materialising an
+unbounded day twice. If the source bound is reached, the dashboard says that
+both its chart and totals are incomplete; it must not claim the totals cover
+the whole day. Site totals remain a separate bounded SQL aggregation over
+URL-bearing activity.
+
+Residual desktop slices shorter than one second are discarded. The extension
+does not report such visits, and rendering those gaps with the minimum visual
+bar width would turn sub-second intervals into misleading multi-minute bars.
 
 Query-time correction was chosen over ingestion suppression because it:
 
@@ -47,6 +54,6 @@ Query-time correction was chosen over ingestion suppression because it:
 ## Verification
 
 Pure unit tests cover partial overlap, merged browser coverage, device
-isolation, adjacent intervals, non-Firefox records, and effective app totals.
-The PostgreSQL integration test verifies timeline slices, app totals, and site
-totals from one overlapping desktop/extension pair.
+isolation, adjacent intervals, sub-second residuals, non-Firefox records, and
+effective app totals. PostgreSQL integration tests verify timeline slices, app
+totals, site totals, and the 25,000-row source bound.

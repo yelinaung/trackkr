@@ -16,6 +16,14 @@ type ActivityRecordRow struct {
 	CreatedAt time.Time
 }
 
+// ActivitySummary is the bounded activity view used by one dashboard render.
+type ActivitySummary struct {
+	Records           []ActivityRecordRow
+	Totals            []AppTotalRow
+	TimelineTruncated bool
+	SourceTruncated   bool
+}
+
 type DeviceRow struct {
 	ID         int64
 	UserID     int64

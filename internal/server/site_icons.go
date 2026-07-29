@@ -22,6 +22,7 @@ const (
 	siteIconFetchBudget = 12 * time.Second
 	siteIconClaimLease  = 15 * time.Second
 	siteIconShortCache  = 60 * time.Second
+	siteIconSVGType     = "image/svg+xml"
 )
 
 type siteIconStore interface {
@@ -73,60 +74,10 @@ func (h *webHandlers) handleSiteIcon() http.HandlerFunc {
 			return
 		}
 
-		claimUntil := now.Add(siteIconClaimLease)
-		row, claimed, err := h.siteIcons.ClaimSiteIconRefresh(
-			r.Context(), user.ID, site, now, claimUntil,
-		)
-		if err != nil {
-			h.fail(w, err, "claiming site favicon refresh")
-			return
+		if h.siteRefresh != nil {
+			h.siteRefresh.Enqueue(user.ID, site)
 		}
-		if !claimed {
-			h.serveSiteIconFor(w, r, row, siteIconShortCache)
-			return
-		}
-
-		fetchCtx, cancel := context.WithTimeout(r.Context(), siteIconFetchBudget)
-		pngBytes, fetchErr := h.favicons.Fetch(fetchCtx, site)
-		cancel()
-
-		var details *icon.Details
-		if fetchErr == nil {
-			validated, validateErr := icon.ValidatePNG(pngBytes)
-			if validateErr != nil {
-				pngBytes = nil
-			} else {
-				details = &validated
-			}
-		}
-
-		attemptedAt := time.Now()
-		expiresAt := attemptedAt.AddDate(1, 0, 0)
-		row, err = h.siteIcons.CompleteSiteIconRefresh(
-			r.Context(),
-			user.ID,
-			site,
-			pngBytes,
-			details,
-			attemptedAt,
-			expiresAt,
-			claimUntil,
-		)
-		if err != nil {
-			if !errors.Is(err, pgx.ErrNoRows) {
-				h.fail(w, err, "completing site favicon refresh")
-				return
-			}
-			row, err = h.siteIcons.SiteIcon(r.Context(), user.ID, site)
-			if err != nil {
-				h.fail(w, err, "reloading site favicon")
-				return
-			}
-		}
-
-		// Fetch failures are expected for sites without a conventional icon.
-		// The negative row suppresses another outbound request for one year.
-		h.serveSiteIcon(w, r, row, attemptedAt)
+		h.serveSiteIconFor(w, r, row, siteIconShortCache)
 	}
 }
 
@@ -139,16 +90,14 @@ func (h *webHandlers) serveSiteIcon(w http.ResponseWriter, r *http.Request, row 
 }
 
 func (h *webHandlers) serveSiteIconFor(w http.ResponseWriter, r *http.Request, row *db.SiteIconRow, ttl time.Duration) {
-	seconds := max(int64(ttl/time.Second), int64(1))
-	w.Header().Set("Cache-Control", "private, max-age="+strconv.FormatInt(seconds, 10))
-	w.Header().Add("Vary", "Cookie")
-
 	if row != nil && len(row.PNG) > 0 && len(row.SHA256) == 32 {
 		details, err := icon.ValidatePNG(row.PNG)
 		if err != nil || !bytes.Equal(details.Digest[:], row.SHA256) {
+			h.setSiteIconCacheHeaders(w, siteIconShortCache)
 			h.serveSiteIconFallback(w, r)
 			return
 		}
+		h.setSiteIconCacheHeaders(w, ttl)
 		etag := `"` + hex.EncodeToString(row.SHA256) + `"`
 		w.Header().Set("Content-Type", "image/png")
 		w.Header().Set("ETag", etag)
@@ -160,14 +109,21 @@ func (h *webHandlers) serveSiteIconFor(w http.ResponseWriter, r *http.Request, r
 		_, _ = w.Write(row.PNG)
 		return
 	}
+	h.setSiteIconCacheHeaders(w, ttl)
 	h.serveSiteIconFallback(w, r)
+}
+
+func (h *webHandlers) setSiteIconCacheHeaders(w http.ResponseWriter, ttl time.Duration) {
+	seconds := max(int64(ttl/time.Second), int64(1))
+	w.Header().Set("Cache-Control", "private, max-age="+strconv.FormatInt(seconds, 10))
+	w.Header().Add("Vary", "Cookie")
 }
 
 func (h *webHandlers) serveSiteIconFallback(w http.ResponseWriter, r *http.Request) {
 	site := chi.URLParam(r, "site")
 	fill, foreground := appPalette(site)
 	monogram := html.EscapeString(appMonogram(site))
-	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Content-Type", siteIconSVGType)
 	_, _ = fmt.Fprintf(
 		w,
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">`+

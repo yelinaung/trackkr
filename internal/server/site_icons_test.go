@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
 	"github.com/yelinaung/trackkr/internal/icon"
 )
@@ -36,25 +37,20 @@ func TestSiteIconRouteFetchesAndCachesForOneYear(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
 	}
-	if !bytes.Equal(rec.Body.Bytes(), pngBytes) {
-		t.Error("response body does not match fetched PNG")
-	}
-	if got := rec.Header().Get("Content-Type"); got != "image/png" {
-		t.Errorf("Content-Type = %q, want image/png", got)
+	if got := rec.Header().Get("Content-Type"); got != siteIconSVGType {
+		t.Errorf("initial Content-Type = %q, want %s", got, siteIconSVGType)
 	}
 	if got := rec.Header().Get("Vary"); !strings.Contains(got, "Cookie") {
 		t.Errorf("Vary = %q, want Cookie", got)
 	}
-	if fetcher.calls != 1 {
-		t.Errorf("fetch calls = %d, want 1", fetcher.calls)
-	}
+	store.waitForCompletion(t)
 
 	cached := performSiteIconRequest(t, srv, session, path)
 	if cached.Code != http.StatusOK || !bytes.Equal(cached.Body.Bytes(), pngBytes) {
 		t.Errorf("cached response = %d, %d bytes", cached.Code, cached.Body.Len())
 	}
-	if fetcher.calls != 1 {
-		t.Errorf("cached request fetched again; calls = %d", fetcher.calls)
+	if fetcher.callCount() != 1 {
+		t.Errorf("cached request fetched again; calls = %d", fetcher.callCount())
 	}
 
 	row, err := store.SiteIcon(t.Context(), user.ID, testSiteHost)
@@ -76,7 +72,10 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 	fake := newFakeWeb()
 	user := fake.addUser(t, "site-icon-fallback", testPassword)
 	store := newMemorySiteIconStore()
-	fetcher := &fakeSiteFaviconFetcher{err: errors.New("no favicon")}
+	fetcher := &fakeSiteFaviconFetcher{
+		png: serverTestPNG(t, color.NRGBA{R: 0xff, A: 0xff}),
+		err: errors.New("no favicon"),
+	}
 	srv := siteIconWebServer(t, fake, store, fetcher)
 	session, _ := signIn(t, srv, user.ID)
 
@@ -85,22 +84,27 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "image/svg+xml" {
-		t.Errorf("Content-Type = %q, want image/svg+xml", got)
+	if got := rec.Header().Get("Content-Type"); got != siteIconSVGType {
+		t.Errorf("Content-Type = %q, want %s", got, siteIconSVGType)
 	}
 	if !strings.Contains(rec.Body.String(), ">EX</text>") {
 		t.Errorf("fallback lacks site monogram: %s", rec.Body.String())
 	}
-	if fetcher.calls != 1 {
-		t.Errorf("fetch calls = %d, want 1", fetcher.calls)
-	}
+	store.waitForCompletion(t)
 
 	second := performSiteIconRequest(t, srv, session, path)
 	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), ">EX</text>") {
 		t.Errorf("negative-cache response = %d: %s", second.Code, second.Body.String())
 	}
-	if fetcher.calls != 1 {
-		t.Errorf("negative cache fetched again; calls = %d", fetcher.calls)
+	if fetcher.callCount() != 1 {
+		t.Errorf("negative cache fetched again; calls = %d", fetcher.callCount())
+	}
+	row, err := store.SiteIcon(t.Context(), user.ID, testSiteHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(row.PNG) != 0 || len(row.SHA256) != 0 {
+		t.Error("bytes returned with a fetch error were cached")
 	}
 }
 
@@ -124,8 +128,70 @@ func TestSiteIconRouteRejectsNonCanonicalAndIPKeys(t *testing.T) {
 			t.Errorf("%s status = %d, want 404", path, rec.Code)
 		}
 	}
-	if fetcher.calls != 0 {
-		t.Errorf("invalid keys caused %d fetches", fetcher.calls)
+	if fetcher.callCount() != 0 {
+		t.Errorf("invalid keys caused %d fetches", fetcher.callCount())
+	}
+}
+
+func TestSiteIconRouteDoesNotWaitForFetch(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeWeb()
+	user := fake.addUser(t, "site-icon-async", testPassword)
+	store := newMemorySiteIconStore()
+	fetcher := newBlockingSiteFaviconFetcher()
+	srv := siteIconWebServer(t, fake, store, fetcher)
+	session, _ := signIn(t, srv, user.ID)
+
+	recorder := performSiteIconRequest(
+		t, srv, session, signedSiteIconPath(srv, user.ID, testSiteHost),
+	)
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != siteIconSVGType {
+		t.Errorf("initial response = %d %q, want immediate SVG fallback",
+			recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+	fetcher.waitForStart(t)
+	close(fetcher.release)
+	store.waitForCompletion(t)
+}
+
+func TestSiteIconRefresherBoundsConcurrencyAndPerUserPending(t *testing.T) {
+	t.Parallel()
+
+	store := newMemorySiteIconStore()
+	fetcher := newBlockingSiteFaviconFetcher()
+	logger := zerolog.Nop()
+	config := defaultSiteIconRefresherConfig()
+	config.workers = 2
+	config.queueLimit = 8
+	config.userPendingLimit = 2
+	refresher := newSiteIconRefresher(store, fetcher, &logger, config)
+	t.Cleanup(refresher.Close)
+
+	if !refresher.Enqueue(1, "one.example") || !refresher.Enqueue(1, "two.example") {
+		t.Fatal("two per-user jobs were not queued")
+	}
+	if refresher.Enqueue(1, "three.example") {
+		t.Fatal("third per-user pending job was accepted")
+	}
+	if !refresher.Enqueue(2, "four.example") || !refresher.Enqueue(3, "five.example") {
+		t.Fatal("jobs for other users were not queued")
+	}
+
+	fetcher.waitForStart(t)
+	fetcher.waitForStart(t)
+	select {
+	case site := <-fetcher.started:
+		t.Fatalf("third fetch %q started while both workers were blocked", site)
+	default:
+	}
+
+	close(fetcher.release)
+	for range 2 {
+		fetcher.waitForStart(t)
+	}
+	for range 4 {
+		store.waitForCompletion(t)
 	}
 }
 
@@ -142,8 +208,15 @@ func siteIconWebServer(
 	t.Helper()
 	srv := webServer(t, fake, false)
 	srv.siteIcons = store
-	srv.favicons = fetcher
+	config := defaultSiteIconRefresherConfig()
+	config.workers = 1
+	config.queueLimit = 4
+	config.userPendingLimit = 4
+	refresher := newSiteIconRefresher(store, fetcher, srv.logger, config)
+	srv.siteRefresh = refresher
+	srv.closeSiteRefresh = refresher.Close
 	srv.router = newRouter(srv)
+	t.Cleanup(srv.Close)
 	return srv
 }
 
@@ -168,6 +241,39 @@ type fakeSiteFaviconFetcher struct {
 	calls int
 }
 
+type blockingSiteFaviconFetcher struct {
+	started chan string
+	release chan struct{}
+}
+
+func newBlockingSiteFaviconFetcher() *blockingSiteFaviconFetcher {
+	return &blockingSiteFaviconFetcher{
+		started: make(chan string, siteIconWorkerCount+1),
+		release: make(chan struct{}),
+	}
+}
+
+func (f *blockingSiteFaviconFetcher) Fetch(ctx context.Context, site string) ([]byte, error) {
+	f.started <- site
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-f.release:
+		return nil, errors.New("fixture has no favicon")
+	}
+}
+
+func (f *blockingSiteFaviconFetcher) waitForStart(t *testing.T) string {
+	t.Helper()
+	select {
+	case site := <-f.started:
+		return site
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for favicon fetch")
+		return ""
+	}
+}
+
 func (f *fakeSiteFaviconFetcher) Fetch(context.Context, string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -175,14 +281,33 @@ func (f *fakeSiteFaviconFetcher) Fetch(context.Context, string) ([]byte, error) 
 	return bytes.Clone(f.png), f.err
 }
 
+func (f *fakeSiteFaviconFetcher) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 type memorySiteIconStore struct {
-	mu     sync.Mutex
-	rows   map[string]*db.SiteIconRow
-	nextID int64
+	mu        sync.Mutex
+	rows      map[string]*db.SiteIconRow
+	nextID    int64
+	completed chan struct{}
 }
 
 func newMemorySiteIconStore() *memorySiteIconStore {
-	return &memorySiteIconStore{rows: make(map[string]*db.SiteIconRow)}
+	return &memorySiteIconStore{
+		rows:      make(map[string]*db.SiteIconRow),
+		completed: make(chan struct{}, 8),
+	}
+}
+
+func (s *memorySiteIconStore) waitForCompletion(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for favicon refresh")
+	}
 }
 
 func (s *memorySiteIconStore) SiteIcon(_ context.Context, userID int64, site string) (*db.SiteIconRow, error) {
@@ -242,6 +367,7 @@ func (s *memorySiteIconStore) CompleteSiteIconRefresh(
 	row.ExpiresAt = expiresAt
 	row.ClaimUntil = nil
 	row.UpdatedAt = attemptedAt
+	s.completed <- struct{}{}
 	return cloneSiteIconRow(row), nil
 }
 
@@ -307,7 +433,10 @@ func TestSiteIconResponseRejectsDigestMismatch(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", recorder.Code)
 	}
-	if got := recorder.Header().Get("Content-Type"); got != "image/svg+xml" {
-		t.Errorf("Content-Type = %q, want image/svg+xml", got)
+	if got := recorder.Header().Get("Content-Type"); got != siteIconSVGType {
+		t.Errorf("Content-Type = %q, want %s", got, siteIconSVGType)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "private, max-age=60" {
+		t.Errorf("Cache-Control = %q, want short fallback cache", got)
 	}
 }

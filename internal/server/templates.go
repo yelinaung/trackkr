@@ -22,17 +22,19 @@ type pageData struct {
 	AllowRegistration bool
 
 	// Dashboard and devices.
-	Date           string
-	Today          string
-	DateLabel      string
-	Devices        []db.DeviceRow
-	SelectedDevice int64
-	Chart          Chart
-	Totals         []TotalView
-	Sites          []TotalView
-	TotalSeconds   int64
-	Truncated      bool
-	RecordLimit    int
+	Date            string
+	Today           string
+	DateLabel       string
+	Devices         []db.DeviceRow
+	SelectedDevice  int64
+	Chart           Chart
+	Totals          []TotalView
+	Sites           []TotalView
+	TotalSeconds    int64
+	Truncated       bool
+	SourceTruncated bool
+	RecordLimit     int
+	SourceLimit     int
 
 	// Partial marks an htmx fragment render, which emits the
 	// out-of-band heading update a full page render must not.

@@ -66,6 +66,7 @@ func main() {
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to start server")
 	}
+	defer srv.Close()
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Addr(),

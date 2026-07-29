@@ -22,13 +22,13 @@ import (
 )
 
 const (
-	appIconBatchLimit  = 10
-	appIconBodyLimit   = 1 << 20
-	appIconRateLimit   = 60
-	appIconRateWindow  = time.Hour
-	appIconSweepPeriod = time.Hour
-	jsonContentType    = "application/json"
-	apiErrorKey        = "error"
+	appIconBatchLimit    = 10
+	appIconBodyLimit     = 1 << 20
+	appIconRateLimit     = 60
+	appIconRateWindow    = time.Hour
+	rateLimitSweepPeriod = time.Hour
+	jsonContentType      = "application/json"
+	apiErrorKey          = "error"
 )
 
 type appIconWriter interface {
@@ -48,7 +48,7 @@ type appIconResponse struct {
 	Accepted int `json:"accepted"`
 }
 
-type appIconRateLimiter struct {
+type slidingWindowLimiter struct {
 	mu        sync.Mutex
 	hits      map[int64][]time.Time
 	limit     int
@@ -56,8 +56,8 @@ type appIconRateLimiter struct {
 	lastSweep time.Time
 }
 
-func newAppIconRateLimiter(limit int, window time.Duration) *appIconRateLimiter {
-	return &appIconRateLimiter{
+func newSlidingWindowLimiter(limit int, window time.Duration) *slidingWindowLimiter {
+	return &slidingWindowLimiter{
 		hits:   make(map[int64][]time.Time),
 		limit:  limit,
 		window: window,
@@ -65,11 +65,11 @@ func newAppIconRateLimiter(limit int, window time.Duration) *appIconRateLimiter 
 }
 
 // reserve atomically spends one request and returns the wait when full.
-func (l *appIconRateLimiter) reserve(deviceID int64, now time.Time) (bool, time.Duration) {
+func (l *slidingWindowLimiter) reserve(key int64, now time.Time) (bool, time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.lastSweep.IsZero() || now.Sub(l.lastSweep) >= appIconSweepPeriod {
+	if l.lastSweep.IsZero() || now.Sub(l.lastSweep) >= rateLimitSweepPeriod {
 		for id, hits := range l.hits {
 			hits = activeIconHits(hits, now.Add(-l.window))
 			if len(hits) == 0 {
@@ -81,12 +81,12 @@ func (l *appIconRateLimiter) reserve(deviceID int64, now time.Time) (bool, time.
 		l.lastSweep = now
 	}
 
-	hits := activeIconHits(l.hits[deviceID], now.Add(-l.window))
+	hits := activeIconHits(l.hits[key], now.Add(-l.window))
 	if len(hits) >= l.limit {
-		l.hits[deviceID] = hits
+		l.hits[key] = hits
 		return false, max(hits[0].Add(l.window).Sub(now), time.Second)
 	}
-	l.hits[deviceID] = append(hits, now)
+	l.hits[key] = append(hits, now)
 	return true, 0
 }
 
@@ -100,7 +100,7 @@ func activeIconHits(hits []time.Time, cutoff time.Time) []time.Time {
 
 func handleAppIconUpload(
 	writer appIconWriter,
-	limiter *appIconRateLimiter,
+	limiter *slidingWindowLimiter,
 	logger *zerolog.Logger,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

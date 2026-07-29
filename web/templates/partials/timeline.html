@@ -8,7 +8,12 @@
 <h1 class="page-title" id="page-title" hx-swap-oob="true">{{.DateLabel}}</h1>
 {{end}}
 
-{{if .Truncated}}
+{{if .SourceTruncated}}
+<p class="notice" role="status">
+  This day exceeds {{.SourceLimit}} source records. The chart and totals show
+  the earliest bounded portion rather than the complete day.
+</p>
+{{else if .Truncated}}
 <p class="notice" role="status">
   Showing the first {{.RecordLimit}} records of this day, so the chart stops
   early. The totals below cover the whole day.

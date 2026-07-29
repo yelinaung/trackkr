@@ -526,6 +526,43 @@ func TestFirefoxDesktopExtensionOverlapIsDeduplicated(t *testing.T) {
 	}
 }
 
+func TestActivitySummaryBoundsDenseSourceWindow(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 6, 3, 0, 0, 0, 0, time.UTC)
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO activity_records (
+		     device_id, app_name, title, started_at, ended_at, duration_s
+		 )
+		 SELECT $1, 'Burst', '',
+		        $2::timestamptz + n * interval '1 microsecond',
+		        $2::timestamptz + n * interval '1 microsecond' + interval '1 second',
+		        1
+		 FROM generate_series(0, $3) AS n`,
+		device.ID, day, ActivitySourceLimit)
+	if err != nil {
+		t.Fatalf("inserting dense activity window: %v", err)
+	}
+
+	summary, err := q.GetActivitySummary(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetActivitySummary: %v", err)
+	}
+	if !summary.SourceTruncated || !summary.TimelineTruncated {
+		t.Errorf("truncation flags = source %v, timeline %v; want both true",
+			summary.SourceTruncated, summary.TimelineTruncated)
+	}
+	if len(summary.Records) != ActivityRecordLimit {
+		t.Errorf("records = %d, want display cap %d", len(summary.Records), ActivityRecordLimit)
+	}
+	if len(summary.Totals) != 1 || summary.Totals[0].Seconds != ActivitySourceLimit {
+		t.Errorf("totals = %+v, want bounded %d seconds", summary.Totals, ActivitySourceLimit)
+	}
+}
+
 // Migration 002 adds ON DELETE CASCADE; without it this fails with a
 // foreign key violation, which is exactly the bug the migration fixes.
 func TestDeleteDeviceCascadesRecords(t *testing.T) {

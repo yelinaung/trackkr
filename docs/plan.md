@@ -445,7 +445,8 @@ Linux application icons still need a separately exercised Linux resolver.
 1. User-scoped positive and negative favicon cache with one-year expiry
 2. Signed authenticated image URLs derived from existing site totals
 3. HTTPS-only, DNS-pinned fetching with strict SSRF and decode bounds
-4. Lazy dashboard delivery with private caching and monogram fallback
+4. Bounded background fetching with private caching and monogram fallback
+5. Serialized per-user retention at 2,048 rows
 
 ### Phase 9: Future Enhancements (parked)
 

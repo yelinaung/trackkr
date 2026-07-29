@@ -82,6 +82,29 @@ func TestDeduplicateFirefoxActivityKeepsTouchingIntervals(t *testing.T) {
 	}
 }
 
+func TestDeduplicateFirefoxActivityDropsSubsecondDesktopSlices(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	url := testActivityURL
+	records := []ActivityRecordRow{
+		activityRecord(1, 1, firefoxAppKey, nil, start, start.Add(10*time.Second)),
+		activityRecord(
+			2,
+			1,
+			testFirefoxApp,
+			&url,
+			start.Add(500*time.Millisecond),
+			start.Add(9500*time.Millisecond),
+		),
+	}
+
+	got := deduplicateFirefoxActivity(records)
+	if len(got) != 1 || got[0].URL == nil {
+		t.Errorf("records = %+v, want only the browser observation", got)
+	}
+}
+
 func TestAppTotalsUsesEffectiveSlices(t *testing.T) {
 	t.Parallel()
 

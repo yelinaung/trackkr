@@ -11,8 +11,12 @@ import (
 	"github.com/yelinaung/trackkr/internal/icon"
 )
 
-// AppIconUserLimit bounds application icon storage for one user.
-const AppIconUserLimit = 512
+const (
+	// AppIconUserLimit bounds application icon storage for one user.
+	AppIconUserLimit = 512
+	// SiteIconUserLimit bounds annual favicon cache rows for one user.
+	SiteIconUserLimit = 2048
+)
 
 type Queries struct {
 	pool *pgxpool.Pool
@@ -83,34 +87,60 @@ func (q *Queries) ListDevicesByUser(ctx context.Context, userID int64) ([]Device
 	return devices, rows.Err()
 }
 
-// ActivityRecordLimit caps how many records one timeline page renders.
-// The cap truncates the end of the day rather than sampling it.
-//
-// GetActivityRecords returns at most one row beyond the limit so the caller
-// can tell "exactly full" from "truncated": comparing len(records) against
-// the limit alone reports a truncated chart for a day that fit exactly.
-const ActivityRecordLimit = 5000
+const (
+	// ActivityRecordLimit caps how many effective records one timeline renders.
+	ActivityRecordLimit = 5000
+	// ActivitySourceLimit bounds raw records before in-memory deduplication. It
+	// is intentionally higher than the display cap so overlap removal does not
+	// normally hide later effective records.
+	ActivitySourceLimit = 25000
+)
+
+// GetActivitySummary reads a bounded source window once, then derives both the
+// effective timeline and app totals from the same deduplicated records.
+func (q *Queries) GetActivitySummary(
+	ctx context.Context,
+	userID int64,
+	start, end time.Time,
+	deviceID *int64,
+) (*ActivitySummary, error) {
+	records, sourceTruncated, err := q.queryActivityRecords(ctx, userID, start, end, deviceID)
+	if err != nil {
+		return nil, err
+	}
+
+	effective := deduplicateFirefoxActivity(records)
+	summary := &ActivitySummary{
+		Totals:            appTotals(effective, start, end),
+		TimelineTruncated: sourceTruncated || len(effective) > ActivityRecordLimit,
+		SourceTruncated:   sourceTruncated,
+	}
+	if len(effective) > ActivityRecordLimit {
+		effective = effective[:ActivityRecordLimit]
+	}
+	summary.Records = effective
+	return summary, nil
+}
 
 // GetActivityRecords returns records overlapping [start, end). Selecting
 // on overlap rather than on started_at is what makes a record spanning
 // midnight visible on both days.
 func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
-	records, err := q.queryActivityRecords(ctx, userID, start, end, deviceID)
+	summary, err := q.GetActivitySummary(ctx, userID, start, end, deviceID)
 	if err != nil {
 		return nil, err
 	}
-
-	records = deduplicateFirefoxActivity(records)
-	if len(records) > ActivityRecordLimit+1 {
-		records = records[:ActivityRecordLimit+1]
-	}
-	return records, nil
+	return summary.Records, nil
 }
 
-// queryActivityRecords intentionally loads the full window before the display
-// cap is applied. Capping raw rows first could hide later effective records
-// when overlapping desktop and browser observations are removed.
-func (q *Queries) queryActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
+// queryActivityRecords fetches one probe row past the source limit so callers
+// can distinguish an exactly full window from a truncated one.
+func (q *Queries) queryActivityRecords(
+	ctx context.Context,
+	userID int64,
+	start, end time.Time,
+	deviceID *int64,
+) ([]ActivityRecordRow, bool, error) {
 	var rows pgx.Rows
 	var err error
 
@@ -120,19 +150,21 @@ func (q *Queries) queryActivityRecords(ctx context.Context, userID int64, start,
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
-			 ORDER BY ar.started_at, ar.device_id, ar.id`,
-			userID, start, end, *deviceID)
+			 ORDER BY ar.started_at, ar.device_id, ar.id
+			 LIMIT $5`,
+			userID, start, end, *deviceID, ActivitySourceLimit+1)
 	} else {
 		rows, err = q.pool.Query(ctx,
 			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
-			 ORDER BY ar.started_at, ar.device_id, ar.id`,
-			userID, start, end)
+			 ORDER BY ar.started_at, ar.device_id, ar.id
+			 LIMIT $4`,
+			userID, start, end, ActivitySourceLimit+1)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
@@ -141,22 +173,29 @@ func (q *Queries) queryActivityRecords(ctx context.Context, userID int64, start,
 		var r ActivityRecordRow
 		if err := rows.Scan(&r.ID, &r.DeviceID, &r.AppName, &r.Title, &r.URL,
 			&r.StartedAt, &r.EndedAt, &r.DurationS, &r.CreatedAt); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		records = append(records, r)
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	sourceTruncated := len(records) > ActivitySourceLimit
+	if sourceTruncated {
+		records = records[:ActivitySourceLimit]
+	}
+	return records, sourceTruncated, nil
 }
 
 // GetAppTotals sums per-app time within [start, end). It sums the part
 // of each record that falls inside the window, so a record spanning
 // midnight is not counted in full on both days.
 func (q *Queries) GetAppTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]AppTotalRow, error) {
-	records, err := q.queryActivityRecords(ctx, userID, start, end, deviceID)
+	summary, err := q.GetActivitySummary(ctx, userID, start, end, deviceID)
 	if err != nil {
 		return nil, err
 	}
-	return appTotals(deduplicateFirefoxActivity(records), start, end), nil
+	return summary.Totals, nil
 }
 
 // SiteTotalLimit caps how many sites the summary lists.
@@ -251,7 +290,17 @@ func (q *Queries) ClaimSiteIconRefresh(
 	site string,
 	now, claimUntil time.Time,
 ) (*SiteIconRow, bool, error) {
-	row, err := scanSiteIcon(q.pool.QueryRow(ctx,
+	tx, err := q.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, false, fmt.Errorf("beginning site icon claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := lockSiteIconUser(ctx, tx, userID); err != nil {
+		return nil, false, err
+	}
+
+	row, err := scanSiteIcon(tx.QueryRow(ctx,
 		`INSERT INTO site_icons (user_id, site, expires_at, claim_until, updated_at)
 		 VALUES ($1, $2, $3, $4, $3)
 		 ON CONFLICT (user_id, site) DO UPDATE SET
@@ -262,15 +311,31 @@ func (q *Queries) ClaimSiteIconRefresh(
 		 RETURNING id, user_id, site, png, sha256, width, height, attempted_at,
 		           expires_at, claim_until, created_at, updated_at`,
 		userID, site, now, claimUntil))
-	if err == nil {
-		return row, true, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, false, err
+	claimed := err == nil
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, err
+		}
+		row, err = scanSiteIcon(tx.QueryRow(ctx,
+			`SELECT id, user_id, site, png, sha256, width, height, attempted_at,
+			        expires_at, claim_until, created_at, updated_at
+			 FROM site_icons
+			 WHERE user_id = $1 AND site = $2`,
+			userID, site))
+		if err != nil {
+			return nil, false, err
+		}
 	}
 
-	row, err = q.SiteIcon(ctx, userID, site)
-	return row, false, err
+	if claimed {
+		if err := pruneSiteIcons(ctx, tx, userID); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("committing site icon claim: %w", err)
+	}
+	return row, claimed, nil
 }
 
 // CompleteSiteIconRefresh records either a normalized PNG or a failed annual
@@ -286,17 +351,33 @@ func (q *Queries) CompleteSiteIconRefresh(
 	var digest []byte
 	var width, height *int
 	if details != nil {
-		digest = details.Digest[:]
-		width = &details.Width
-		height = &details.Height
+		validated, err := icon.ValidatePNG(pngBytes)
+		if err != nil {
+			return nil, fmt.Errorf("validating completed site icon: %w", err)
+		}
+		digest = validated.Digest[:]
+		width = &validated.Width
+		height = &validated.Height
+	} else {
+		pngBytes = nil
 	}
 
-	return scanSiteIcon(q.pool.QueryRow(ctx,
+	tx, err := q.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("beginning site icon completion: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := lockSiteIconUser(ctx, tx, userID); err != nil {
+		return nil, err
+	}
+
+	row, err := scanSiteIcon(tx.QueryRow(ctx,
 		`UPDATE site_icons SET
-		     png = CASE WHEN $4::bytea IS NULL THEN png ELSE $4 END,
-		     sha256 = CASE WHEN $4::bytea IS NULL THEN sha256 ELSE $5 END,
-		     width = CASE WHEN $4::bytea IS NULL THEN width ELSE $6 END,
-		     height = CASE WHEN $4::bytea IS NULL THEN height ELSE $7 END,
+		     png = CASE WHEN $5::bytea IS NULL THEN png ELSE $4 END,
+		     sha256 = CASE WHEN $5::bytea IS NULL THEN sha256 ELSE $5 END,
+		     width = CASE WHEN $5::bytea IS NULL THEN width ELSE $6 END,
+		     height = CASE WHEN $5::bytea IS NULL THEN height ELSE $7 END,
 		     attempted_at = $8,
 		     expires_at = $9,
 		     claim_until = NULL,
@@ -305,6 +386,42 @@ func (q *Queries) CompleteSiteIconRefresh(
 		 RETURNING id, user_id, site, png, sha256, width, height, attempted_at,
 		           expires_at, claim_until, created_at, updated_at`,
 		userID, site, claimUntil, pngBytes, digest, width, height, attemptedAt, expiresAt))
+	if err != nil {
+		return nil, err
+	}
+	if err := pruneSiteIcons(ctx, tx, userID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing site icon completion: %w", err)
+	}
+	return row, nil
+}
+
+func lockSiteIconUser(ctx context.Context, tx pgx.Tx, userID int64) error {
+	var lockedUserID int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&lockedUserID); err != nil {
+		return fmt.Errorf("locking site icon user: %w", err)
+	}
+	return nil
+}
+
+func pruneSiteIcons(ctx context.Context, tx pgx.Tx, userID int64) error {
+	_, err := tx.Exec(ctx,
+		`WITH excess AS (
+		     SELECT id
+		     FROM site_icons
+		     WHERE user_id = $1
+		     ORDER BY updated_at DESC, id DESC
+		     OFFSET $2
+		 )
+		 DELETE FROM site_icons
+		 WHERE id IN (SELECT id FROM excess)`,
+		userID, SiteIconUserLimit)
+	if err != nil {
+		return fmt.Errorf("pruning site icons: %w", err)
+	}
+	return nil
 }
 
 type siteIconScanner interface {

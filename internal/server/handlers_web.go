@@ -61,23 +61,22 @@ type WebQuerier interface {
 	ListDevicesByUser(ctx context.Context, userID int64) ([]db.DeviceRow, error)
 	CreateDevice(ctx context.Context, userID int64, name, deviceType, apiKey string) (*db.DeviceRow, error)
 	DeleteDevice(ctx context.Context, id, userID int64) error
-	GetActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]db.ActivityRecordRow, error)
-	GetAppTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]db.AppTotalRow, error)
+	GetActivitySummary(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) (*db.ActivitySummary, error)
 	GetSiteTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]db.SiteTotalRow, error)
 }
 
 // webHandlers carries what every dashboard handler needs.
 type webHandlers struct {
-	queries   WebQuerier
-	icons     appIconReader
-	siteIcons siteIconStore
-	favicons  siteFaviconFetcher
-	templates *templates
-	codec     *sessionCodec
-	limiter   *attemptLimiter
-	loc       *time.Location
-	logger    *zerolog.Logger
-	allowReg  bool
+	queries     WebQuerier
+	icons       appIconReader
+	siteIcons   siteIconStore
+	siteRefresh siteIconRefreshQueue
+	templates   *templates
+	codec       *sessionCodec
+	limiter     *attemptLimiter
+	loc         *time.Location
+	logger      *zerolog.Logger
+	allowReg    bool
 }
 
 // ensureCSRF reuses the request's token or mints one. Every page that
@@ -97,6 +96,7 @@ func (h *webHandlers) base(r *http.Request, token string) *pageData {
 		Timezone:          h.loc.String(),
 		AllowRegistration: h.allowReg,
 		RecordLimit:       db.ActivityRecordLimit,
+		SourceLimit:       db.ActivitySourceLimit,
 	}
 }
 
@@ -348,15 +348,12 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 		return nil, err
 	}
 
-	records, err := h.queries.GetActivityRecords(r.Context(), user.ID, start, end, deviceID)
+	activity, err := h.queries.GetActivitySummary(r.Context(), user.ID, start, end, deviceID)
 	if err != nil {
 		return nil, err
 	}
-
-	totals, err := h.queries.GetAppTotals(r.Context(), user.ID, start, end, deviceID)
-	if err != nil {
-		return nil, err
-	}
+	records := activity.Records
+	totals := activity.Totals
 
 	appKeys := make([]string, 0, len(totals))
 	for _, total := range totals {
@@ -421,15 +418,6 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 		views = append(views, view)
 	}
 
-	// The query fetches one row past the limit purely as a probe: its
-	// presence means there was more, while a day of exactly the limit
-	// fits and must not be reported as truncated. The extra row is
-	// dropped before rendering.
-	truncated := len(records) > db.ActivityRecordLimit
-	if truncated {
-		records = records[:db.ActivityRecordLimit]
-	}
-
 	data.Devices = devices
 	data.Totals = views
 	data.Sites = siteViews
@@ -437,8 +425,8 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	data.Date = start.Format("2006-01-02")
 	data.Today = time.Now().In(h.loc).Format("2006-01-02")
 	data.DateLabel = start.Format("Monday, 2 January 2006")
-	// The cap truncates the end of the day; totals still cover all of it.
-	data.Truncated = truncated
+	data.Truncated = activity.TimelineTruncated
+	data.SourceTruncated = activity.SourceTruncated
 
 	return data, nil
 }

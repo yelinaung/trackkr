@@ -80,7 +80,7 @@ address is then passed directly to the dialer so a second DNS lookup cannot
 redirect the connection.
 
 Requests have an eight-second client timeout and a four-second response-header
-timeout. The dashboard handler supplies a twelve-second outer budget. The
+timeout. A background worker supplies a twelve-second outer budget. The
 fetcher first tries `https://<site>/favicon.ico`; if that is unusable, it reads
 at most 128 KiB of the HTTPS home page and tries up to four unique safe
 `<link rel="icon">` targets.
@@ -99,16 +99,24 @@ failed attempt stores no image but still advances `attempted_at` and
 `expires_at` by one calendar year. A failed refresh retains an older PNG, so a
 temporary site failure does not replace useful artwork with a fallback.
 
-An atomic 15-second database lease allows only one request to refresh an
-expired row. Concurrent requests serve the existing image or fallback with a
-short cache lifetime. Completion updates a row only when the lease token still
-matches, preventing an older fetch from overwriting a newer claim.
+The image handler never performs outbound I/O. It queues a refresh without
+blocking and immediately serves the existing image or a short-lived monogram.
+Four workers consume a 64-entry global queue. At most 16 jobs may be pending
+for one user, and one user may start at most 60 refreshes per hour. Duplicate
+user/site jobs share one pending slot.
+
+An atomic 15-second database lease allows only one worker to refresh an
+expired row. Completion updates a row only when the lease token still matches,
+preventing an older fetch from overwriting a newer claim. Claims and
+completions lock the owning user while pruning, so concurrent refreshes cannot
+leave more than 2,048 cache rows for that user.
 
 Image responses are private, vary on the session cookie, and use a digest ETag.
 The server fully validates the stored PNG and verifies its digest before
 writing bytes. Positive and negative responses inherit the remaining annual
-cache lifetime. A missing or invalid icon always degrades to a deterministic
-SVG monogram without changing activity totals.
+cache lifetime. A corrupt PNG or digest mismatch uses the short cache lifetime
+so a repaired row is not hidden for a year. A missing or invalid icon always
+degrades to a deterministic SVG monogram without changing activity totals.
 
 ## Verification
 
@@ -120,7 +128,9 @@ Automated coverage includes:
 - safe HTML icon discovery and direct-to-HTML fallback order;
 - authenticated fetch, positive cache, negative cache, one-year expiry, ETag,
   cookie isolation, invalid signature, and digest mismatch behaviour;
-- database refresh lifecycle, stale-image retention, and concurrent claims;
+- non-blocking delivery, bounded worker concurrency, and per-user pending caps;
+- database refresh lifecycle, stale-image retention, concurrent claims, and
+  concurrency-safe 2,048-row retention;
 - dashboard image rendering and monogram fallback.
 
 Manual verification:

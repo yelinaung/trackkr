@@ -134,6 +134,19 @@ func (f *fakeWeb) GetAppTotals(context.Context, int64, time.Time, time.Time, *in
 	return f.totals, nil
 }
 
+func (f *fakeWeb) GetActivitySummary(context.Context, int64, time.Time, time.Time, *int64) (*db.ActivitySummary, error) {
+	records := f.records
+	truncated := len(records) > db.ActivityRecordLimit
+	if truncated {
+		records = records[:db.ActivityRecordLimit]
+	}
+	return &db.ActivitySummary{
+		Records:           records,
+		Totals:            f.totals,
+		TimelineTruncated: truncated,
+	}, nil
+}
+
 func (f *fakeWeb) GetSiteTotals(context.Context, int64, time.Time, time.Time, *int64) ([]db.SiteTotalRow, error) {
 	return f.sites, nil
 }
