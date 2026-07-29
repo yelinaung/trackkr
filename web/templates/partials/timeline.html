@@ -45,7 +45,15 @@
   <p class="totals__sum">{{duration .TotalSeconds}} tracked</p>
   <ol class="totals__list">
     {{range .Totals}}
-    <li class="totals__item">
+    <li class="totals__item totals__item--app">
+      {{if .IconURL}}
+      <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
+      {{else}}
+      <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
+        <rect width="22" height="22" rx="6" fill="{{.Fill}}"></rect>
+        <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
+      </svg>
+      {{end}}
       <svg class="totals__swatch" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
         <rect width="12" height="12" rx="3" fill="{{.Fill}}"></rect>
       </svg>

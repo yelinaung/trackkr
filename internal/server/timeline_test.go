@@ -222,6 +222,24 @@ func TestAppColorIsStableAndDistinct(t *testing.T) {
 	}
 }
 
+func TestMonogramForegroundMeetsContrastTarget(t *testing.T) {
+	t.Parallel()
+
+	for hue := range 360 {
+		background := hslRelativeLuminance(hue, 0.62, 0.48)
+		foreground := 1.0
+		if monogramForeground(hue) == "#000000" {
+			foreground = 0
+		}
+		lighter := max(background, foreground)
+		darker := min(background, foreground)
+		contrast := (lighter + 0.05) / (darker + 0.05)
+		if contrast < 4.5 {
+			t.Errorf("hue %d contrast = %.2f, want at least 4.5", hue, contrast)
+		}
+	}
+}
+
 func TestBarBucketsCycleForStagger(t *testing.T) {
 	t.Parallel()
 	loc := time.UTC

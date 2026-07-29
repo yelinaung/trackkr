@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
@@ -14,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/internal/icon"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -30,6 +33,7 @@ const (
 
 	// uniqueViolation is PostgreSQL's SQLSTATE for a duplicate key.
 	uniqueViolation = "23505"
+	flashKindError  = "error"
 )
 
 // isUniqueViolation reports whether err is a duplicate-key error rather
@@ -64,6 +68,7 @@ type WebQuerier interface {
 // webHandlers carries what every dashboard handler needs.
 type webHandlers struct {
 	queries   WebQuerier
+	icons     appIconReader
 	templates *templates
 	codec     *sessionCodec
 	limiter   *attemptLimiter
@@ -172,7 +177,7 @@ func (h *webHandlers) renderLoginError(w http.ResponseWriter, r *http.Request) {
 
 	data := h.base(r, token)
 	data.Flash = "Invalid username or password."
-	data.FlashKind = "error"
+	data.FlashKind = flashKindError
 
 	w.WriteHeader(http.StatusUnauthorized)
 	if err := h.templates.renderPage(w, pageLogin, data); err != nil {
@@ -276,7 +281,7 @@ func (h *webHandlers) renderRegisterError(w http.ResponseWriter, r *http.Request
 
 	data := h.base(r, token)
 	data.Flash = msg
-	data.FlashKind = "error"
+	data.FlashKind = flashKindError
 
 	w.WriteHeader(http.StatusBadRequest)
 	if err := h.templates.renderPage(w, pageRegister, data); err != nil {
@@ -350,6 +355,22 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 		return nil, err
 	}
 
+	appKeys := make([]string, 0, len(totals))
+	for _, total := range totals {
+		if key := icon.AppKey(total.AppName); key != "" && len(key) <= icon.MaxKeyBytes {
+			appKeys = append(appKeys, key)
+		}
+	}
+	iconRows, err := h.icons.AppIconMetadata(r.Context(), user.ID, appKeys)
+	if err != nil {
+		h.logger.Warn().Err(err).Msg("application icon metadata unavailable")
+		iconRows = nil
+	}
+	iconsByKey := make(map[string]db.AppIconRow, len(iconRows))
+	for i := range iconRows {
+		iconsByKey[iconRows[i].AppKey] = iconRows[i]
+	}
+
 	sites, err := h.queries.GetSiteTotals(r.Context(), user.ID, start, end, deviceID)
 	if err != nil {
 		return nil, err
@@ -367,11 +388,22 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	views := make([]TotalView, 0, len(totals))
 	for _, t := range totals {
 		data.TotalSeconds += t.Seconds
-		views = append(views, TotalView{
-			AppName: t.AppName,
-			Seconds: t.Seconds,
-			Fill:    appColor(t.AppName),
-		})
+		fill, monogramFill := appPalette(t.AppName)
+		view := TotalView{
+			AppName:      t.AppName,
+			Seconds:      t.Seconds,
+			Fill:         fill,
+			Monogram:     appMonogram(t.AppName),
+			MonogramFill: monogramFill,
+		}
+		if row, ok := iconsByKey[icon.AppKey(t.AppName)]; ok {
+			view.IconURL = fmt.Sprintf(
+				"/app-icons/%d/%s.png",
+				row.ID,
+				hex.EncodeToString(row.SHA256),
+			)
+		}
+		views = append(views, view)
 	}
 
 	// The query fetches one row past the limit purely as a probe: its
@@ -394,6 +426,23 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	data.Truncated = truncated
 
 	return data, nil
+}
+
+func appMonogram(name string) string {
+	runes := make([]rune, 0, 2)
+	for _, r := range name {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			continue
+		}
+		runes = append(runes, unicode.ToUpper(r))
+		if len(runes) == 2 {
+			break
+		}
+	}
+	if len(runes) == 0 {
+		return "?"
+	}
+	return string(runes)
 }
 
 // parseDay falls back to today in the server's timezone.

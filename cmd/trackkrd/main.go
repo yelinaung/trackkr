@@ -100,6 +100,12 @@ func run(
 		logger.Warn().Err(err).
 			Msg("window detection unavailable; reporting browser activity only")
 	}
+	closeWindow := func() {}
+	if closer, ok := window.(interface{ Close() }); ok {
+		var closeOnce sync.Once
+		closeWindow = func() { closeOnce.Do(closer.Close) }
+		defer closeWindow()
+	}
 
 	// Bind before constructing the reporter, not after. A squatted port
 	// must fail startup the way invalid config does, and NewReporter
@@ -158,6 +164,7 @@ func run(
 	} else {
 		<-ctx.Done()
 	}
+	closeWindow()
 	cancel()
 
 	// Wait for the reporter goroutine before the final flush so both

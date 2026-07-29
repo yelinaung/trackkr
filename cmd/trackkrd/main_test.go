@@ -36,6 +36,13 @@ func (f fakeWindow) ActiveWindow(context.Context) (tracker.WindowInfo, error) {
 	return f.info, nil
 }
 
+type fakeClosableWindow struct {
+	fakeWindow
+	closes atomic.Int32
+}
+
+func (f *fakeClosableWindow) Close() { f.closes.Add(1) }
+
 type fakeIdle struct{}
 
 func (fakeIdle) IdleTime(context.Context) (time.Duration, error) { return 0, nil }
@@ -168,6 +175,28 @@ macos_prompt_for_accessibility = true`)
 	}
 	if !windowConfig.MacOSPromptForAccessibility {
 		t.Error("MacOSPromptForAccessibility = false, want configured true")
+	}
+}
+
+func TestRunClosesWindowDetector(t *testing.T) {
+	window := &fakeClosableWindow{
+		fakeWindow: fakeWindow{info: tracker.WindowInfo{AppName: testFirefoxApp}},
+	}
+	d := detectors{
+		newWindow: func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error) {
+			return window, nil
+		},
+		newIdle: func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logger := zerolog.Nop()
+	if err := run(ctx, &logger, writeConfig(t, "http://127.0.0.1:1", ""), d); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := window.closes.Load(); got != 1 {
+		t.Errorf("window detector closes = %d, want 1", got)
 	}
 }
 

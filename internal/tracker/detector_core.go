@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/yelinaung/trackkr/internal/icon"
 )
 
 const (
@@ -22,7 +24,16 @@ type appInfo struct {
 type detectorCore struct {
 	policy    *titlePolicy
 	frontmost func() (*appInfo, error)
+	iconFor   func(context.Context, appInfo) *icon.App
+	closeIcon func()
 	titleFor  func(int) string
+}
+
+// Close stops accepting icon work without waiting for native conversion.
+func (d *detectorCore) Close() {
+	if d.closeIcon != nil {
+		d.closeIcon()
+	}
 }
 
 func (d *detectorCore) ActiveWindow(ctx context.Context) (WindowInfo, error) {
@@ -42,6 +53,12 @@ func (d *detectorCore) ActiveWindow(ctx context.Context) (WindowInfo, error) {
 	}
 
 	info := WindowInfo{AppName: app.Name}
+	if d.iconFor != nil {
+		info.AppIcon = d.iconFor(ctx, *app)
+		if err := ctx.Err(); err != nil {
+			return WindowInfo{}, err
+		}
+	}
 	if d.policy == nil || !d.policy.canRead() {
 		return info, nil
 	}

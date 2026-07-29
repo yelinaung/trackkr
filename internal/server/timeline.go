@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
 	"time"
 
 	"github.com/yelinaung/trackkr/internal/db"
@@ -264,8 +265,60 @@ func hourMarks(start, end time.Time) []HourMark {
 // appColor maps an app name to a stable hue, so the same app keeps its
 // colour across days and devices.
 func appColor(app string) string {
+	fill, _ := appPalette(app)
+	return fill
+}
+
+func appPalette(app string) (string, string) {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(app))
 	hue := int(h.Sum32() % 360)
-	return fmt.Sprintf("hsl(%d 62%% 48%%)", hue)
+	fill := fmt.Sprintf("hsl(%d 62%% 48%%)", hue)
+	return fill, monogramForeground(hue)
+}
+
+func monogramForeground(hue int) string {
+	if hslRelativeLuminance(hue, 0.62, 0.48) > 0.179 {
+		return "#000000"
+	}
+	return "#ffffff"
+}
+
+func hslRelativeLuminance(hue int, saturation, lightness float64) float64 {
+	h := float64(hue) / 360
+	q := lightness * (1 + saturation)
+	if lightness >= 0.5 {
+		q = lightness + saturation - lightness*saturation
+	}
+	p := 2*lightness - q
+	r := hslChannel(p, q, h+1.0/3.0)
+	g := hslChannel(p, q, h)
+	b := hslChannel(p, q, h-1.0/3.0)
+	return 0.2126*linearRGB(r) + 0.7152*linearRGB(g) + 0.0722*linearRGB(b)
+}
+
+func hslChannel(p, q, t float64) float64 {
+	if t < 0 {
+		t++
+	}
+	if t > 1 {
+		t--
+	}
+	switch {
+	case t < 1.0/6.0:
+		return p + (q-p)*6*t
+	case t < 0.5:
+		return q
+	case t < 2.0/3.0:
+		return p + (q-p)*(2.0/3.0-t)*6
+	default:
+		return p
+	}
+}
+
+func linearRGB(channel float64) float64 {
+	if channel <= 0.04045 {
+		return channel / 12.92
+	}
+	return math.Pow((channel+0.055)/1.055, 2.4)
 }

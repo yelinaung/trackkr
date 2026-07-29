@@ -304,6 +304,7 @@ func sampleTimelineData() *pageData {
 	}}
 	devices := []db.DeviceRow{{ID: 7, Name: testLaptop}}
 
+	fill, monogramFill := appPalette(testFirefoxLower)
 	return &pageData{
 		User:      &db.UserRow{ID: 1, Username: "ye"},
 		CSRFToken: testCSRFValue,
@@ -313,12 +314,43 @@ func sampleTimelineData() *pageData {
 		DateLabel: "Monday, 4 May 2026",
 		Devices:   devices,
 		Chart:     layout(records, devices, day),
-		Totals:    []TotalView{{AppName: testFirefoxLower, Seconds: 1800, Fill: appColor(testFirefoxLower)}},
+		Totals: []TotalView{{
+			AppName: testFirefoxLower, Seconds: 1800,
+			Fill: fill, Monogram: "FI", MonogramFill: monogramFill,
+		}},
 		Sites: []TotalView{
 			{AppName: "youtube.com", Seconds: 1200, Fill: appColor("youtube.com")},
 			{AppName: "github.com", Seconds: 600, Fill: appColor("github.com")},
 		},
 		TotalSeconds: 1800,
+	}
+}
+
+func TestTimelineAppIconAndMonogramFallback(t *testing.T) {
+	t.Parallel()
+
+	data := sampleTimelineData()
+	fallback := renderPartial(t, "timeline", data)
+	if !strings.Contains(fallback, `class="totals__icon totals__monogram"`) ||
+		!strings.Contains(fallback, `fill="`+data.Totals[0].MonogramFill+`">FI</text>`) {
+		t.Errorf("timeline lacks deterministic monogram fallback:\n%s", fallback)
+	}
+
+	data = sampleTimelineData()
+	data.Totals[0].IconURL = "/app-icons/1/abc.png"
+	withIcon := renderPartial(t, "timeline", data)
+	for _, want := range []string{
+		`src="/app-icons/1/abc.png"`,
+		`width="22"`,
+		`height="22"`,
+		`alt=""`,
+	} {
+		if !strings.Contains(withIcon, want) {
+			t.Errorf("timeline icon lacks %q:\n%s", want, withIcon)
+		}
+	}
+	if strings.Contains(withIcon, "totals__monogram") {
+		t.Error("timeline rendered a fallback beside a real icon")
 	}
 }
 

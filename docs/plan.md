@@ -62,6 +62,7 @@ trackkr/
 │   │   ├── session.go              # Signed-cookie sessions
 │   │   ├── middleware.go           # RequireSession, security headers, CSRF
 │   │   ├── handlers_api.go         # API handlers (ingest, devices)
+│   │   ├── app_icons.go            # App-icon upload, throttling, image delivery
 │   │   ├── handlers_web.go         # Web dashboard handlers
 │   │   ├── templates.go            # Template parsing + render helper
 │   │   ├── timeline.go             # Record -> SVG bar geometry
@@ -72,11 +73,16 @@ trackkr/
 │   │   │   ├── 001_initial.up.sql
 │   │   │   ├── 001_initial.down.sql
 │   │   │   ├── 002_device_cascade.up.sql
-│   │   │   └── 002_device_cascade.down.sql
+│   │   │   ├── 002_device_cascade.down.sql
+│   │   │   ├── 003_app_icons.up.sql
+│   │   │   └── 003_app_icons.down.sql
 │   │   ├── queries.go              # Query functions
 │   │   └── models.go               # DB model structs
+│   ├── icon/
+│   │   └── app.go                  # App-key and bounded PNG contract
 │   ├── tracker/
 │   │   ├── tracker.go              # Main tracking loop + idle state machine
+│   │   ├── app_icon.go             # Portable icon cache and announcement state
 │   │   ├── window.go               # ActiveWindow interface
 │   │   ├── window_linux.go         # Linux: xdotool + xprop
 │   │   ├── window_darwin.go        # macOS adapter: CoreGraphics + AX via cgo
@@ -130,7 +136,8 @@ trackkr/
 │   ├── phase2-plan.md              # Linux daemon design
 │   ├── phase3-plan.md              # Web dashboard design
 │   ├── phase4-plan.md              # Firefox extension design
-│   └── phase5-plan.md              # macOS support design
+│   ├── phase5-plan.md              # macOS support design
+│   └── phase6-icons-plan.md        # macOS application-icon design
 ├── go.mod
 ├── go.sum
 ├── mise.toml                       # Task runner
@@ -174,6 +181,20 @@ CREATE TABLE activity_records (
 );
 
 CREATE INDEX idx_activity_records_started ON activity_records (started_at);
+
+CREATE TABLE app_icons (
+    id           BIGSERIAL PRIMARY KEY,
+    user_id      BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    app_key      TEXT NOT NULL,
+    png          BYTEA NOT NULL,
+    sha256       BYTEA NOT NULL,
+    width        SMALLINT NOT NULL,
+    height       SMALLINT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (user_id, app_key)
+);
 ```
 
 The `UNIQUE (device_id, started_at)` constraint makes re-sent batches
@@ -189,6 +210,7 @@ queries, so no separate `(device_id, started_at)` index is needed.
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/activity` | Submit batch of activity records |
+| `POST` | `/api/v1/app-icons` | Submit validated macOS application icons |
 | `GET` | `/api/v1/devices` | List devices for authenticated user |
 | `POST` | `/api/v1/heartbeat` | Daemon liveness ping |
 
@@ -202,6 +224,7 @@ queries, so no separate `(device_id, started_at)` index is needed.
 | `GET` | `/static/*` | public | Embedded CSS, JS, fonts |
 | `GET` | `/` | session | Dashboard (today's timeline) |
 | `GET` | `/timeline` | session | HTMX partial: timeline for date+device filter |
+| `GET` | `/app-icons/{id}/{sha256}.png` | session | Immutable user-owned application icon |
 | `GET/POST/DELETE` | `/devices` | session | Device management |
 
 ---
@@ -234,13 +257,18 @@ queries, so no separate `(device_id, started_at)` index is needed.
 - In-memory queue, flushes every 30s or 20 records
 - On network failure, records stay in queue and retry next cycle
 - Persist queue to disk (`~/.local/share/trackkr/pending.json`) so records survive daemon restarts
+- macOS application icons share the flush loop but use a bounded, best-effort
+  memory map; activity flush and persistence always run first, while icon
+  retries use bounded backoff and honour `Retry-After`
 
 ### Active Window Detection
 
 - **Linux**: `xdotool` for window name, `xprop` for WM_CLASS (app name)
 - **macOS**: `CGWindowListCopyWindowInfo` supplies the owner and pid of the
   frontmost layer-zero window. Accessibility reads its focused title only
-  when trusted, and app-name tracking continues without that permission.
+  when trusted. AppKit derives a 64×64 application icon from the same pid
+  without Accessibility permission, and app-name tracking continues if icon
+  conversion or upload fails.
 
 ### Idle Detection
 
@@ -283,7 +311,7 @@ macos_prompt_for_accessibility = false
   while the in-flight tab lives in `storage.session` so a stale focus does
   not
 - Daemon enriches with `app_name = "Firefox"` and feeds into the reporter
-  queue. Focused browsing is counted twice until Phase 6 deduplicates. The
+  queue. Focused browsing is counted twice until a future deduplication phase. The
   stable discriminator is URL presence: extension records carry a URL and
   desktop-window records do not, regardless of platform or application name
 
@@ -296,6 +324,9 @@ macos_prompt_for_accessibility = false
 - Geometry travels as presentation attributes, not inline CSS: a strict
   `style-src 'self'` survives HTMX swaps, where a nonce could not
 - Colors assigned per app via deterministic hash
+- App totals show an authenticated macOS application icon when available and
+  a deterministic colour-matched monogram with luminance-selected text
+  otherwise
 - HTMX partials for date picker and device filter (swap timeline on change)
 - Hover detail via SVG `<title>` plus a CSS-revealed label: app name, title,
   time range
@@ -390,7 +421,20 @@ Docker production packaging remains separate deployment polish.
 The systemd unit, graceful shutdown, and disk-persisted queue originally
 listed here all landed in Phase 2.
 
-### Phase 6: Future Enhancements (parked)
+### Phase 6: macOS Application Icons (implemented — see `phase6-icons-plan.md`)
+
+1. Shared normalized app-key and bounded PNG validation contract
+2. User-scoped icon storage with serialized retention at 512 rows
+3. Rate-limited device upload and authenticated immutable image routes
+4. Best-effort delivery through the existing reporter loop
+5. AppKit icon rendering, bounded cache, and dashboard monogram fallback
+
+Firefox favicons remain out of scope: ordinary `favIconUrl` values need
+tracked-site host access to fetch, which conflicts with the extension's
+privacy contract. Linux application icons need a separately exercised Linux
+resolver.
+
+### Phase 7: Future Enhancements (parked)
 
 - Android app
 - Wayland support

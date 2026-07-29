@@ -169,6 +169,13 @@ that does not include the other's inserts and commit above the cap. Locking the
 one user serializes retention for that account while different users remain
 concurrent.
 
+After acquiring the user lock, the transaction reads one `clock_timestamp()`
+and passes it explicitly to every insert and update in the batch. PostgreSQL's
+`NOW()` is fixed at transaction start, so using it after a lock wait could make
+a newly accepted icon older than the upload that just released the lock and
+allow the new row to prune itself. One post-lock timestamp also prevents a
+changed icon's `updated_at` from moving backward.
+
 An identical digest updates only `last_seen_at`. A changed digest also updates
 the PNG, dimensions, digest, and `updated_at`. The query returns the number of
 evicted rows; the API handler logs a warning with user ID and count, but never
@@ -271,9 +278,11 @@ it. The authenticated per-user database lock and 512-row cap remain the
 storage invariant. A dedicated limiter in `app_icons.go` avoids refactoring
 the login-attempt limiter as part of this feature.
 
-The reporter retries network errors, `401`, `403`, `404`, `429`, and `5xx`.
-It drops `400`, `413`, and `422` after logging because a permanently invalid
-payload must not occupy the in-memory queue forever.
+The reporter retries network errors, `401`, `403`, `404`, `429`, and `5xx`
+with exponential backoff from one through 15 minutes. A valid `Retry-After`
+value can extend that delay. For `400`, `413`, or `422`, a multi-icon batch is
+retried as individual icons so accepted neighbours are removed only after the
+server owns them and only a permanently rejected snapshot is dropped.
 
 ## Dashboard Delivery
 
@@ -294,9 +303,14 @@ Successful responses set:
 Content-Type: image/png
 Cache-Control: private, max-age=31536000, immutable
 ETag: "<sha256>"
+Vary: Cookie
 ```
 
-`If-None-Match` returns `304`. The existing `nosniff` header and
+`Vary: Cookie` partitions browser-profile cache entries by the authenticated
+session cookie, preventing an account switch from reusing another user's
+fresh immutable response for the same URL. `If-None-Match` returns `304`, and
+both the `200` and `304` response carry the isolation header. The existing
+`nosniff` header and
 `img-src 'self' data:` policy already permit this route without expanding the
 CSP.
 
@@ -307,7 +321,9 @@ activity totals on their next render; no backfill is needed.
 Each app total keeps its colour swatch and adds a fixed 22-pixel icon. A
 missing icon renders a rounded monogram tinted with the existing app colour.
 The monogram uses the first two `unicode.IsLetter` or `unicode.IsDigit` runes,
-uppercased, or `?` when neither exists. Images use `alt=""` because adjacent
+uppercased, or `?` when neither exists. Its 10-pixel text is black or white
+according to the chip's computed relative luminance, keeping every generated
+hue at a contrast ratio of at least 4.5:1. Images use `alt=""` because adjacent
 text already names the app. Site totals do not change in this phase.
 
 ## Best-Effort Daemon Delivery
@@ -338,9 +354,10 @@ flush signal:
 2. flush the app-icon map second.
 
 One failure does not skip the other. Both use the existing mutex only to copy
-or update their queues; neither holds it during network I/O. The app-icon HTTP
-request uses a five-second child timeout so a slow presentation upload cannot
-hold the single loop beyond one small, explicit delay. Activity enqueueing
+or update their queues; neither holds it during network I/O. Each app-icon HTTP
+request gets a five-second base timeout plus transfer time at 64 KiB per
+second, capped at 25 seconds. The whole flush is also capped at 25 seconds, so
+batch isolation cannot extend the loop indefinitely. Activity enqueueing
 continues during that request because the reporter mutex is not held.
 
 `flushAppIcons` sorts keys lexically, snapshots at most 10 entries, and leaves
@@ -350,21 +367,31 @@ newly queued different digest therefore survives; a just-queued identical
 digest is removed because the server already accepted those bytes. The
 implementation comment records that intentional same-digest case.
 
-A permanent `400`, `413`, or `422` response uses the same digest-conditional
-removal even though the server rejected the bytes. A newer replacement remains
-eligible; only the poison snapshot is discarded.
+A permanent `400`, `413`, or `422` response for multiple icons triggers
+single-icon probes. Successful probes use the same digest-conditional removal;
+permanently rejected probes drop only their matching poison snapshot. A newer
+replacement remains eligible in either case.
+
+Retryable failures retain every unresolved icon and schedule exponential
+backoff from one minute through 15 minutes. `429` additionally honours either
+the delta-seconds or HTTP-date form of `Retry-After`, capped at 24 hours. A
+successful flush clears the failure count.
 
 Shutdown keeps activity ahead of presentation metadata. It first performs the
 existing final activity flush and persists any remaining activity records to
-`pending.json`. Only after that succeeds does it attempt one best-effort
-app-icon flush with a five-second child timeout. An icon error is logged but
-does not change the shutdown return value. The next daemon start has an empty
-digest cache, so the next observation of each app derives and queues its icon
-again. Icon work therefore cannot delay or weaken activity persistence.
+`pending.json`. It then attempts one best-effort app-icon flush even when the
+pending write failed and even when a retry delay is active. The icon attempt
+has a five-second shutdown budget. The shorter parent deadline overrides the
+normal 25-second flush cap so disposable icon metadata cannot materially delay
+termination after activity persistence has already failed. An icon error is
+logged but does not replace the activity persistence result. The
+next daemon start has an empty digest cache, so the next observation of each
+app derives and queues its icon again. Icon work therefore cannot weaken
+activity persistence.
 
 This accepts a short-lived presentation gap in exchange for removing the
-second persistence format, fsync protocol, recovery policy, goroutine, ticker,
-mutex, and shutdown path from the phase.
+second persistence format, fsync protocol, recovery policy, reporter goroutine,
+ticker, mutex, and shutdown path from the phase.
 
 ## macOS Acquisition
 
@@ -382,13 +409,15 @@ NSImage *source = app.icon;
 Accessibility or Screen Recording permission. It does not change the current
 frontmost-window decision or introduce `NSWorkspace` as a detector.
 
-The Objective-C boundary adds one function that returns a malloc-owned PNG
-buffer and length, or no icon. Inside an autorelease pool it renders the
-`NSImage` aspect-fit onto a transparent 64 by 64 bitmap and encodes PNG. Every
-owned object and allocation is released on every return path. The Go caller
-copies the bytes, frees the native buffer, and applies shared validation.
-It constructs `icon.App.Key` from the same `appInfo.Name` returned by the
-frontmost snapshot; native code never supplies the server identity.
+The Objective-C boundary adds one function that returns a malloc-owned observed
+application name, PNG buffer, and length, or no icon. Inside an autorelease pool
+it renders the `NSImage` aspect-fit onto a transparent 64 by 64 bitmap and
+encodes PNG. Every owned object and allocation is released on every return
+path. The Go caller copies and frees both native buffers, normalizes the
+observed name, and rejects the result unless it matches the application name
+from the frontmost snapshot. This closes the PID-reuse race between the
+CoreGraphics snapshot and the later AppKit lookup; the snapshot name remains
+the server identity.
 
 `window_darwin.go` links AppKit for this metadata operation and retains the
 current Foundation, ApplicationServices, and CoreGraphics links. A build-time
@@ -402,8 +431,18 @@ Native conversion is cached by `(PID, AppKey(appName))`:
 - positive entries expire after five minutes;
 - negative entries expire after 30 seconds;
 - a reused PID with a different app key misses immediately;
+- misses are marked in flight and offered non-blockingly to one bounded worker;
+- polling returns without an icon immediately instead of waiting for AppKit;
 - the clock and native callback are injected for platform-neutral tests;
 - returned PNG slices are immutable.
+
+The worker serializes AppKit conversions and bounds queued misses to 128. A
+full queue drops only the new icon request; a later poll can offer it again.
+Detector close stops accepting work and signals the worker without joining it,
+because a cgo/AppKit call cannot be cancelled safely. A native conversion that
+returns after close is discarded. Activity capture, cancellation, record
+finalization, and pending-record persistence therefore never wait for icon
+conversion.
 
 The bounded positive expiry means an in-place app update with the same PID can
 show its old icon for at most five minutes. That is acceptable for
@@ -427,7 +466,8 @@ type WindowInfo struct {
 ```
 
 `detectorCore` gains the optional callback
-`iconForApp func(context.Context, appInfo) *icon.App`. It runs after
+`iconForApp func(context.Context, appInfo) *icon.App` plus a non-blocking close
+callback for its worker. The icon callback runs after
 `frontmost` succeeds and before the title-permission branch. Turning
 `macos_read_titles` off therefore disables Accessibility work without
 disabling permission-free application icons. A nil callback preserves the
@@ -544,6 +584,8 @@ PostgreSQL tests cover:
 - uniqueness scoped by user;
 - pruning to 512 rows without crossing user boundaries;
 - two concurrent upserts for one user never committing more than 512 rows;
+- an upload delayed on the user lock receiving one post-lock timestamp and
+  retaining its newly accepted row;
 - concurrent uploads for different users not sharing the retention lock;
 - metadata lookup omitting PNG and image lookup requiring the owning user;
 - user deletion cascading to icons;
@@ -562,7 +604,7 @@ PostgreSQL tests cover:
 - stale limiter buckets being swept;
 - an eviction warning that contains no app key;
 - session authentication, cross-user `404`, stale digest `404`, ETag, `304`,
-  private immutable caching, and PNG content type.
+  cookie-varying private immutable caching, and PNG content type.
 
 ### Reporter And Tracker
 
@@ -572,13 +614,14 @@ Tests cover:
 - activity upload attempted before app icons on the same flush;
 - app-icon failure not suppressing activity success and vice versa;
 - no mutex held while either network request blocks;
-- five-second icon request timeout with `testing/synctest` or explicit
-  synchronization rather than real sleeps;
+- body-scaled icon request timeout and 25-second flush cap with
+  `testing/synctest` or explicit synchronization rather than real sleeps;
 - success removing only a matching digest, including a just-queued identical
   digest, while preserving a changed digest;
-- retryable response retention and permanent invalid-payload removal;
-- shutdown persisting activity before starting an app-icon request, and an
-  icon timeout not changing the activity result;
+- retryable response retention, exponential and `Retry-After` backoff, and
+  permanent batch rejection isolating only the poison icon;
+- shutdown attempting icons after the activity persistence attempt even when
+  persistence fails or an icon retry delay is active;
 - tracker changed-digest enqueue, 30-day refresh, 128-key state eviction, and
   no state advance after queue rejection;
 - `mise test-race` across enqueue, flush, replacement, and shutdown.
@@ -587,8 +630,9 @@ Tests cover:
 
 Platform-neutral cache tests inject the native callback and clock. They cover
 positive and negative expiry, positive and negative PID reuse with a different
-app key, invalid native PNG, immutable slices, and errors not changing the
-active-window result.
+app key, an identity change during native lookup, invalid native PNG, immutable
+slices, concurrent misses returning without waiting for a blocked native
+loader, non-blocking close, and errors not changing the active-window result.
 
 Darwin compilation checks the Objective-C signature, AppKit link, status
 mapping, buffer ownership, and `pid_t` assertion. Manual verification covers
@@ -618,9 +662,9 @@ is introduced.
 | AppKit returns no icon | Use dashboard fallback; retry after 30 seconds |
 | Native conversion returns invalid PNG | Log once per negative-cache lifetime; keep activity |
 | Reporter map is full | Tracker does not remember digest and retries on next poll |
-| Server is unavailable | Keep icon in memory and retry on the existing flush cadence |
+| Server is unavailable | Keep icon in memory and retry with bounded exponential backoff |
 | Daemon exits before upload | Lose icon metadata; derive it again after restart |
-| Server rejects a permanent payload error | Drop it; implementation bug must not poison the queue |
+| Server rejects a permanent payload error | Isolate the batch; drop only matching rejected snapshots |
 | Database prunes an active icon | Tracker re-announces it within 30 days |
 | App icon changes | Digest and immutable image URL change |
 | Another user requests the image ID | Return 404 |

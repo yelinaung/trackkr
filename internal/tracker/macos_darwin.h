@@ -11,12 +11,19 @@ typedef struct {
     pid_t pid;
 } trackkr_app;
 
+typedef struct {
+    char *name;
+    unsigned char *bytes;
+    size_t length;
+} trackkr_png;
+
 #define TRACKKR_OK 0
 #define TRACKKR_NO_APP 1
 #define TRACKKR_FAILED 2
 
 int trackkr_frontmost_app(trackkr_app *out);
 char *trackkr_focused_window_title(pid_t pid);
+bool trackkr_app_icon_png(pid_t pid, trackkr_png *out);
 bool trackkr_is_accessibility_trusted(void);
 void trackkr_prompt_for_accessibility(void);
 

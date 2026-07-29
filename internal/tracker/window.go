@@ -3,6 +3,8 @@ package tracker
 import (
 	"context"
 	"errors"
+
+	"github.com/yelinaung/trackkr/internal/icon"
 )
 
 // ErrNoActiveWindow is returned when no trackable window has focus.
@@ -16,6 +18,7 @@ var ErrUnsupportedPlatform = errors.New("window detection not supported on this 
 type WindowInfo struct {
 	AppName string
 	Title   string
+	AppIcon *icon.App
 }
 
 // WindowDetector returns the currently active window.

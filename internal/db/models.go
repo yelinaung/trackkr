@@ -37,6 +37,20 @@ type SiteTotalRow struct {
 	Seconds int64
 }
 
+// AppIconRow is one user-owned application icon and its metadata.
+type AppIconRow struct {
+	ID         int64
+	UserID     int64
+	AppKey     string
+	PNG        []byte
+	SHA256     []byte
+	Width      int
+	Height     int
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	LastSeenAt time.Time
+}
+
 type UserRow struct {
 	ID        int64
 	Username  string

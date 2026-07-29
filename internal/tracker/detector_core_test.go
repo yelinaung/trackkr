@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/yelinaung/trackkr/internal/icon"
 )
 
 const (
@@ -121,6 +123,45 @@ func TestDetectorCoreSkipsTitleWhenUntrusted(t *testing.T) {
 	}
 	if titleCalls != 0 {
 		t.Errorf("title calls = %d, want 0", titleCalls)
+	}
+}
+
+func TestDetectorCoreCollectsIconWithoutTitlePermission(t *testing.T) {
+	t.Parallel()
+
+	appIcon := trackerTestIcon(t, "safari", 1)
+	iconCalls := 0
+	titleCalls := 0
+	p := &titlePolicy{
+		enabled:   false,
+		isTrusted: func() bool { return false },
+		prompt:    func() {},
+		log:       func(bool) {},
+	}
+	d := &detectorCore{
+		policy: p,
+		frontmost: func() (*appInfo, error) {
+			return &appInfo{Name: testSafari, PID: 7}, nil
+		},
+		iconFor: func(_ context.Context, app appInfo) *icon.App {
+			iconCalls++
+			if app.PID != 7 {
+				t.Errorf("icon PID = %d, want 7", app.PID)
+			}
+			return &appIcon
+		},
+		titleFor: func(int) string { titleCalls++; return "private" },
+	}
+
+	info, err := d.ActiveWindow(t.Context())
+	if err != nil {
+		t.Fatalf("ActiveWindow: %v", err)
+	}
+	if info.AppIcon == nil || info.AppIcon.Key != "safari" {
+		t.Errorf("AppIcon = %#v, want Safari icon", info.AppIcon)
+	}
+	if iconCalls != 1 || titleCalls != 0 {
+		t.Errorf("icon calls = %d, title calls = %d; want 1, 0", iconCalls, titleCalls)
 	}
 }
 

@@ -35,13 +35,16 @@ type Server struct {
 
 	// Narrow dependencies rather than one wide interface, so a test
 	// populates only the fields whose routes it exercises.
-	api      APIQuerier
-	sessions SessionQuerier
-	web      WebQuerier
+	api       APIQuerier
+	sessions  SessionQuerier
+	web       WebQuerier
+	iconRead  appIconReader
+	iconWrite appIconWriter
 
 	templates *templates
 	codec     *sessionCodec
 	limiter   *attemptLimiter
+	iconLimit *appIconRateLimiter
 	loc       *time.Location
 }
 
@@ -71,9 +74,12 @@ func New(cfg *Config, pool *pgxpool.Pool, logger *zerolog.Logger) (*Server, erro
 		api:       queries,
 		sessions:  queries,
 		web:       queries,
+		iconRead:  queries,
+		iconWrite: queries,
 		templates: tmpl,
 		codec:     newSessionCodec(cfg.Auth.SessionSecret, cfg.Server.SecureCookies),
 		limiter:   newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),
+		iconLimit: newAppIconRateLimiter(appIconRateLimit, appIconRateWindow),
 		loc:       loc,
 	}
 	s.router = newRouter(s)
@@ -90,12 +96,14 @@ func newRouter(s *Server) *chi.Mux {
 	r.Route("/api/v1", func(api chi.Router) {
 		api.Use(APIKeyAuth(s.api))
 		api.Post("/activity", HandleIngestActivity(s.api))
+		api.Post("/app-icons", handleAppIconUpload(s.iconWrite, s.iconLimit, s.logger))
 		api.Post("/heartbeat", HandleHeartbeat())
 		api.Get("/devices", HandleListDevices(s.api))
 	})
 
 	h := &webHandlers{
 		queries:   s.web,
+		icons:     s.iconRead,
 		templates: s.templates,
 		codec:     s.codec,
 		limiter:   s.limiter,
@@ -127,6 +135,7 @@ func newRouter(s *Server) *chi.Mux {
 		priv.Use(RequireCSRF(s.codec))
 		priv.Get("/", h.handleDashboard())
 		priv.Get("/timeline", h.handleTimeline())
+		priv.Get("/app-icons/{id}/{sha256}.png", h.handleAppIcon())
 		priv.Get("/devices", h.handleDevices())
 		priv.Post("/devices", h.handleCreateDevice())
 		priv.Delete("/devices/{id}", h.handleDeleteDevice())

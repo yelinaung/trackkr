@@ -31,6 +31,24 @@ the Accessibility APIs. Set `macos_prompt_for_accessibility = true` to ask for
 permission once on the first denied check; the default avoids an unexpected
 system dialog from a background agent.
 
+## Application Icons
+
+The daemon derives the installed application icon from the same process ID as
+the frontmost layer-zero window. AppKit access needs neither Accessibility nor
+Screen Recording permission, so icons continue working when title reads are
+disabled or denied.
+
+Icons are rendered locally as bounded 64×64 PNGs and uploaded through the
+existing reporter loop after activity records. They are presentation metadata:
+the daemon keeps pending icons in memory rather than writing a second durable
+queue. If the daemon exits before an upload, observing the application after
+restart derives it again. The dashboard uses a colour-matched monogram until
+an icon arrives, selecting black or white text from the generated background
+colour so the fallback remains legible.
+
+No icon is fetched from the network. This phase does not collect Firefox site
+favicons.
+
 ## Accessibility
 
 App names and idle time need no permission. Window titles require

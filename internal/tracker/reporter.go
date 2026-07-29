@@ -3,15 +3,35 @@ package tracker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/yelinaung/trackkr/internal/icon"
+)
+
+const (
+	appIconQueueLimit           = 128
+	appIconFlushLimit           = 10
+	appIconHTTPBaseTimeout      = 5 * time.Second
+	appIconHTTPMaxTimeout       = 25 * time.Second
+	appIconUploadBytesPerSecond = 64 << 10
+	appIconShutdownTimeout      = 5 * time.Second
+	appIconRetryMin             = time.Minute
+	appIconRetryMax             = 15 * time.Minute
+	appIconRetryAfterMax        = 24 * time.Hour
+	activityAPIPath             = "/api/v1/activity"
+	appIconAPIPath              = "/api/v1/app-icons"
 )
 
 // Record is the client-side representation of an activity record
@@ -29,6 +49,10 @@ type ingestRequest struct {
 	Records []Record `json:"records"`
 }
 
+type appIconUploadRequest struct {
+	Icons []icon.App `json:"icons"`
+}
+
 // HTTPPoster is the interface for sending HTTP requests.
 // *http.Client satisfies this.
 type HTTPPoster interface {
@@ -42,8 +66,13 @@ type Reporter struct {
 	logger  *zerolog.Logger
 	mu      sync.Mutex
 	queue   []Record
+	icons   map[string]icon.App
 	flushCh chan struct{}
 	pending string
+	now     func() time.Time
+
+	iconRetryAt  time.Time
+	iconFailures int
 }
 
 // NewReporter creates a reporter and loads any pending records from
@@ -53,13 +82,38 @@ func NewReporter(cfg *Config, client HTTPPoster, logger *zerolog.Logger) *Report
 		cfg:     cfg,
 		client:  client,
 		logger:  logger,
+		icons:   make(map[string]icon.App),
 		flushCh: make(chan struct{}, 1),
 		pending: filepath.Join(cfg.DataDir, "pending.json"),
+		now:     time.Now,
 	}
 	if err := r.loadPending(); err != nil {
 		logger.Warn().Err(err).Msg("could not load pending records")
 	}
 	return r
+}
+
+// EnqueueAppIcon adds reproducible presentation metadata to the in-memory
+// queue. It returns false when the value is invalid or a new key cannot fit.
+func (r *Reporter) EnqueueAppIcon(appIcon icon.App) bool {
+	if _, err := icon.Validate(appIcon); err != nil {
+		return false
+	}
+	owned := icon.Clone(appIcon)
+
+	r.mu.Lock()
+	if _, exists := r.icons[owned.Key]; !exists && len(r.icons) >= appIconQueueLimit {
+		r.mu.Unlock()
+		return false
+	}
+	r.icons[owned.Key] = owned
+	r.mu.Unlock()
+
+	select {
+	case r.flushCh <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 // Enqueue adds a record to the queue. If the queue reaches
@@ -100,19 +154,25 @@ func (r *Reporter) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	r.tryFlush(ctx)
+	r.tryFlushActivity(ctx)
 
 	r.mu.Lock()
 	remaining := len(r.queue)
 	r.mu.Unlock()
 
+	var shutdownErr error
 	if remaining > 0 {
 		if err := r.savePending(); err != nil {
-			return fmt.Errorf("saving pending records: %w", err)
+			shutdownErr = fmt.Errorf("saving pending records: %w", err)
+		} else {
+			r.logger.Info().Int("count", remaining).Msg("saved pending records to disk")
 		}
-		r.logger.Info().Int("count", remaining).Msg("saved pending records to disk")
 	}
-	return nil
+
+	iconCtx, iconCancel := context.WithTimeout(context.Background(), appIconShutdownTimeout)
+	defer iconCancel()
+	r.tryFlushAppIconsNow(iconCtx)
+	return shutdownErr
 }
 
 // QueueLen returns the current queue length (for testing).
@@ -122,9 +182,33 @@ func (r *Reporter) QueueLen() int {
 	return len(r.queue)
 }
 
+// AppIconQueueLen returns the pending app-icon count for tests.
+func (r *Reporter) AppIconQueueLen() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.icons)
+}
+
 func (r *Reporter) tryFlush(ctx context.Context) {
+	r.tryFlushActivity(ctx)
+	r.tryFlushAppIcons(ctx)
+}
+
+func (r *Reporter) tryFlushActivity(ctx context.Context) {
 	if err := r.flush(ctx); err != nil {
-		r.logger.Error().Err(err).Msg("flush failed")
+		r.logger.Error().Err(err).Msg("activity flush failed")
+	}
+}
+
+func (r *Reporter) tryFlushAppIcons(ctx context.Context) {
+	if err := r.flushAppIcons(ctx); err != nil {
+		r.logger.Error().Err(err).Msg("application icon flush failed")
+	}
+}
+
+func (r *Reporter) tryFlushAppIconsNow(ctx context.Context) {
+	if err := r.flushAppIconsNow(ctx); err != nil {
+		r.logger.Error().Err(err).Msg("application icon flush failed")
 	}
 }
 
@@ -145,7 +229,7 @@ func (r *Reporter) flush(ctx context.Context) error {
 		return fmt.Errorf("marshaling records: %w", err)
 	}
 
-	url := r.cfg.ServerURL + "/api/v1/activity"
+	url := r.cfg.ServerURL + activityAPIPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		r.requeue(batch)
@@ -174,6 +258,190 @@ func (r *Reporter) requeue(records []Record) {
 	r.mu.Lock()
 	r.queue = append(records, r.queue...)
 	r.mu.Unlock()
+}
+
+func (r *Reporter) flushAppIcons(ctx context.Context) error {
+	return r.flushAppIconsWithBackoff(ctx, false)
+}
+
+func (r *Reporter) flushAppIconsNow(ctx context.Context) error {
+	return r.flushAppIconsWithBackoff(ctx, true)
+}
+
+func (r *Reporter) flushAppIconsWithBackoff(ctx context.Context, ignoreBackoff bool) error {
+	now := r.now()
+	r.mu.Lock()
+	if len(r.icons) == 0 || (!ignoreBackoff && now.Before(r.iconRetryAt)) {
+		r.mu.Unlock()
+		return nil
+	}
+	keys := slices.Sorted(maps.Keys(r.icons))
+	keys = keys[:min(len(keys), appIconFlushLimit)]
+	batch := make([]icon.App, 0, len(keys))
+	for _, key := range keys {
+		batch = append(batch, icon.Clone(r.icons[key]))
+	}
+	r.mu.Unlock()
+
+	flushCtx, cancel := context.WithTimeout(ctx, appIconHTTPMaxTimeout)
+	defer cancel()
+	result, err := r.postAppIcons(flushCtx, batch)
+	if err != nil {
+		r.deferAppIconRetry(0)
+		return err
+	}
+
+	switch {
+	case result.status == http.StatusOK:
+		r.removeMatchingAppIcons(batch)
+		r.clearAppIconRetry()
+		r.logger.Debug().Int("count", len(batch)).Msg("flushed application icons")
+		return nil
+	case isPermanentAppIconStatus(result.status) && len(batch) == 1:
+		r.removeMatchingAppIcons(batch)
+		r.clearAppIconRetry()
+		return fmt.Errorf("server permanently rejected an application icon with %d", result.status)
+	case isPermanentAppIconStatus(result.status):
+		return r.isolateRejectedAppIcons(flushCtx, batch, result.status)
+	default:
+		r.deferAppIconRetry(result.retryAfter)
+		return fmt.Errorf("server returned %d for application icons", result.status)
+	}
+}
+
+type appIconPostResult struct {
+	status     int
+	retryAfter time.Duration
+}
+
+func (r *Reporter) postAppIcons(ctx context.Context, batch []icon.App) (appIconPostResult, error) {
+	body, err := json.Marshal(appIconUploadRequest{Icons: batch})
+	if err != nil {
+		return appIconPostResult{}, fmt.Errorf("marshaling application icons: %w", err)
+	}
+
+	requestCtx, cancel := context.WithTimeout(ctx, appIconRequestTimeout(len(body)))
+	defer cancel()
+	req, err := http.NewRequestWithContext(
+		requestCtx,
+		http.MethodPost,
+		r.cfg.ServerURL+appIconAPIPath,
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return appIconPostResult{}, fmt.Errorf("creating application icon request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", r.cfg.APIKey)
+
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return appIconPostResult{}, fmt.Errorf("sending application icons: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return appIconPostResult{
+		status:     resp.StatusCode,
+		retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), r.now()),
+	}, nil
+}
+
+func (r *Reporter) isolateRejectedAppIcons(
+	ctx context.Context,
+	batch []icon.App,
+	batchStatus int,
+) error {
+	permanentlyRejected := 0
+	for _, appIcon := range batch {
+		result, err := r.postAppIcons(ctx, []icon.App{appIcon})
+		if err != nil {
+			r.deferAppIconRetry(0)
+			return fmt.Errorf("isolating a rejected application icon: %w", err)
+		}
+
+		switch {
+		case result.status == http.StatusOK:
+			r.removeMatchingAppIcons([]icon.App{appIcon})
+		case isPermanentAppIconStatus(result.status):
+			r.removeMatchingAppIcons([]icon.App{appIcon})
+			permanentlyRejected++
+		default:
+			r.deferAppIconRetry(result.retryAfter)
+			return fmt.Errorf("server returned %d while isolating application icons", result.status)
+		}
+	}
+
+	r.clearAppIconRetry()
+	if permanentlyRejected > 0 {
+		return fmt.Errorf(
+			"server permanently rejected %d application icon(s) after batch status %d",
+			permanentlyRejected,
+			batchStatus,
+		)
+	}
+	return nil
+}
+
+func isPermanentAppIconStatus(status int) bool {
+	return status == http.StatusBadRequest ||
+		status == http.StatusRequestEntityTooLarge ||
+		status == http.StatusUnprocessableEntity
+}
+
+func appIconRequestTimeout(bodyBytes int) time.Duration {
+	transferTime := time.Duration(bodyBytes) * time.Second / appIconUploadBytesPerSecond
+	return min(appIconHTTPBaseTimeout+transferTime, appIconHTTPMaxTimeout)
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		seconds = min(seconds, int64(appIconRetryAfterMax/time.Second))
+		return time.Duration(seconds) * time.Second
+	}
+	if retryAt, err := http.ParseTime(value); err == nil {
+		return min(max(retryAt.Sub(now), 0), appIconRetryAfterMax)
+	}
+	return 0
+}
+
+func (r *Reporter) deferAppIconRetry(retryAfter time.Duration) {
+	now := r.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.iconFailures++
+	backoff := appIconRetryMin
+	for range min(r.iconFailures-1, 4) {
+		backoff *= 2
+	}
+	backoff = min(backoff, appIconRetryMax)
+	r.iconRetryAt = now.Add(max(backoff, retryAfter))
+}
+
+func (r *Reporter) clearAppIconRetry() {
+	r.mu.Lock()
+	r.iconRetryAt = time.Time{}
+	r.iconFailures = 0
+	r.mu.Unlock()
+}
+
+func (r *Reporter) removeMatchingAppIcons(batch []icon.App) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, uploaded := range batch {
+		current, ok := r.icons[uploaded.Key]
+		if !ok || sha256.Sum256(current.PNG) != sha256.Sum256(uploaded.PNG) {
+			continue
+		}
+		// A just-queued identical value can go too: the server now has
+		// exactly that digest. A different replacement remains queued.
+		delete(r.icons, uploaded.Key)
+	}
 }
 
 func (r *Reporter) loadPending() error {

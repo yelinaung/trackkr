@@ -24,6 +24,7 @@ type Tracker struct {
 	logger   *zerolog.Logger
 	state    state
 	current  *activeRecord
+	appIcons map[string]queuedAppIcon
 }
 
 type activeRecord struct {
@@ -47,6 +48,7 @@ func NewTracker(
 		reporter: r,
 		logger:   logger,
 		state:    stateTracking,
+		appIcons: make(map[string]queuedAppIcon),
 	}
 }
 
@@ -83,6 +85,9 @@ func (t *Tracker) poll(ctx context.Context) {
 	}
 
 	now := time.Now()
+	if !noWindow {
+		t.maybeEnqueueAppIcon(info, now)
+	}
 
 	switch t.state {
 	case stateTracking:

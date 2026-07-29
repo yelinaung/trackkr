@@ -30,6 +30,8 @@ type fakeWeb struct {
 	sites   []db.SiteTotalRow
 	deleted []int64
 	nextID  int64
+	icons   []db.AppIconRow
+	iconErr error
 
 	// lookupErr and createErr stand in for operational failures, as
 	// opposed to the pgx.ErrNoRows a missing row produces.
@@ -136,6 +138,39 @@ func (f *fakeWeb) GetSiteTotals(context.Context, int64, time.Time, time.Time, *i
 	return f.sites, nil
 }
 
+func (f *fakeWeb) AppIconMetadata(_ context.Context, userID int64, keys []string) ([]db.AppIconRow, error) {
+	if f.iconErr != nil {
+		return nil, f.iconErr
+	}
+	wanted := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		wanted[key] = struct{}{}
+	}
+	var rows []db.AppIconRow
+	for i := range f.icons {
+		row := &f.icons[i]
+		if row.UserID != userID {
+			continue
+		}
+		if _, ok := wanted[row.AppKey]; ok {
+			rows = append(rows, *row)
+		}
+	}
+	return rows, nil
+}
+
+func (f *fakeWeb) AppIcon(_ context.Context, userID, id int64) (*db.AppIconRow, error) {
+	if f.iconErr != nil {
+		return nil, f.iconErr
+	}
+	for i := range f.icons {
+		if f.icons[i].UserID == userID && f.icons[i].ID == id {
+			return &f.icons[i], nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
 // webServer builds a Server with only the session and web dependencies
 // populated; api stays nil because these tests never touch /api/v1.
 func webServer(t *testing.T, fake *fakeWeb, allowReg bool) *Server {
@@ -155,6 +190,7 @@ func webServer(t *testing.T, fake *fakeWeb, allowReg bool) *Server {
 		logger:    &logger,
 		sessions:  fake,
 		web:       fake,
+		iconRead:  fake,
 		templates: tmpl,
 		codec:     newSessionCodec(testSecret, false),
 		limiter:   newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),

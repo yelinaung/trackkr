@@ -2,11 +2,16 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yelinaung/trackkr/internal/icon"
 )
+
+// AppIconUserLimit bounds application icon storage for one user.
+const AppIconUserLimit = 512
 
 type Queries struct {
 	pool *pgxpool.Pool
@@ -242,6 +247,175 @@ func (q *Queries) GetSiteTotals(ctx context.Context, userID int64, start, end ti
 		totals = append(totals, t)
 	}
 	return totals, rows.Err()
+}
+
+// UpsertAppIcons stores application icons and prunes the oldest rows above
+// AppIconUserLimit. Locking the user row serializes retention across devices.
+func (q *Queries) UpsertAppIcons(ctx context.Context, userID int64, apps []icon.App) (int, error) {
+	type validatedApp struct {
+		app     icon.App
+		details icon.Details
+	}
+
+	validated := make([]validatedApp, len(apps))
+	for i, app := range apps {
+		details, err := icon.Validate(app)
+		if err != nil {
+			return 0, fmt.Errorf("validating icon %d: %w", i, err)
+		}
+		validated[i] = validatedApp{app: app, details: details}
+	}
+
+	tx, err := q.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("beginning app icon transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var lockedUserID int64
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID,
+	).Scan(&lockedUserID); err != nil {
+		return 0, fmt.Errorf("locking app icon user: %w", err)
+	}
+	var acceptedAt time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&acceptedAt); err != nil {
+		return 0, fmt.Errorf("reading app icon acceptance time: %w", err)
+	}
+
+	for _, item := range validated {
+		_, err := tx.Exec(
+			ctx,
+			`INSERT INTO app_icons (
+			     user_id, app_key, png, sha256, width, height,
+			     created_at, updated_at, last_seen_at
+			 )
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7)
+			 ON CONFLICT (user_id, app_key) DO UPDATE SET
+			     png = CASE
+			         WHEN app_icons.sha256 = EXCLUDED.sha256 THEN app_icons.png
+			         ELSE EXCLUDED.png
+			     END,
+			     sha256 = CASE
+			         WHEN app_icons.sha256 = EXCLUDED.sha256 THEN app_icons.sha256
+			         ELSE EXCLUDED.sha256
+			     END,
+			     width = CASE
+			         WHEN app_icons.sha256 = EXCLUDED.sha256 THEN app_icons.width
+			         ELSE EXCLUDED.width
+			     END,
+			     height = CASE
+			         WHEN app_icons.sha256 = EXCLUDED.sha256 THEN app_icons.height
+			         ELSE EXCLUDED.height
+			     END,
+			     updated_at = CASE
+			         WHEN app_icons.sha256 = EXCLUDED.sha256 THEN app_icons.updated_at
+			         ELSE $7
+			     END,
+			     last_seen_at = $7`,
+			userID,
+			item.app.Key,
+			item.app.PNG,
+			item.details.Digest[:],
+			item.details.Width,
+			item.details.Height,
+			acceptedAt,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("upserting app icon %q: %w", item.app.Key, err)
+		}
+	}
+
+	result, err := tx.Exec(ctx,
+		`WITH excess AS (
+		     SELECT id
+		     FROM app_icons
+		     WHERE user_id = $1
+		     ORDER BY last_seen_at DESC, id DESC
+		     OFFSET $2
+		 )
+		 DELETE FROM app_icons
+		 WHERE id IN (SELECT id FROM excess)`,
+		userID, AppIconUserLimit)
+	if err != nil {
+		return 0, fmt.Errorf("pruning app icons: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("committing app icons: %w", err)
+	}
+	return int(result.RowsAffected()), nil
+}
+
+// AppIconMetadata returns icon metadata without loading PNG bytes.
+func (q *Queries) AppIconMetadata(ctx context.Context, userID int64, keys []string) ([]AppIconRow, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	rows, err := q.pool.Query(ctx,
+		`SELECT id, user_id, app_key, sha256, width, height,
+		        created_at, updated_at, last_seen_at
+		 FROM app_icons
+		 WHERE user_id = $1 AND app_key = ANY($2)
+		 ORDER BY app_key`,
+		userID, keys)
+	if err != nil {
+		return nil, fmt.Errorf("querying app icon metadata: %w", err)
+	}
+	defer rows.Close()
+
+	var result []AppIconRow
+	for rows.Next() {
+		var row AppIconRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.UserID,
+			&row.AppKey,
+			&row.SHA256,
+			&row.Width,
+			&row.Height,
+			&row.CreatedAt,
+			&row.UpdatedAt,
+			&row.LastSeenAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning app icon metadata: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading app icon metadata: %w", err)
+	}
+	return result, nil
+}
+
+// AppIcon returns one user-owned icon including its PNG bytes.
+func (q *Queries) AppIcon(ctx context.Context, userID, id int64) (*AppIconRow, error) {
+	var row AppIconRow
+	err := q.pool.QueryRow(
+		ctx,
+		`SELECT id, user_id, app_key, png, sha256, width, height,
+		        created_at, updated_at, last_seen_at
+		 FROM app_icons
+		 WHERE user_id = $1 AND id = $2`,
+		userID, id,
+	).Scan(
+		&row.ID,
+		&row.UserID,
+		&row.AppKey,
+		&row.PNG,
+		&row.SHA256,
+		&row.Width,
+		&row.Height,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+		&row.LastSeenAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying app icon: %w", err)
+	}
+	return &row, nil
 }
 
 func (q *Queries) GetUserByID(ctx context.Context, id int64) (*UserRow, error) {

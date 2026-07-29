@@ -3,18 +3,26 @@
 package tracker
 
 /*
-#cgo LDFLAGS: -framework Foundation -framework ApplicationServices -framework CoreGraphics
+#cgo LDFLAGS: -framework Foundation -framework AppKit -framework ApplicationServices -framework CoreGraphics
 #include <stdlib.h>
 #include "macos_darwin.h"
+
+_Static_assert(sizeof(pid_t) <= sizeof(int), "pid_t must fit in Go int");
+
+static int trackkr_app_icon_png_go(pid_t pid, trackkr_png *out) {
+    return trackkr_app_icon_png(pid, out) ? 1 : 0;
+}
 */
 import "C"
 
 import (
+	"context"
 	"errors"
 	"time"
 	"unsafe"
 
 	"github.com/rs/zerolog"
+	"github.com/yelinaung/trackkr/internal/icon"
 )
 
 var (
@@ -54,9 +62,12 @@ func NewWindowDetector(cfg *Config, logger *zerolog.Logger) (WindowDetector, err
 			logger.Warn().Msg("Accessibility permission not granted; recording application names without titles")
 		},
 	)
+	iconCache := newAppIconCache(time.Now, loadDarwinAppIcon, logger)
 
 	return &detectorCore{
-		policy: policy,
+		policy:    policy,
+		iconFor:   iconCache.iconForApp,
+		closeIcon: iconCache.Close,
 		frontmost: func() (*appInfo, error) {
 			var native C.trackkr_app
 			status := int(C.trackkr_frontmost_app(&native)) //nolint:gocritic // cgo expands this call into generated expressions.
@@ -79,4 +90,30 @@ func NewWindowDetector(cfg *Config, logger *zerolog.Logger) (WindowDetector, err
 			return C.GoString(title)
 		},
 	}, nil
+}
+
+func loadDarwinAppIcon(ctx context.Context, app appInfo) *icon.App {
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
+
+	var native C.trackkr_png
+	if int(C.trackkr_app_icon_png_go(C.pid_t(app.PID), &native)) == 0 { //nolint:gocritic // cgo expands this call into generated expressions.
+		return nil
+	}
+	if native.name != nil {
+		defer C.free(unsafe.Pointer(native.name))
+	}
+	if native.bytes != nil {
+		defer C.free(unsafe.Pointer(native.bytes))
+	}
+	if native.name == nil || native.bytes == nil || native.length == 0 || native.length > C.size_t(icon.MaxPNGBytes) {
+		return nil
+	}
+
+	return appIconForObservedProcess(
+		app.Name,
+		C.GoString(native.name),
+		C.GoBytes(unsafe.Pointer(native.bytes), C.int(native.length)),
+	)
 }

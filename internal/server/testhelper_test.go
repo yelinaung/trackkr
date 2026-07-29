@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/internal/icon"
 )
 
 // Shared test fixtures. Extracted so goconst stays quiet and the values
@@ -24,6 +25,7 @@ const (
 	testDesktop       = "desktop"
 	testAppCode       = "code"
 	testFirefoxLower  = "firefox"
+	testFinderLower   = "finder"
 	testPasswordField = "password"
 	testUsernameField = "username"
 	testNewUser       = "newcomer"
@@ -32,9 +34,13 @@ const (
 
 // mockQuerier implements Querier for unit tests without a database.
 type mockQuerier struct {
-	devices  map[string]*db.DeviceRow // keyed by API key
-	inserted int
-	insertFn func(ctx context.Context, records []db.ActivityRecordRow) (int, error)
+	devices     map[string]*db.DeviceRow // keyed by API key
+	inserted    int
+	insertFn    func(ctx context.Context, records []db.ActivityRecordRow) (int, error)
+	icons       []icon.App
+	iconUserID  int64
+	iconEvicted int
+	iconErr     error
 }
 
 func newMockQuerier() *mockQuerier {
@@ -73,6 +79,12 @@ func (m *mockQuerier) ListDevicesByUser(_ context.Context, userID int64) ([]db.D
 	return out, nil
 }
 
+func (m *mockQuerier) UpsertAppIcons(_ context.Context, userID int64, apps []icon.App) (int, error) {
+	m.iconUserID = userID
+	m.icons = append([]icon.App(nil), apps...)
+	return m.iconEvicted, m.iconErr
+}
+
 // unitServer creates a Server backed by a mockQuerier (no DB needed).
 // Only the api field is populated: these tests exercise /api/v1 routes,
 // and leaving sessions and web nil keeps the fake at three methods
@@ -94,10 +106,12 @@ func unitServer(t *testing.T) (*Server, *mockQuerier) {
 		config:    cfg,
 		router:    nil,
 		api:       mock,
+		iconWrite: mock,
 		logger:    &logger,
 		templates: tmpl,
 		codec:     newSessionCodec(testSecret, true),
 		limiter:   newAttemptLimiter(loginAttemptLimit, loginAttemptWindow),
+		iconLimit: newAppIconRateLimiter(appIconRateLimit, appIconRateWindow),
 		loc:       time.UTC,
 	}
 	srv.router = newRouter(srv)

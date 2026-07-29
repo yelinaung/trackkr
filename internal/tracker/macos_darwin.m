@@ -1,6 +1,7 @@
 //go:build darwin && cgo
 
 #import <ApplicationServices/ApplicationServices.h>
+#import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
@@ -119,6 +120,106 @@ char *trackkr_focused_window_title(pid_t pid) {
         CFRelease(focusedWindow);
         CFRelease(application);
         return result;
+    }
+}
+
+bool trackkr_app_icon_png(pid_t pid, trackkr_png *out) {
+    if (out == NULL) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+
+    @autoreleasepool {
+        NSRunningApplication *application =
+            [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+        NSString *applicationName = [application localizedName];
+        NSImage *source = [application icon];
+        if (applicationName == nil || source == nil || source.size.width <= 0 ||
+            source.size.height <= 0) {
+            return false;
+        }
+
+        char *name = trackkr_copy_string((CFStringRef)applicationName);
+        if (name == NULL) {
+            return false;
+        }
+
+        const NSInteger edge = 64;
+        NSBitmapImageRep *bitmap = [[NSBitmapImageRep alloc]
+            initWithBitmapDataPlanes:NULL
+            pixelsWide:edge
+            pixelsHigh:edge
+            bitsPerSample:8
+            samplesPerPixel:4
+            hasAlpha:YES
+            isPlanar:NO
+            colorSpaceName:NSCalibratedRGBColorSpace
+            bytesPerRow:0
+            bitsPerPixel:0];
+        if (bitmap == nil) {
+            free(name);
+            return false;
+        }
+        [bitmap setSize:NSMakeSize(edge, edge)];
+        unsigned char *bitmapBytes = [bitmap bitmapData];
+        if (bitmapBytes == NULL) {
+            [bitmap release];
+            free(name);
+            return false;
+        }
+        memset(bitmapBytes, 0,
+               (size_t)[bitmap bytesPerRow] * (size_t)edge);
+
+        NSGraphicsContext *context =
+            [NSGraphicsContext graphicsContextWithBitmapImageRep:bitmap];
+        if (context == nil) {
+            [bitmap release];
+            free(name);
+            return false;
+        }
+
+        CGFloat scale = MIN((CGFloat)edge / source.size.width,
+                            (CGFloat)edge / source.size.height);
+        NSSize fitted = NSMakeSize(source.size.width * scale,
+                                   source.size.height * scale);
+        NSRect destination = NSMakeRect(
+            ((CGFloat)edge - fitted.width) / 2.0,
+            ((CGFloat)edge - fitted.height) / 2.0,
+            fitted.width,
+            fitted.height);
+
+        [NSGraphicsContext saveGraphicsState];
+        [NSGraphicsContext setCurrentContext:context];
+        [context setImageInterpolation:NSImageInterpolationHigh];
+        [source drawInRect:destination
+                  fromRect:NSZeroRect
+                 operation:NSCompositingOperationSourceOver
+                  fraction:1.0
+            respectFlipped:YES
+                     hints:nil];
+        [NSGraphicsContext restoreGraphicsState];
+
+        NSData *data = [bitmap
+            representationUsingType:NSBitmapImageFileTypePNG
+            properties:@{}];
+        if (data == nil || data.length == 0) {
+            [bitmap release];
+            free(name);
+            return false;
+        }
+
+        unsigned char *copy = malloc(data.length);
+        if (copy == NULL) {
+            [bitmap release];
+            free(name);
+            return false;
+        }
+        memcpy(copy, data.bytes, data.length);
+        out->name = name;
+        out->bytes = copy;
+        out->length = data.length;
+        [bitmap release];
+        return true;
     }
 }
 
