@@ -18,6 +18,11 @@ DEV_PASSWORD="dev-password-not-a-secret"
 DEV_PORT="${TRACKKR_DEV_PORT:-8080}"
 DEV_DIR="$PWD/.cache/trackkr-dev"
 CONFIG="$DEV_DIR/config.toml"
+LAUNCH_AGENT_LABEL="com.trackkr.daemon"
+LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/$LAUNCH_AGENT_LABEL.plist"
+LAUNCH_AGENT_PAUSED=0
+SERVER_PID=""
+DAEMON_PID=""
 
 export GOCACHE="$PWD/.cache/go-build"
 export GOMODCACHE="$PWD/.cache/go-mod"
@@ -31,16 +36,118 @@ mkdir -p "$DEV_DIR"
 
 say() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 
-# A stale server from a previous run holds the port and the new one
-# exits, leaving the old binary serving while you read the new logs --
-# which is exactly as confusing as it sounds. Fail here instead.
-for port in "$DEV_PORT" 7600; do
+stop_pids() {
+  local label="$1"
+  shift
+  local pids=("$@")
+  [ "${#pids[@]}" -gt 0 ] || return 0
+
+  say "stopping $label"
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  for _ in $(seq 1 30); do
+    local running=()
+    local pid
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" 2>/dev/null; then
+        running+=("$pid")
+      fi
+    done
+    [ "${#running[@]}" -gt 0 ] || return 0
+    pids=("${running[@]}")
+    sleep 0.1
+  done
+
+  say "forcing $label to stop"
+  kill -KILL "${pids[@]}" 2>/dev/null || true
+}
+
+stop_port_listener() {
+  local port="$1"
+  local pids=()
+  local pid command
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$command" in
+      *trackkr-backend* | *trackkrd* | *go-build*/exe/server*)
+        pids+=("$pid")
+        ;;
+      *)
+        echo "port $port is used by a process that does not look like trackkr:" >&2
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN | tail -n +2 >&2
+        exit 1
+        ;;
+    esac
+  done < <(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u)
+  stop_pids "stale listener on port $port" "${pids[@]}"
+
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "port $port is already in use; stop the previous run first:" >&2
+    echo "could not stop the process listening on port $port:" >&2
     lsof -nP -iTCP:"$port" -sTCP:LISTEN | tail -n +2 >&2
     exit 1
   fi
-done
+}
+
+# The installed macOS app runs trackkrd under launchd with KeepAlive set, on
+# the same extension port this script uses. Killing that process is futile:
+# launchd restarts it within a second, and the dev daemon -- which starts a
+# good twenty seconds later, after docker and three "go run" compiles -- then
+# fails to bind. Unload the job for the duration and restore it on the way out.
+pause_launch_agent() {
+  command -v launchctl >/dev/null 2>&1 || return 0
+  [ -f "$LAUNCH_AGENT_PLIST" ] || return 0
+  launchctl print "gui/$UID/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1 || return 0
+
+  say "unloading the installed $LAUNCH_AGENT_LABEL agent"
+  if ! launchctl bootout "gui/$UID/$LAUNCH_AGENT_LABEL" 2>/dev/null; then
+    echo "could not unload $LAUNCH_AGENT_LABEL; stop it by hand with" >&2
+    echo "  launchctl bootout gui/\$UID/$LAUNCH_AGENT_LABEL" >&2
+    exit 1
+  fi
+  LAUNCH_AGENT_PAUSED=1
+}
+
+resume_launch_agent() {
+  [ "$LAUNCH_AGENT_PAUSED" -eq 1 ] || return 0
+  LAUNCH_AGENT_PAUSED=0
+  say "restoring the installed $LAUNCH_AGENT_LABEL agent"
+  launchctl bootstrap "gui/$UID" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
+}
+
+cleanup() {
+  # Disarm first. Anything that signals this shell -- directly or via
+  # its process group -- would otherwise re-enter this function through
+  # the TERM trap and never reach the kills below.
+  trap - EXIT INT TERM
+
+  local pids=()
+  for pid in "$DAEMON_PID" "$SERVER_PID"; do
+    [ -n "$pid" ] || continue
+    # Include any compiled child that "go run" has not execed into.
+    while IFS= read -r child; do
+      [ -n "$child" ] && pids+=("$child")
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+    pids+=("$pid")
+  done
+  if [ "${#pids[@]}" -gt 0 ]; then
+    say "stopping"
+  fi
+  stop_pids "server and daemon" "${pids[@]}"
+  for pid in "$DAEMON_PID" "$SERVER_PID"; do
+    [ -n "$pid" ] && wait "$pid" 2>/dev/null || true
+  done
+  resume_launch_agent
+}
+
+# Armed before the agent is unloaded, so an early failure -- an unreachable
+# database, say -- still puts the agent back.
+trap cleanup EXIT INT TERM
+pause_launch_agent
+
+# Reclaim both dev listeners before doing setup. This handles an interrupted
+# previous run even when "go run" left its compiled child orphaned.
+stop_port_listener "$DEV_PORT"
+stop_port_listener 7600
 
 say "starting postgres"
 docker compose up -d db >/dev/null
@@ -114,26 +221,6 @@ EOF
 say "starting the server on http://127.0.0.1:$DEV_PORT"
 go run ./cmd/server &
 SERVER_PID=$!
-DAEMON_PID=""
-
-cleanup() {
-  # Disarm first. Anything that signals this shell -- directly or via
-  # its process group -- would otherwise re-enter this function through
-  # the TERM trap and never reach the kills below.
-  trap - EXIT INT TERM
-
-  say "stopping"
-  for pid in "$DAEMON_PID" "$SERVER_PID"; do
-    [ -n "$pid" ] || continue
-    # Kill the child before the parent: "go run" execs the compiled
-    # binary, and killing only the go process orphans that binary,
-    # still holding its port.
-    pkill -P "$pid" 2>/dev/null || true
-    kill "$pid" 2>/dev/null || true
-  done
-  wait 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
 
 for _ in $(seq 1 30); do
   if curl -sS -o /dev/null -m 1 "http://127.0.0.1:$DEV_PORT/login" 2>/dev/null; then
