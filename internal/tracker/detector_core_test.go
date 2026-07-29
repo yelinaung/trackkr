@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 )
 
 const (
@@ -76,7 +75,6 @@ func TestDetectorCoreKeepsApplicationWithoutTitle(t *testing.T) {
 		enabled:   true,
 		isTrusted: func() bool { return true },
 		prompt:    func() {},
-		now:       time.Now,
 		log:       func(bool) {},
 	}
 	d := &detectorCore{
@@ -104,7 +102,6 @@ func TestDetectorCoreSkipsTitleWhenUntrusted(t *testing.T) {
 		enabled:   true,
 		isTrusted: func() bool { return false },
 		prompt:    func() {},
-		now:       time.Now,
 		log:       func(bool) {},
 	}
 	d := &detectorCore{
@@ -170,7 +167,6 @@ func TestDetectorCoreChecksContextBeforeNativeCalls(t *testing.T) {
 				return true
 			},
 			prompt: func() {},
-			now:    time.Now,
 			log:    func(bool) {},
 		}
 		d := &detectorCore{
@@ -197,7 +193,6 @@ func TestDetectorCoreChecksContextBeforeNativeCalls(t *testing.T) {
 			enabled:   true,
 			isTrusted: func() bool { trustCalls++; return true },
 			prompt:    func() {},
-			now:       time.Now,
 			log:       func(bool) {},
 		}
 		d := &detectorCore{

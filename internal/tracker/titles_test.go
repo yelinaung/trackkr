@@ -21,7 +21,6 @@ func TestTitlePolicyDisabled(t *testing.T) {
 			return true
 		},
 		func() { prompts.Add(1) },
-		time.Now,
 		func(bool) {},
 	)
 
@@ -36,16 +35,16 @@ func TestTitlePolicyDisabled(t *testing.T) {
 	}
 }
 
-func TestTitlePolicyCachesTrust(t *testing.T) {
+// The trust check is a cgo call whose answer is fixed for the life of
+// the process, so asking twice costs something and learns nothing.
+func TestTitlePolicyChecksTrustOnce(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
 	checks := 0
 	p := &titlePolicy{
 		enabled:   true,
 		isTrusted: func() bool { checks++; return true },
 		prompt:    func() {},
-		now:       func() time.Time { return now },
 		log:       func(bool) {},
 	}
 
@@ -57,71 +56,55 @@ func TestTitlePolicyCachesTrust(t *testing.T) {
 	if checks != 1 {
 		t.Errorf("trust checks = %d, want 1", checks)
 	}
-
-	now = now.Add(trustRecheckInterval)
-	if !p.canRead() {
-		t.Fatal("canRead after cache expiry = false, want true")
-	}
-	if checks != 2 {
-		t.Errorf("trust checks after expiry = %d, want 2", checks)
-	}
 }
 
-func TestTitlePolicyLogsTransitions(t *testing.T) {
+// A later change of heart from the trust checker must not reach the
+// caller: the real API cannot change its answer, and a policy that
+// tracked one would report a permission the AX calls do not have.
+func TestTitlePolicyIgnoresLaterTrustChanges(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
 	trusted := false
 	var logged []bool
 	p := &titlePolicy{
 		enabled:   true,
 		isTrusted: func() bool { return trusted },
 		prompt:    func() {},
-		now:       func() time.Time { return now },
 		log:       func(value bool) { logged = append(logged, value) },
 	}
 
-	p.canRead()
-	p.canRead()
-	trusted = true
-	now = now.Add(trustRecheckInterval)
-	p.canRead()
-	now = now.Add(trustRecheckInterval)
-	p.canRead()
-	trusted = false
-	now = now.Add(trustRecheckInterval)
-	p.canRead()
-
-	want := []bool{false, true, false}
-	if len(logged) != len(want) {
-		t.Fatalf("logged = %v, want %v", logged, want)
+	if p.canRead() {
+		t.Error("canRead = true, want the denied first answer")
 	}
-	for i := range want {
-		if logged[i] != want[i] {
-			t.Errorf("logged[%d] = %v, want %v", i, logged[i], want[i])
+
+	trusted = true
+	for range 5 {
+		if p.canRead() {
+			t.Fatal("canRead = true, want the first answer to stand")
 		}
+	}
+
+	if len(logged) != 1 || logged[0] {
+		t.Errorf("logged = %v, want exactly one denied line", logged)
 	}
 }
 
 func TestTitlePolicyPromptsOnce(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, time.July, 28, 10, 0, 0, 0, time.UTC)
 	prompts := 0
 	p := &titlePolicy{
 		enabled:       true,
 		promptEnabled: true,
 		isTrusted:     func() bool { return false },
 		prompt:        func() { prompts++ },
-		now:           func() time.Time { return now },
 		log:           func(bool) {},
 	}
 
 	if p.canRead() {
-		t.Error("canRead = true, want denied state")
+		t.Error("canRead = true, want denied")
 	}
 	for range 3 {
-		now = now.Add(trustRecheckInterval)
 		p.canRead()
 	}
 	if prompts != 1 {
@@ -137,7 +120,6 @@ func TestTitlePolicyPromptDisabled(t *testing.T) {
 		enabled:   true,
 		isTrusted: func() bool { return false },
 		prompt:    func() { prompts++ },
-		now:       time.Now,
 		log:       func(bool) {},
 	}
 	p.canRead()
@@ -158,7 +140,6 @@ func TestTitlePolicySerializesConcurrentChecks(t *testing.T) {
 			return true
 		},
 		prompt: func() {},
-		now:    time.Now,
 		log:    func(bool) {},
 	}
 
@@ -185,7 +166,6 @@ func TestTitlePolicyTrustCallbackCanReenter(t *testing.T) {
 			return p.canRead()
 		},
 		prompt: func() {},
-		now:    time.Now,
 		log:    func(bool) {},
 	}
 
@@ -205,12 +185,10 @@ func TestTitlePolicyTrustCallbackCanReenter(t *testing.T) {
 func TestTitlePolicyCallbacksRunUnlocked(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now()
 	p := &titlePolicy{
 		enabled:       true,
 		promptEnabled: true,
 		isTrusted:     func() bool { return false },
-		now:           func() time.Time { return now },
 	}
 	p.prompt = func() { p.canRead() }
 	p.log = func(bool) { p.canRead() }

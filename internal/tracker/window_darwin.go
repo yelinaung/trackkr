@@ -43,7 +43,6 @@ func NewWindowDetector(cfg *Config, logger *zerolog.Logger) (WindowDetector, err
 		func() {
 			C.trackkr_prompt_for_accessibility()
 		},
-		time.Now,
 		func(trusted bool) {
 			if logger == nil {
 				return

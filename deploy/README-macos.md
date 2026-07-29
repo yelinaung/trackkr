@@ -41,6 +41,33 @@ Accessibility, select the `+` button, and choose
 `~/Applications/trackkr.app`. The app does not appear in this list on its own
 unless it has requested access, so use the `+` button when prompting is off.
 
+Then restart the daemon:
+
+```sh
+launchctl kickstart -k gui/$UID/com.trackkr.daemon
+```
+
+The restart is required. macOS answers the trust question from the identity a
+process launched with and never revises it, so a daemon that was already
+running when you granted the permission keeps recording empty titles
+indefinitely. It is not a delay you can wait out. The log says which state the
+daemon came up in:
+
+```text
+INF Accessibility permission granted; window titles enabled
+WRN Accessibility permission not granted; recording application names without titles
+```
+
+Revoking works differently and needs no restart: the Accessibility calls start
+failing within a poll or two, and records keep their application names with
+empty titles.
+
+Do not check the permission by running the binary from a terminal. macOS
+attributes a permission to the responsible process, so a binary launched from
+a shell inherits the terminal's Accessibility grant and reports success no
+matter what trackkr itself was given. Read `~/Library/Logs/trackkr/daemon.log`
+instead.
+
 Ad-hoc signing changes identity when the binary changes, which can require a
 new grant after every rebuild. For a stable local identity, create a
 self-signed Code Signing certificate in the login keychain and install with:

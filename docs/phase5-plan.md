@@ -24,7 +24,7 @@ config afterwards, so step 6 reorders that and touches
 
 ```text
 internal/tracker/
-  titles.go                    # portable: trust state, recheck interval
+  titles.go                    # portable: the one-shot trust check
   titles_test.go               # no suffix, so Linux CI runs it
   detector_core.go             # portable: appInfo, detectorCore, mapFrontmost
   detector_core_test.go        # also suffix-free, also runs on Linux
@@ -267,36 +267,60 @@ applications' UI. One cgo call; every decision around it is ordinary Go
 in `titles.go`, which is what the Linux runner tests.
 
 ```go
-// trustState is tri-valued on purpose: the zero value is "not yet
-// asked", so the first observation is distinguishable from a cached
-// untrusted answer and can be logged.
-type trustState int
-
-const (
-    trustUnknown trustState = iota
-    trustGranted
-    trustDenied
-)
-
-// titlePolicy decides whether to attempt a title read. It caches the
-// answer because AXIsProcessTrusted is a syscall and the poll runs
-// every three seconds.
+// titlePolicy decides whether to attempt a title read. It asks once
+// and keeps the answer, because macOS will not give a different one.
 type titlePolicy struct {
     enabled       bool               // macos_read_titles
     promptEnabled bool               // macos_prompt_for_accessibility
     isTrusted     func() bool        // the cgo call, or a fake
     prompt        func()             // AXIsProcessTrustedWithOptions, or a fake
-    now           func() time.Time   // injected, so tests need no sleeps
-    log           func(trusted bool) // first observation, then changes only
+    log           func(trusted bool) // the one line, at the first answer
 
-    mu        sync.Mutex
-    state     trustState
-    prompted  bool
-    nextCheck time.Time
+    mu       sync.Mutex
+    resolved bool
+    checking bool
+    trusted  bool
 }
-
-const trustRecheckInterval = 2 * time.Minute
 ```
+
+**Why there is no recheck.** An earlier version of this plan cached the
+answer for two minutes and re-asked, so that granting the permission
+would take effect without a restart. Running it proved that wrong in
+both directions.
+
+The daemon started before the grant polled `AXIsProcessTrusted()` every
+two minutes for seven minutes after the permission was ticked and never
+saw it. A `launchctl kickstart -k` later, the same binary from the same
+bundle reported `Accessibility permission granted` on its first check.
+Revocation behaves the same way in reverse: unticking the box left the
+running daemon still reporting trusted thirteen minutes and six
+rechecks later. macOS answers from the identity the process launched
+with and does not revise it.
+
+Revocation does take effect, just not where the policy was looking.
+Titles went empty within three seconds of the box being unticked --
+faster than any recheck -- because the AX calls themselves began
+failing. `trackkr_focused_window_title` returns NULL, and the record
+keeps its application name with an empty title. The degradation path
+below already handles this, and needs no policy at all.
+
+So the policy asks once. That removes `trustState`, `nextCheck`,
+`trustRecheckInterval`, the `prompted` flag, and the injected clock --
+and the tests that drove a fake clock past the recheck window, which
+were verifying a mechanism the real API cannot exhibit.
+
+One warning worth writing down, because it wastes an afternoon: **a
+trust check run from a terminal answers about the terminal.** TCC
+attributes a permission to the responsible process, so the bundled
+binary launched from a shell inherits the terminal's Accessibility
+grant. The same binary, the same second, with the permission unticked:
+
+```text
+launchd     WRN Accessibility permission not granted
+this shell  INF Accessibility permission granted
+```
+
+Only a launchd-started process reports on trackkr's own permission.
 
 The rules, each one a test:
 
@@ -304,35 +328,27 @@ The rules, each one a test:
   so `macos_read_titles = false` also means no prompt, whatever
   `macos_prompt_for_accessibility` says. Turning titles off turns the
   Accessibility machinery off entirely;
-- the first call checks and caches, so startup costs one syscall;
-- later calls reuse the cached answer until `now()` passes `nextCheck`,
-  two minutes on. Granting permission takes effect inside that window
-  with no restart, and a denied permission costs one syscall every two
-  minutes instead of one per poll;
-- `log` fires on the first observation and on every change after it. A
-  two-valued cache cannot manage this, because an initial `false` looks
-  identical to a cached `false`, and the warning an operator needs at
-  startup never appears. `trustUnknown` as the zero value makes "not yet
-  asked" a state instead of an accident. "Log once" therefore means once
-  per untrusted period, and a permission revoked and re-granted says so
-  both times;
-- the prompt stays separate from the check. On the first denied
-  observation, when `promptEnabled` holds and `prompted` does not, call
-  `prompt()`, set `prompted`, and keep the denied answer -- the API
-  returns the pre-prompt value, so believing it would be wrong. Any
-  later grant arrives through the ordinary recheck. Without `prompted`
-  in the struct, "at most once per process" has no expression and no
-  test;
+- the first call checks and resolves; every later call returns the
+  stored answer, so startup costs one syscall and the process costs no
+  more;
+- `log` fires once, at that first answer. With one check there is no
+  transition to track and no flag to track it with;
+- the prompt stays separate from the check. On a denied first answer,
+  when `promptEnabled` holds, call `prompt()` and keep the denied
+  answer -- the API returns the pre-prompt value, so believing it would
+  be wrong. A grant that follows the dialog needs a restart like any
+  other, which is what the README tells the operator;
+- `checking` guards re-entry as much as concurrency. `isTrusted` is an
+  injected callback, and one that reaches back into the policy must
+  return the in-flight answer rather than recurse;
 - the mutex is not decoration. `ActiveWindow` runs on the tracker's
   single goroutine today, and a detector that silently depends on that
   is a trap for the next caller;
-- **no callback runs while `mu` is held.** The locked section decides
-  the new state, reserves the prompt by setting `prompted`, and records
-  what needs announcing; `prompt` and `log` fire after the unlock.
-  Injected callbacks are arbitrary code -- a logger that reaches back
-  into the detector, or a test double that does -- and calling them
-  under the lock invites a deadlock for nothing. Reserving under the
-  lock keeps one-check and one-prompt intact anyway.
+- **no callback runs while `mu` is held.** The locked section resolves
+  the state and decides whether to prompt; `prompt` and `log` fire
+  after the unlock. Injected callbacks are arbitrary code -- a logger
+  that reaches back into the detector, or a test double that does --
+  and calling them under the lock invites a deadlock for nothing.
 
 The check happens on demand inside `ActiveWindow`. A background
 goroutine would need a lifecycle, a shutdown path, and a place in `run`
@@ -345,10 +361,10 @@ name with an empty title. Only `ErrNoActiveWindow` suppresses a record.
 
 **The prompt is asynchronous.** `AXIsProcessTrustedWithOptions` with
 `kAXTrustedCheckOptionPrompt` shows the dialog and returns the current
-state immediately, which is false. The policy must not treat the call as
-if it answers the question it asks: it prompts at most once per process,
-keeps reporting untrusted, and picks the grant up at the next recheck
-like any other.
+state immediately, which is false. The policy must not treat the call
+as if it answers the question it asks: it prompts once, keeps the
+denied answer, and the grant the operator then gives takes effect at
+the next daemon start.
 
 ### Step 4: build tags and the no-cgo path
 
@@ -602,13 +618,15 @@ the Linux runner executes with fakes for both seams.
 `titles_test.go`, `detector_core_test.go`, and `config_test.go` run in
 CI and cover:
 
-- the trust cache: the first call checks, the next ten reuse, and a call
-  past `trustRecheckInterval` checks again, all driven by a fake `now()`
-  with no sleeping;
-- the first observation logging even though nothing changed, then
-  transitions in both directions logging once each;
-- the prompt firing at most once per process, the denied answer
-  retained, and no prompt at all when `promptEnabled` is false;
+- the one-shot check: the first call asks, the next ten do not, and a
+  later change of heart from `isTrusted` never reaches the caller --
+  the property that stops the policy reporting a permission the AX
+  calls no longer have;
+- the single log line at that first answer;
+- the prompt firing once, the denied answer retained, and no prompt at
+  all when `promptEnabled` is false;
+- a trust callback that re-enters the policy returning rather than
+  recursing, and neither callback running under the lock;
 - `macos_read_titles = false` short-circuiting before `isTrusted` or
   `prompt` is called, which proves the config reaches the detector and
   that titles-off means prompt-off;
@@ -675,8 +693,10 @@ Phase 6 has a signal it can use.
    signal because lock-screen windows are above layer zero.
 10. Without Accessibility granted: records carry app names and empty
     titles, and the log says so once, not every poll.
-11. Grant Accessibility to the bundled app, wait for the recheck, and
-    confirm titles start appearing with no restart.
+11. Grant Accessibility to the bundled app, then
+    `launchctl kickstart -k gui/$UID/com.trackkr.daemon` and confirm
+    titles appear. The restart is required, not incidental: a running
+    process never observes the grant.
 12. Walk away past the idle threshold and confirm the record ends when
     you stopped, not when you came back.
 13. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
