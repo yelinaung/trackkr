@@ -1,0 +1,6 @@
+[global]
+line-length = 100
+exclude = ["node_modules", "build", "dist"]
+respect-gitignore = true
+flavor = "mkdocs"  # Use MkDocs flavor (see Flavors section)
+disable = ["MD013", "MD041"]

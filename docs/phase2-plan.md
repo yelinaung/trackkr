@@ -66,10 +66,10 @@ Modified: `mise.toml` (add `build-daemon`, `run-daemon` tasks)
 
 - States: `stateTracking`, `stateIdle`
 - `Run(ctx)`: ticker at `poll_interval`, each tick:
-  - Read idle time + active window
-  - TRACKING → idle ≥ threshold: finalize record (end = now - idle), go IDLE
-  - TRACKING → window changed: finalize, start new record
-  - IDLE → idle < threshold: start new record, go TRACKING
+    - Read idle time + active window
+    - TRACKING → idle ≥ threshold: finalize record (end = now - idle), go IDLE
+    - TRACKING → window changed: finalize, start new record
+    - IDLE → idle < threshold: start new record, go TRACKING
 - `finalize(endedAt)`: calculate duration, discard if ≤ 0s, enqueue to reporter
 - `startNew(info)`: set current record with app/title/startedAt
 - On ctx.Done: finalize current record if any
