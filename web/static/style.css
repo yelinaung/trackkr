@@ -54,7 +54,9 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
   --radius: 10px;
-  --lane-height: 26px;
+  /* Tall enough to read as a band rather than a rule: at 26px a lane of
+     short records looked like a scratch on the page. */
+  --lane-height: 48px;
   /* The axis and the lanes must reserve the same widths, or the hour
      marks drift away from the bars once the minimums bind. The chart is
      wide enough that a few minutes is a visible sliver; it scrolls
@@ -277,13 +279,13 @@ button:focus-visible {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: 1rem;
-  margin-block: 1.5rem;
+  gap: 1.25rem;
+  margin-block: 1.75rem 2.25rem;
 }
 
 .filters__field {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.4rem;
 }
 
 .filters__field label {
@@ -317,9 +319,10 @@ button:focus-visible {
   display: flex;
   min-width: var(--chart-min);
   margin-left: calc(var(--lane-label) + var(--lane-gap));
+  padding-bottom: 0.6rem;
   color: var(--ink-soft);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
 }
 
 /* One flex cell per hour: a 23- or 25-hour DST day gets the right count
@@ -327,7 +330,7 @@ button:focus-visible {
 .timeline__hour {
   flex: 1 1 0;
   border-left: 1px solid var(--edge);
-  padding-left: 2px;
+  padding-left: 4px;
 }
 
 .lane {
@@ -335,7 +338,7 @@ button:focus-visible {
   align-items: center;
   gap: var(--lane-gap);
   min-width: calc(var(--chart-min) + var(--lane-label) + var(--lane-gap));
-  margin-block: 0.4rem;
+  margin-block: 0.75rem;
 }
 
 .lane__name {
@@ -438,15 +441,15 @@ button:focus-visible {
   padding: 0;
   margin: 0;
   display: grid;
-  gap: 0.35rem;
+  gap: 0.5rem;
 }
 
 .totals__item {
   display: grid;
   grid-template-columns: 0.75rem 1fr auto;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.4rem 0.6rem;
+  gap: 0.9rem;
+  padding: 0.7rem 0.9rem;
   border: 1px solid var(--edge);
   border-radius: var(--radius);
   background-color: var(--paper-raised);

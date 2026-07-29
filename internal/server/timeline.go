@@ -39,12 +39,16 @@ type Lane struct {
 }
 
 // Chart is everything the timeline partial needs to render.
+//
+// The window is the drawn range, not the day: empty hours at either end
+// are trimmed, so a day of afternoon work does not spend two thirds of
+// the chart proving that the morning was quiet.
 type Chart struct {
-	DayStart  time.Time
-	DayEnd    time.Time
-	SpanMin   float64
-	HourMarks []HourMark
-	Lanes     []Lane
+	WindowStart time.Time
+	WindowEnd   time.Time
+	SpanMin     float64
+	HourMarks   []HourMark
+	Lanes       []Lane
 }
 
 // HourMark labels one hour cell of the axis. The axis is HTML rather
@@ -66,18 +70,112 @@ func dayBounds(day time.Time) (start, end time.Time) {
 	return start, end
 }
 
+// minChartWindow floors how much of the day the chart draws.
+//
+// Without it a morning of light activity zooms to an hour or two, and
+// the scale then shifts under the reader every few minutes as records
+// arrive. Six hours is wide enough that a day fills in rather than
+// redraws.
+const minChartWindow = 6 * time.Hour
+
+// chartWindow narrows the drawn range to the hours holding activity,
+// padded by one hour on each side so the first bar does not sit flush
+// against the edge, where a reader cannot tell a quiet hour from a cut.
+//
+// Only the ends are trimmed. Dropping an empty stretch from the middle
+// would put a bar ending at 11:58 beside one starting at 15:04, and the
+// eye reads adjacency as continuity; it would also make the same
+// distance mean different amounts of time in different places, which is
+// the one thing a timeline offers that a list does not.
+func chartWindow(records []db.ActivityRecordRow, dayStart, dayEnd time.Time) (time.Time, time.Time) {
+	first, last, ok := recordExtent(records, dayStart, dayEnd)
+	if !ok {
+		return dayStart, dayEnd
+	}
+
+	start := floorHour(first).Add(-time.Hour)
+	end := ceilHour(last).Add(time.Hour)
+
+	// Whole hours either way, so the axis cells keep landing on the
+	// clock: the deficit is a whole number of hours and its halves are
+	// rounded back to one.
+	if deficit := minChartWindow - end.Sub(start); deficit > 0 {
+		back := (deficit / 2).Round(time.Hour)
+		start = start.Add(-back)
+		end = end.Add(deficit - back)
+	}
+
+	// Spend whatever a clamp takes on the opposite side, so activity at
+	// either edge of the day still gets the full window.
+	if start.Before(dayStart) {
+		end = end.Add(dayStart.Sub(start))
+		start = dayStart
+	}
+	if end.After(dayEnd) {
+		start = start.Add(dayEnd.Sub(end))
+		end = dayEnd
+	}
+	if start.Before(dayStart) {
+		start = dayStart
+	}
+	return start, end
+}
+
+// recordExtent reports the earliest start and latest end among records
+// that overlap the day, each already clamped to it.
+func recordExtent(records []db.ActivityRecordRow, dayStart, dayEnd time.Time) (first, last time.Time, ok bool) {
+	for i := range records {
+		rec := &records[i]
+		from := rec.StartedAt
+		if from.Before(dayStart) {
+			from = dayStart
+		}
+		to := rec.EndedAt
+		if to.After(dayEnd) {
+			to = dayEnd
+		}
+		if !to.After(from) {
+			continue
+		}
+		if !ok || from.Before(first) {
+			first = from
+		}
+		if !ok || to.After(last) {
+			last = to
+		}
+		ok = true
+	}
+	return first, last, ok
+}
+
+// floorHour and ceilHour work on the wall clock rather than by
+// truncating absolute time, which would land off the hour in a zone
+// offset by thirty or forty-five minutes.
+func floorHour(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, t.Location())
+}
+
+func ceilHour(t time.Time) time.Time {
+	floor := floorHour(t)
+	if t.Equal(floor) {
+		return floor
+	}
+	return floor.Add(time.Hour)
+}
+
 // layout converts records into positioned bars for one day. Records are
-// clamped to the day, which is what the overlapping database query makes
-// possible for spans crossing midnight.
+// clamped to the drawn window, which is what the overlapping database
+// query makes possible for spans crossing midnight.
 func layout(records []db.ActivityRecordRow, devices []db.DeviceRow, day time.Time) Chart {
-	start, end := dayBounds(day)
+	dayStart, dayEnd := dayBounds(day)
+	start, end := chartWindow(records, dayStart, dayEnd)
 	span := end.Sub(start).Minutes()
 
 	chart := Chart{
-		DayStart:  start,
-		DayEnd:    end,
-		SpanMin:   span,
-		HourMarks: hourMarks(start, end),
+		WindowStart: start,
+		WindowEnd:   end,
+		SpanMin:     span,
+		HourMarks:   hourMarks(start, end),
 	}
 
 	names := make(map[int64]string, len(devices))
