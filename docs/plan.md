@@ -8,7 +8,7 @@ Build a cross-platform activity/time tracking app that monitors active windows a
 
 ## Architecture Overview
 
-```
+```text
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │ Linux Daemon │     │ macOS Daemon │     │ Android App  │
 │  (trackkrd)  │     │  (trackkrd)  │     │  (future)    │
@@ -50,7 +50,7 @@ Build a cross-platform activity/time tracking app that monitors active windows a
 
 ## Project Structure
 
-```
+```text
 trackkr/
 ├── cmd/
 │   ├── server/main.go              # Server entrypoint (API + web dashboard)
@@ -201,7 +201,7 @@ queries, so no separate `(device_id, started_at)` index is needed.
 
 ### Tracking Loop (polls every 3 seconds)
 
-```
+```text
                    ┌───────────────────────┐
          ┌────────►│   TRACKING            │◄──────────┐
          │         │ (current app/title)   │           │
@@ -221,22 +221,26 @@ queries, so no separate `(device_id, started_at)` index is needed.
 - **Resume from idle**: start fresh record from now
 
 ### Reporter (batch sender)
+
 - In-memory queue, flushes every 30s or 20 records
 - On network failure, records stay in queue and retry next cycle
 - Persist queue to disk (`~/.local/share/trackkr/pending.json`) so records survive daemon restarts
 
 ### Active Window Detection
+
 - **Linux**: `xdotool` for window name, `xprop` for WM_CLASS (app name)
 - **macOS**: `CGWindowListCopyWindowInfo` supplies the owner and pid of the
   frontmost layer-zero window. Accessibility reads its focused title only
   when trusted, and app-name tracking continues without that permission.
 
 ### Idle Detection
+
 - **Linux**: `xprintidle` (returns idle ms)
 - **macOS**: CoreGraphics
   `CGEventSourceSecondsSinceLastEventType` for HID-system idle time
 
 ### Client Config (`os.UserConfigDir()/trackkr/config.toml`)
+
 ```toml
 server_url = "https://trackkr.example.com"
 api_key = "abc123..."
@@ -321,6 +325,7 @@ admin password hash: users live in the `users` table, created with
 ## Implementation Order
 
 ### Phase 1: Server Foundation (done)
+
 1. Go module init, project structure, update mise.toml tasks
 2. PostgreSQL connection with pgx/v5
 3. Database migrations with golang-migrate
@@ -329,6 +334,7 @@ admin password hash: users live in the `users` table, created with
 6. Test with curl
 
 ### Phase 2: Linux Desktop Client (done — see `phase2-plan.md`)
+
 1. `window_linux.go` — active window via xdotool
 2. `idle_linux.go` — idle time via xprintidle
 3. Tracking loop with state machine
@@ -336,6 +342,7 @@ admin password hash: users live in the `users` table, created with
 5. End-to-end test: daemon → server → DB
 
 ### Phase 3: Web Dashboard MVP (planned — see `phase3-plan.md`)
+
 0. No heavy web-framework
 1. Login page + session auth
 2. Dashboard page with SVG timeline (Bootstrap 5.3 compiled CSS, no Bootstrap JS)
@@ -344,12 +351,14 @@ admin password hash: users live in the `users` table, created with
 5. Embed templates/static with Go embed
 
 ### Phase 4: Firefox Extension (in progress — see `phase4-plan.md`)
+
 1. Daemon localhost endpoint on :7600
 2. Extension background script with tab listeners
 3. Popup showing connection status
 4. Test tab tracking end-to-end
 
 ### Phase 5: macOS Support (implemented — see `phase5-plan.md`)
+
 1. `idle_darwin.go` uses CoreGraphics and needs no permission
 2. `window_darwin.go` records the frontmost visible window owner without
    permission and reads titles behind an Accessibility trust policy
@@ -362,6 +371,7 @@ The systemd unit, graceful shutdown, and disk-persisted queue originally
 listed here all landed in Phase 2.
 
 ### Phase 6: Future Enhancements (parked)
+
 - Android app
 - Wayland support
 - Desktop/extension record deduplication

@@ -22,7 +22,7 @@ config afterwards, so step 6 reorders that and touches
 
 ## New Files
 
-```
+```text
 internal/tracker/
   titles.go                    # portable: trust state, recheck interval
   titles_test.go               # no suffix, so Linux CI runs it
@@ -460,7 +460,7 @@ and step 6 fixes the comment.
 
 The README carries the load and unload commands:
 
-```
+```text
 launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.trackkr.daemon.plist
 launchctl bootout   gui/$UID/com.trackkr.daemon
 ```
@@ -656,9 +656,11 @@ Phase 6 has a signal it can use.
 9. Without Accessibility granted: records carry app names and empty
    titles, and the log says so once, not every poll.
 10. Grant Accessibility to the bundled app, wait for the recheck, and
-   confirm titles start appearing with no restart.
+
+    confirm titles start appearing with no restart.
 11. Walk away past the idle threshold and confirm the record ends when
-   you stopped, not when you came back.
+
+    you stopped, not when you came back.
 12. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
     the daemon restarts and keeps its Accessibility grant.
 13. Rebuild, re-sign, and re-bundle, then confirm whether the grant

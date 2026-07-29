@@ -6,7 +6,7 @@ The server foundation (Phase 1) is complete — `POST /api/v1/activity` accepts 
 
 ## New Files
 
-```
+```text
 internal/tracker/
 ├── config.go              # Client config (TOML + env overrides)
 ├── config_test.go
@@ -29,6 +29,7 @@ Modified: `mise.toml` (add `build-daemon`, `run-daemon` tasks)
 ## Implementation Order
 
 ### Step 1: `config.go` — Client configuration
+
 - Config struct with TOML tags, defaults, env var overrides (`TRACKKR_SERVER_URL`, `TRACKKR_API_KEY`)
 - Custom `duration` type implementing `encoding.TextUnmarshaler` for `"3s"`, `"5m"` strings
 - Defaults: `poll_interval=3s`, `idle_threshold=5m`, `flush_interval=30s`, `flush_size=20`
@@ -36,6 +37,7 @@ Modified: `mise.toml` (add `build-daemon`, `run-daemon` tasks)
 - `DefaultDataDir()` → `~/.local/share/trackkr/`
 
 ### Step 2: `window.go` + `window_linux.go` — Active window detection
+
 - Interface: `WindowDetector` with `ActiveWindow() (WindowInfo, error)`
 - `XWindowDetector` uses `exec.LookPath` for xdotool/xprop at construction
 - `xdotool getactivewindow` → window ID, `getwindowname` → title
@@ -44,12 +46,14 @@ Modified: `mise.toml` (add `build-daemon`, `run-daemon` tasks)
 - Unexported `parseWMClass(output string) string` for testability
 
 ### Step 3: `idle.go` + `idle_linux.go` — Idle detection
+
 - Interface: `IdleDetector` with `IdleTime() (time.Duration, error)`
 - `NopIdleDetector` always returns 0 (fallback when xprintidle missing)
 - `XIdleDetector` runs xprintidle, parses ms output
 - Factory: `NewIdleDetectorOrNop(logger)` — logs warning if xprintidle not found, returns Nop
 
 ### Step 4: `reporter.go` — Batch sender + persistence
+
 - `Record` struct matching the server's ingest format
 - `HTTPPoster` interface (`Do(*http.Request) (*http.Response, error)`) — `*http.Client` satisfies it
 - In-memory queue protected by `sync.Mutex`
@@ -59,6 +63,7 @@ Modified: `mise.toml` (add `build-daemon`, `run-daemon` tasks)
 - `Shutdown`: final flush + save pending
 
 ### Step 5: `tracker.go` — State machine
+
 - States: `stateTracking`, `stateIdle`
 - `Run(ctx)`: ticker at `poll_interval`, each tick:
   - Read idle time + active window
@@ -70,6 +75,7 @@ Modified: `mise.toml` (add `build-daemon`, `run-daemon` tasks)
 - On ctx.Done: finalize current record if any
 
 ### Step 6: `cmd/trackkrd/main.go` — Entry point
+
 - Config loading, zerolog setup
 - Create XWindowDetector, IdleDetectorOrNop, Reporter, Tracker
 - `signal.NotifyContext` for SIGINT/SIGTERM
@@ -77,6 +83,7 @@ Modified: `mise.toml` (add `build-daemon`, `run-daemon` tasks)
 - On shutdown: Reporter.Shutdown, wait for goroutines
 
 ### Step 7: `deploy/trackkrd.service` + `mise.toml`
+
 - systemd user unit with `DISPLAY=:0`, restart on failure
 - mise tasks: `build-daemon`, `run-daemon`
 

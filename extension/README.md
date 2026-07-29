@@ -7,7 +7,7 @@ the server sees ordinary records and needs no changes.
 
 ## Running it
 
-```
+```text
 mise dev                      # database, server, device, daemon, config
 ```
 
@@ -16,7 +16,7 @@ Temporary Add-on, and pick `manifest.json` here. Open the options page,
 paste the token `mise dev` printed, and save. Firefox then asks for the
 host permission. Accept it, or every request fails.
 
-```
+```text
 mise ext-lint                 # web-ext lint, warnings are errors
 mise ext-test                 # logic and background tests, no browser
 ```

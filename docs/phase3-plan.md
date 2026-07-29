@@ -18,7 +18,7 @@ records spanning midnight.
 
 ## New Files
 
-```
+```text
 web/
   web.go                     # package web: go:embed templates + static
   templates/
@@ -105,7 +105,7 @@ inside a `<div>`.
 
 Security headers, static for every response, with no nonce anywhere:
 
-```
+```text
 Content-Security-Policy:
   default-src 'self';
   script-src 'self';
@@ -325,7 +325,7 @@ is the most likely first-implementation bug, and the failure is quiet: gate
 `/static/*` and the login page loads with no CSS at all, with no CDN fallback
 under `style-src 'self'`.
 
-```
+```text
 public   GET /login   POST /login   GET /register   POST /register
          POST /logout                GET /static/*
 gated    GET /        GET /timeline

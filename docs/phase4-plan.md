@@ -14,7 +14,7 @@ that device's activity with a `url` attached.
 
 ## New Files
 
-```
+```text
 internal/tracker/
   extension.go               # localhost listener + handler
   extension_test.go
@@ -134,7 +134,7 @@ daemon" and "refuse to start without one" cannot both be true: a daemon
 that will not start can never generate anything. So generation is its own
 command:
 
-```
+```text
 trackkrd -print-extension-token
 ```
 
@@ -267,14 +267,14 @@ data usable for the deduplication parked in Phase 6.
    Firefox extensions at all (Chromium only), so this static pass plus
    `mise ext-run` for manual checks is the practical ceiling until
    Selenium's `install_addon` is wired up.
-3. `curl` against the listener: no token is 401, wrong token is 401, a web
+4. `curl` against the listener: no token is 401, wrong token is 401, a web
    `Origin` is 403, `text/plain` is 415, a valid record is 202.
-4. `ss -ltn` (or `lsof -i`) shows the listener bound to `127.0.0.1`, not
+5. `ss -ltn` (or `lsof -i`) shows the listener bound to `127.0.0.1`, not
    `0.0.0.0`.
-5. Load the extension with `about:debugging`, browse, and confirm rows
+6. Load the extension with `about:debugging`, browse, and confirm rows
    with URLs appear on the dashboard for the daemon's device.
-6. Open a private window, browse, and confirm nothing from it is reported.
-7. Revoke the host permission in `about:addons` and confirm the popup
+7. Open a private window, browse, and confirm nothing from it is reported.
+8. Revoke the host permission in `about:addons` and confirm the popup
    says so rather than reporting the daemon as unreachable.
-8. Leave a tab focused past the idle threshold and confirm the reported
+9. Leave a tab focused past the idle threshold and confirm the reported
    duration stops at the threshold instead of covering the whole absence.
