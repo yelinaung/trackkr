@@ -311,9 +311,9 @@ macos_prompt_for_accessibility = false
   while the in-flight tab lives in `storage.session` so a stale focus does
   not
 - Daemon enriches with `app_name = "Firefox"` and feeds into the reporter
-  queue. Focused browsing is counted twice until a future deduplication phase. The
-  stable discriminator is URL presence: extension records carry a URL and
-  desktop-window records do not, regardless of platform or application name
+  queue. Dashboard queries give URL-bearing extension records precedence over
+  overlapping desktop Firefox records on the same device; desktop-only gaps
+  remain visible. See `phase7-dedup-plan.md`.
 
 ---
 
@@ -434,11 +434,17 @@ tracked-site host access to fetch, which conflicts with the extension's
 privacy contract. Linux application icons need a separately exercised Linux
 resolver.
 
-### Phase 7: Future Enhancements (parked)
+### Phase 7: Desktop/Extension Deduplication (implemented — see `phase7-dedup-plan.md`)
+
+1. Identify Firefox sources by normalized app key and URL presence
+2. Merge extension coverage per device
+3. Subtract only overlapping coverage from desktop Firefox records
+4. Apply the same effective intervals to timeline records and app totals
+
+### Phase 8: Future Enhancements (parked)
 
 - Android app
 - Wayland support
-- Desktop/extension record deduplication
 - Weekly/monthly views, categories, productivity scoring
 - Data export
 

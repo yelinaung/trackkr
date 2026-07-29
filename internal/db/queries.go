@@ -85,8 +85,8 @@ func (q *Queries) ListDevicesByUser(ctx context.Context, userID int64) ([]Device
 // ActivityRecordLimit caps how many records one timeline page renders.
 // The cap truncates the end of the day rather than sampling it.
 //
-// GetActivityRecords fetches one row beyond the limit so the caller can
-// tell "exactly full" from "truncated": comparing len(records) against
+// GetActivityRecords returns at most one row beyond the limit so the caller
+// can tell "exactly full" from "truncated": comparing len(records) against
 // the limit alone reports a truncated chart for a day that fit exactly.
 const ActivityRecordLimit = 5000
 
@@ -94,6 +94,22 @@ const ActivityRecordLimit = 5000
 // on overlap rather than on started_at is what makes a record spanning
 // midnight visible on both days.
 func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
+	records, err := q.queryActivityRecords(ctx, userID, start, end, deviceID)
+	if err != nil {
+		return nil, err
+	}
+
+	records = deduplicateFirefoxActivity(records)
+	if len(records) > ActivityRecordLimit+1 {
+		records = records[:ActivityRecordLimit+1]
+	}
+	return records, nil
+}
+
+// queryActivityRecords intentionally loads the full window before the display
+// cap is applied. Capping raw rows first could hide later effective records
+// when overlapping desktop and browser observations are removed.
+func (q *Queries) queryActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
 	var rows pgx.Rows
 	var err error
 
@@ -103,18 +119,16 @@ func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, e
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
-			 ORDER BY ar.started_at, ar.device_id, ar.id
-			 LIMIT $5`,
-			userID, start, end, *deviceID, ActivityRecordLimit+1)
+			 ORDER BY ar.started_at, ar.device_id, ar.id`,
+			userID, start, end, *deviceID)
 	} else {
 		rows, err = q.pool.Query(ctx,
 			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
-			 ORDER BY ar.started_at, ar.device_id, ar.id
-			 LIMIT $4`,
-			userID, start, end, ActivityRecordLimit+1)
+			 ORDER BY ar.started_at, ar.device_id, ar.id`,
+			userID, start, end)
 	}
 	if err != nil {
 		return nil, err
@@ -137,44 +151,11 @@ func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, e
 // of each record that falls inside the window, so a record spanning
 // midnight is not counted in full on both days.
 func (q *Queries) GetAppTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]AppTotalRow, error) {
-	var rows pgx.Rows
-	var err error
-
-	if deviceID != nil {
-		rows, err = q.pool.Query(ctx,
-			`SELECT ar.app_name,
-			        SUM(EXTRACT(EPOCH FROM (LEAST(ar.ended_at, $3) - GREATEST(ar.started_at, $2))))::bigint
-			 FROM activity_records ar
-			 JOIN devices d ON d.id = ar.device_id
-			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
-			 GROUP BY ar.app_name
-			 ORDER BY 2 DESC, 1`,
-			userID, start, end, *deviceID)
-	} else {
-		rows, err = q.pool.Query(ctx,
-			`SELECT ar.app_name,
-			        SUM(EXTRACT(EPOCH FROM (LEAST(ar.ended_at, $3) - GREATEST(ar.started_at, $2))))::bigint
-			 FROM activity_records ar
-			 JOIN devices d ON d.id = ar.device_id
-			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
-			 GROUP BY ar.app_name
-			 ORDER BY 2 DESC, 1`,
-			userID, start, end)
-	}
+	records, err := q.queryActivityRecords(ctx, userID, start, end, deviceID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var totals []AppTotalRow
-	for rows.Next() {
-		var t AppTotalRow
-		if err := rows.Scan(&t.AppName, &t.Seconds); err != nil {
-			return nil, err
-		}
-		totals = append(totals, t)
-	}
-	return totals, rows.Err()
+	return appTotals(deduplicateFirefoxActivity(records), start, end), nil
 }
 
 // SiteTotalLimit caps how many sites the summary lists.

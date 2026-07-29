@@ -479,6 +479,53 @@ func TestGetAppTotalsCountsOnlyOverlap(t *testing.T) {
 	}
 }
 
+func TestFirefoxDesktopExtensionOverlapIsDeduplicated(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := context.Background()
+
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+	desktopStart := day.Add(10 * time.Hour)
+	insertRecord(t, q, device.ID, firefoxAppKey, desktopStart, desktopStart.Add(10*time.Minute))
+	insertRecordWithURL(t, q, device.ID, "https://example.com/",
+		desktopStart.Add(2*time.Minute), desktopStart.Add(8*time.Minute))
+
+	records, err := q.GetActivityRecords(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetActivityRecords: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("records = %+v, want browser record and two desktop slices", records)
+	}
+	if records[0].DurationS != 120 || records[1].DurationS != 360 || records[2].DurationS != 120 {
+		t.Errorf("durations = %d, %d, %d; want 120, 360, 120",
+			records[0].DurationS, records[1].DurationS, records[2].DurationS)
+	}
+
+	totals, err := q.GetAppTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetAppTotals: %v", err)
+	}
+	if len(totals) != 2 {
+		t.Fatalf("totals = %+v, want Firefox and firefox", totals)
+	}
+	if totals[0] != (AppTotalRow{AppName: testFirefoxApp, Seconds: 360}) {
+		t.Errorf("first total = %+v, want Firefox 360", totals[0])
+	}
+	if totals[1] != (AppTotalRow{AppName: firefoxAppKey, Seconds: 240}) {
+		t.Errorf("second total = %+v, want firefox 240", totals[1])
+	}
+
+	sites, err := q.GetSiteTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetSiteTotals: %v", err)
+	}
+	if len(sites) != 1 || sites[0].Site != "example.com" || sites[0].Seconds != 360 {
+		t.Errorf("sites = %+v, want example.com 360", sites)
+	}
+}
+
 // Migration 002 adds ON DELETE CASCADE; without it this fails with a
 // foreign key violation, which is exactly the bug the migration fixes.
 func TestDeleteDeviceCascadesRecords(t *testing.T) {

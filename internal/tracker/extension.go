@@ -20,10 +20,8 @@ import (
 )
 
 const (
-	// extensionAppName marks browser records. The window tracker reports
-	// "firefox" from WM_CLASS, so the differing case keeps the two
-	// observations visibly separate on the dashboard until Phase 6
-	// deduplicates them.
+	// extensionAppName marks URL-bearing browser records. Dashboard queries
+	// give these records precedence over overlapping desktop Firefox records.
 	extensionAppName = "Firefox"
 
 	// minRecordDuration drops sub-second flicks through the tab strip.
