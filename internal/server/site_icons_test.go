@@ -33,7 +33,7 @@ func TestSiteIconRouteFetchesAndCachesForOneYear(t *testing.T) {
 	srv := siteIconWebServer(t, fake, store, fetcher)
 	session, _ := signIn(t, srv, user.ID)
 
-	path := signedSiteIconPath(srv, user.ID, testSiteHost)
+	path := signedSiteIconPath(srv, user.ID)
 	rec := performSiteIconRequest(t, srv, session, path)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
@@ -80,7 +80,7 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 	srv := siteIconWebServer(t, fake, store, fetcher)
 	session, _ := signIn(t, srv, user.ID)
 
-	path := signedSiteIconPath(srv, user.ID, testSiteHost)
+	path := signedSiteIconPath(srv, user.ID)
 	rec := performSiteIconRequest(t, srv, session, path)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -106,6 +106,38 @@ func TestSiteIconRouteNegativeCachesFailure(t *testing.T) {
 	}
 	if len(row.PNG) != 0 || len(row.SHA256) != 0 {
 		t.Error("bytes returned with a fetch error were cached")
+	}
+}
+
+func TestSiteIconRouteRepairsFreshCorruptIcon(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeWeb()
+	user := fake.addUser(t, "site-icon-repair", testPassword)
+	store := newMemorySiteIconStore()
+	corruptPNG := serverTestPNG(t, color.NRGBA{R: 0xaa, A: 0xff})
+	store.rows[siteIconStoreKey(user.ID, testSiteHost)] = &db.SiteIconRow{
+		ID:        1,
+		UserID:    user.ID,
+		Site:      testSiteHost,
+		PNG:       corruptPNG,
+		SHA256:    make([]byte, sha256.Size),
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	repairedPNG := serverTestPNG(t, color.NRGBA{G: 0xaa, A: 0xff})
+	srv := siteIconWebServer(t, fake, store, &fakeSiteFaviconFetcher{png: repairedPNG})
+	session, _ := signIn(t, srv, user.ID)
+	path := signedSiteIconPath(srv, user.ID)
+
+	initial := performSiteIconRequest(t, srv, session, path)
+	if got := initial.Header().Get("Content-Type"); got != siteIconSVGType {
+		t.Fatalf("initial Content-Type = %q, want fallback", got)
+	}
+	store.waitForCompletion(t)
+
+	repaired := performSiteIconRequest(t, srv, session, path)
+	if repaired.Code != http.StatusOK || !bytes.Equal(repaired.Body.Bytes(), repairedPNG) {
+		t.Errorf("repaired response = %d, %d bytes", repaired.Code, repaired.Body.Len())
 	}
 }
 
@@ -145,7 +177,7 @@ func TestSiteIconRouteDoesNotWaitForFetch(t *testing.T) {
 	session, _ := signIn(t, srv, user.ID)
 
 	recorder := performSiteIconRequest(
-		t, srv, session, signedSiteIconPath(srv, user.ID, testSiteHost),
+		t, srv, session, signedSiteIconPath(srv, user.ID),
 	)
 	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != siteIconSVGType {
 		t.Errorf("initial response = %d %q, want immediate SVG fallback",
@@ -202,7 +234,8 @@ func TestSiteIconRefresherDefersRateLimitedJob(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := newMemorySiteIconStore()
 		fetcher := &fakeSiteFaviconFetcher{err: errors.New("no favicon")}
-		logger := zerolog.Nop()
+		var logs synchronizedBuffer
+		logger := zerolog.New(&logs)
 		config := defaultSiteIconRefresherConfig()
 		config.workers = 1
 		config.queueLimit = 4
@@ -219,6 +252,9 @@ func TestSiteIconRefresherDefersRateLimitedJob(t *testing.T) {
 		if got := fetcher.callCount(); got != 1 {
 			t.Fatalf("fetches before retry = %d, want 1", got)
 		}
+		if !strings.Contains(logs.String(), "site favicon refresh rate limited") {
+			t.Error("rate-limited refresh was not logged")
+		}
 
 		time.Sleep(siteIconRateWindow)
 		synctest.Wait()
@@ -228,8 +264,49 @@ func TestSiteIconRefresherDefersRateLimitedJob(t *testing.T) {
 	})
 }
 
-func signedSiteIconPath(srv *Server, userID int64, site string) string {
-	return "/site-icons/" + site + "?sig=" + srv.codec.siteIconSignature(userID, site)
+func TestSiteIconRefresherRefundsNoopClaim(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	store := newMemorySiteIconStore()
+	store.rows[siteIconStoreKey(1, "fresh.example")] = &db.SiteIconRow{
+		ID:        1,
+		UserID:    1,
+		Site:      "fresh.example",
+		ExpiresAt: now.Add(time.Hour),
+	}
+	fetcher := &fakeSiteFaviconFetcher{err: errors.New("no favicon")}
+	logger := zerolog.Nop()
+	config := defaultSiteIconRefresherConfig()
+	config.workers = 1
+	config.queueLimit = 2
+	config.userPendingLimit = 2
+	config.rateLimit = 1
+	config.now = func() time.Time { return now }
+	refresher := newSiteIconRefresher(store, fetcher, &logger, config)
+	t.Cleanup(refresher.Close)
+
+	if !refresher.Enqueue(1, "fresh.example") ||
+		!refresher.Enqueue(1, "uncached.example") {
+		t.Fatal("refresh jobs were not queued")
+	}
+	store.waitForCompletion(t)
+	if got := fetcher.callCount(); got != 1 {
+		t.Errorf("fetches = %d, want only the successfully claimed site", got)
+	}
+}
+
+func TestSiteIconClaimLeaseIncludesCompletionMargin(t *testing.T) {
+	t.Parallel()
+
+	minimum := 2*siteIconDatabaseBudget + siteIconFetchBudget
+	if siteIconClaimLease <= minimum {
+		t.Errorf("claim lease = %s, want more than %s", siteIconClaimLease, minimum)
+	}
+}
+
+func signedSiteIconPath(srv *Server, userID int64) string {
+	return "/site-icons/" + testSiteHost + "?sig=" + srv.codec.siteIconSignature(userID, testSiteHost)
 }
 
 func siteIconWebServer(
@@ -358,12 +435,14 @@ func (s *memorySiteIconStore) ClaimSiteIconRefresh(
 	userID int64,
 	site string,
 	now, claimUntil time.Time,
+	repair bool,
 ) (*db.SiteIconRow, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := siteIconStoreKey(userID, site)
 	row, ok := s.rows[key]
-	if ok && (row.ExpiresAt.After(now) || row.ClaimUntil != nil && row.ClaimUntil.After(now)) {
+	if ok && (row.ClaimUntil != nil && row.ClaimUntil.After(now) ||
+		!repair && row.ExpiresAt.After(now)) {
 		return cloneSiteIconRow(row), false, nil
 	}
 	if !ok {
@@ -425,6 +504,23 @@ func cloneSiteIconRow(row *db.SiteIconRow) *db.SiteIconRow {
 		clone.ClaimUntil = new(*row.ClaimUntil)
 	}
 	return &clone
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
 
 func TestSiteIconResponseETag(t *testing.T) {

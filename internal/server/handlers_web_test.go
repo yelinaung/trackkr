@@ -126,14 +126,6 @@ func (f *fakeWeb) DeleteDevice(_ context.Context, id, _ int64) error {
 	return nil
 }
 
-func (f *fakeWeb) GetActivityRecords(context.Context, int64, time.Time, time.Time, *int64) ([]db.ActivityRecordRow, error) {
-	return f.records, nil
-}
-
-func (f *fakeWeb) GetAppTotals(context.Context, int64, time.Time, time.Time, *int64) ([]db.AppTotalRow, error) {
-	return f.totals, nil
-}
-
 func (f *fakeWeb) GetActivitySummary(context.Context, int64, time.Time, time.Time, *int64) (*db.ActivitySummary, error) {
 	records := f.records
 	truncated := len(records) > db.ActivityRecordLimit

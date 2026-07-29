@@ -199,10 +199,8 @@ func TestUpsertAppIconsTimestampsAfterUserLock(t *testing.T) {
 		t.Fatalf("beginning blocker: %v", err)
 	}
 	defer func() { _ = blocker.Rollback(context.Background()) }()
-	if _, err := blocker.Exec(
-		t.Context(), `SELECT id FROM users WHERE id = $1 FOR UPDATE`, user.ID,
-	); err != nil {
-		t.Fatalf("locking user: %v", err)
+	if err := lockAppIconUser(t.Context(), blocker, user.ID); err != nil {
+		t.Fatalf("locking app icons: %v", err)
 	}
 
 	accepted := icon.App{Key: "waited-new", PNG: pngBytes}
@@ -275,7 +273,7 @@ func waitForAppIconUserLock(t *testing.T, pool *pgxpool.Pool) {
 			       AND datname = current_database()
 			       AND state = 'active'
 			       AND wait_event_type = 'Lock'
-			       AND query LIKE '%FROM users WHERE id = $1 FOR UPDATE%'
+			       AND query LIKE '%pg_advisory_xact_lock($1::bigint)%'
 			 )`,
 		).Scan(&waiting)
 		if err != nil {

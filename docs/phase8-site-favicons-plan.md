@@ -102,22 +102,26 @@ temporary site failure does not replace useful artwork with a fallback.
 The image handler never performs outbound I/O. It queues a refresh without
 blocking and immediately serves the existing image or a short-lived monogram.
 Four workers consume a 64-entry global queue. At most 16 jobs may be pending
-for one user, and one user may start at most 60 refreshes per hour. Duplicate
-user/site jobs share one pending slot. A rate-limited job keeps that slot and
-is deferred until the limiter's retry time rather than being discarded.
+for one user, and one user may start at most 60 claimed refreshes per hour.
+No-op and failed claims refund their limiter reservation. Duplicate user/site
+jobs share one pending slot. A rate-limited job keeps that slot, logs the
+deferral at debug level, and retries when the limiter permits it.
 
-An atomic 15-second database lease allows only one worker to refresh an
+An atomic 30-second database lease allows only one worker to refresh an
 expired row. Completion updates a row only when the lease token still matches,
 preventing an older fetch from overwriting a newer claim. Claims and
-completions lock the owning user while pruning, so concurrent refreshes cannot
-leave more than 2,048 cache rows for that user.
+completions take a site-icon-specific per-user transaction advisory lock while
+pruning, so concurrent refreshes cannot leave more than 2,048 cache rows for
+that user or contend with application-icon retention.
 
 Image responses are private, vary on the session cookie, and use a digest ETag.
 The server fully validates the stored PNG and verifies its digest before
-writing bytes. Positive and negative responses inherit the remaining annual
-cache lifetime. A corrupt PNG or digest mismatch uses the short cache lifetime
-so a repaired row is not hidden for a year. A missing or invalid icon always
-degrades to a deterministic SVG monogram without changing activity totals.
+writing bytes. A fresh row whose PNG or digest is corrupt queues a forced
+repair despite its annual expiry. Positive and negative responses inherit the
+remaining annual cache lifetime. A corrupt PNG or digest mismatch uses the
+short cache lifetime so a repaired row is not hidden for a year. A missing or
+invalid icon always degrades to a deterministic SVG monogram without changing
+activity totals.
 
 ## Verification
 

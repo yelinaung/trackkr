@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -88,6 +89,27 @@ func (l *slidingWindowLimiter) reserve(key int64, now time.Time) (bool, time.Dur
 	}
 	l.hits[key] = append(hits, now)
 	return true, 0
+}
+
+// refund returns a reservation that did not perform the limited operation.
+func (l *slidingWindowLimiter) refund(key int64, reservedAt time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	hits := l.hits[key]
+	for i, hit := range slices.Backward(hits) {
+		if !hit.Equal(reservedAt) {
+			continue
+		}
+		copy(hits[i:], hits[i+1:])
+		hits = hits[:len(hits)-1]
+		if len(hits) == 0 {
+			delete(l.hits, key)
+		} else {
+			l.hits[key] = hits
+		}
+		return
+	}
 }
 
 func activeRateHits(hits []time.Time, cutoff time.Time) []time.Time {

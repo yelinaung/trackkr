@@ -22,7 +22,7 @@ func TestSiteIconAnnualRefreshLifecycle(t *testing.T) {
 	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
 	claimUntil := now.Add(time.Minute)
 	row, claimed, err := queries.ClaimSiteIconRefresh(
-		context.Background(), user.ID, "example.com", now, claimUntil,
+		context.Background(), user.ID, "example.com", now, claimUntil, false,
 	)
 	if err != nil {
 		t.Fatalf("ClaimSiteIconRefresh: %v", err)
@@ -32,7 +32,7 @@ func TestSiteIconAnnualRefreshLifecycle(t *testing.T) {
 	}
 
 	if _, secondClaim, err := queries.ClaimSiteIconRefresh(
-		context.Background(), user.ID, "example.com", now.Add(time.Second), now.Add(2*time.Minute),
+		context.Background(), user.ID, "example.com", now.Add(time.Second), now.Add(2*time.Minute), false,
 	); err != nil {
 		t.Fatalf("second ClaimSiteIconRefresh: %v", err)
 	} else if secondClaim {
@@ -56,11 +56,36 @@ func TestSiteIconAnnualRefreshLifecycle(t *testing.T) {
 	}
 
 	if _, claimed, err := queries.ClaimSiteIconRefresh(
-		context.Background(), user.ID, "example.com", now.Add(364*24*time.Hour), now.AddDate(1, 0, 0),
+		context.Background(), user.ID, "example.com", now.Add(364*24*time.Hour), now.AddDate(1, 0, 0), false,
 	); err != nil {
 		t.Fatalf("fresh ClaimSiteIconRefresh: %v", err)
 	} else if claimed {
 		t.Fatal("fresh annual entry was claimed")
+	}
+}
+
+func TestSiteIconRepairClaimBypassesFreshExpiry(t *testing.T) {
+	pool := testPool(t)
+	queries := NewQueries(pool)
+	user, _ := seedUserAndDevice(t, pool, queries)
+	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+
+	if _, err := pool.Exec(
+		t.Context(),
+		`INSERT INTO site_icons (user_id, site, expires_at, updated_at)
+		 VALUES ($1, $2, $3, $4)`,
+		user.ID, "repair.example", now.AddDate(1, 0, 0), now,
+	); err != nil {
+		t.Fatalf("seeding fresh site icon: %v", err)
+	}
+
+	claimUntil := now.Add(time.Minute)
+	if _, claimed, err := queries.ClaimSiteIconRefresh(
+		t.Context(), user.ID, "repair.example", now, claimUntil, true,
+	); err != nil {
+		t.Fatalf("repair claim: %v", err)
+	} else if !claimed {
+		t.Fatal("repair did not claim a fresh row")
 	}
 }
 
@@ -72,7 +97,7 @@ func TestSiteIconFailedRefreshRetainsStalePNG(t *testing.T) {
 
 	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
 	firstClaim := now.Add(time.Minute)
-	if _, claimed, err := queries.ClaimSiteIconRefresh(ctx, user.ID, "example.com", now, firstClaim); err != nil || !claimed {
+	if _, claimed, err := queries.ClaimSiteIconRefresh(ctx, user.ID, "example.com", now, firstClaim, false); err != nil || !claimed {
 		t.Fatalf("initial claim = %v, %v", claimed, err)
 	}
 	pngBytes := databaseSiteIconPNG(t)
@@ -93,7 +118,7 @@ func TestSiteIconFailedRefreshRetainsStalePNG(t *testing.T) {
 		t.Fatalf("expiring site icon: %v", err)
 	}
 	secondClaim := refreshAt.Add(time.Minute)
-	if _, claimed, err := queries.ClaimSiteIconRefresh(ctx, user.ID, "example.com", refreshAt, secondClaim); err != nil || !claimed {
+	if _, claimed, err := queries.ClaimSiteIconRefresh(ctx, user.ID, "example.com", refreshAt, secondClaim, false); err != nil || !claimed {
 		t.Fatalf("refresh claim = %v, %v", claimed, err)
 	}
 
@@ -117,7 +142,7 @@ func TestSiteIconCompletionIgnoresBytesWithoutDetails(t *testing.T) {
 	now := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
 	claimUntil := now.Add(time.Minute)
 	if _, claimed, err := queries.ClaimSiteIconRefresh(
-		ctx, user.ID, "partial.example", now, claimUntil,
+		ctx, user.ID, "partial.example", now, claimUntil, false,
 	); err != nil || !claimed {
 		t.Fatalf("claim = %v, %v", claimed, err)
 	}
@@ -164,7 +189,7 @@ func TestConcurrentSiteIconClaimsPreserveUserLimit(t *testing.T) {
 		wait.Go(func() {
 			<-start
 			_, claimed, claimErr := queries.ClaimSiteIconRefresh(
-				ctx, user.ID, site, now, now.Add(time.Minute),
+				ctx, user.ID, site, now, now.Add(time.Minute), false,
 			)
 			if claimErr != nil {
 				errorsCh <- claimErr
@@ -213,7 +238,7 @@ func TestConcurrentSiteIconClaimsHaveOneWinner(t *testing.T) {
 		wait.Go(func() {
 			<-start
 			_, claimed, err := queries.ClaimSiteIconRefresh(
-				context.Background(), user.ID, "concurrent.example", now, now.Add(time.Minute),
+				context.Background(), user.ID, "concurrent.example", now, now.Add(time.Minute), false,
 			)
 			if err != nil {
 				errorsCh <- err
@@ -237,6 +262,32 @@ func TestConcurrentSiteIconClaimsHaveOneWinner(t *testing.T) {
 	}
 	if winners != 1 {
 		t.Errorf("claim winners = %d, want 1", winners)
+	}
+}
+
+func TestAppAndSiteIconLocksAreIndependent(t *testing.T) {
+	pool := testPool(t)
+	queries := NewQueries(pool)
+	user, _ := seedUserAndDevice(t, pool, queries)
+
+	appTx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("beginning app icon transaction: %v", err)
+	}
+	defer func() { _ = appTx.Rollback(t.Context()) }()
+	if err := lockAppIconUser(t.Context(), appTx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	siteTx, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("beginning site icon transaction: %v", err)
+	}
+	defer func() { _ = siteTx.Rollback(t.Context()) }()
+	lockCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := lockSiteIconUser(lockCtx, siteTx, user.ID); err != nil {
+		t.Fatalf("site icon lock blocked behind app icon lock: %v", err)
 	}
 }
 

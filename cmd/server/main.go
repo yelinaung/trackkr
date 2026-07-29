@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -74,18 +75,45 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Graceful shutdown
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		sig := <-sigCh
-		logger.Info().Str("signal", sig.String()).Msg("shutting down")
-		_ = httpServer.Shutdown(context.Background())
-	}()
+	shutdownCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	logger.Info().Str("addr", cfg.Server.Addr()).Msg("starting server")
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := serveUntilShutdown(shutdownCtx, httpServer, &logger); err != nil {
 		logger.Fatal().Err(err).Msg("server error")
+	}
+}
+
+type gracefulHTTPServer interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+}
+
+func serveUntilShutdown(
+	ctx context.Context,
+	httpServer gracefulHTTPServer,
+	logger *zerolog.Logger,
+) error {
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serveErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		logger.Info().Msg("shutting down")
+		if err := httpServer.Shutdown(context.Background()); err != nil {
+			return fmt.Errorf("shutting down HTTP server: %w", err)
+		}
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
 	}
 }
 

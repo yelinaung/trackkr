@@ -23,11 +23,13 @@ const (
 
 type siteIconRefreshQueue interface {
 	Enqueue(userID int64, site string) bool
+	EnqueueRepair(userID int64, site string) bool
 }
 
 type siteIconRefreshJob struct {
 	userID int64
 	site   string
+	repair bool
 }
 
 type siteIconRefresherConfig struct {
@@ -93,7 +95,14 @@ func newSiteIconRefresher(
 }
 
 func (r *siteIconRefresher) Enqueue(userID int64, site string) bool {
-	job := siteIconRefreshJob{userID: userID, site: site}
+	return r.enqueue(siteIconRefreshJob{userID: userID, site: site})
+}
+
+func (r *siteIconRefresher) EnqueueRepair(userID int64, site string) bool {
+	return r.enqueue(siteIconRefreshJob{userID: userID, site: site, repair: true})
+}
+
+func (r *siteIconRefresher) enqueue(job siteIconRefreshJob) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -103,7 +112,7 @@ func (r *siteIconRefresher) Enqueue(userID int64, site string) bool {
 	if len(r.pending) >= r.config.queueLimit {
 		return false
 	}
-	if r.pendingByUser[userID] >= r.config.userPendingLimit {
+	if r.pendingByUser[job.userID] >= r.config.userPendingLimit {
 		return false
 	}
 	select {
@@ -111,7 +120,7 @@ func (r *siteIconRefresher) Enqueue(userID int64, site string) bool {
 		return false
 	case r.jobs <- job:
 		r.pending[job] = struct{}{}
-		r.pendingByUser[userID]++
+		r.pendingByUser[job.userID]++
 		return true
 	default:
 		return false
@@ -129,12 +138,15 @@ func (r *siteIconRefresher) run() {
 		case <-r.ctx.Done():
 			return
 		case job := <-r.jobs:
-			allowed, retryAfter := r.limiter.reserve(job.userID, r.config.now())
+			reservedAt := r.config.now()
+			allowed, retryAfter := r.limiter.reserve(job.userID, reservedAt)
 			if !allowed {
 				r.deferJob(job, retryAfter)
 				continue
 			}
-			r.refresh(r.ctx, job)
+			if !r.refresh(r.ctx, job) {
+				r.limiter.refund(job.userID, reservedAt)
+			}
 			r.finish(job)
 		}
 	}
@@ -171,20 +183,20 @@ func (r *siteIconRefresher) finish(job siteIconRefreshJob) {
 	r.mu.Unlock()
 }
 
-func (r *siteIconRefresher) refresh(ctx context.Context, job siteIconRefreshJob) {
+func (r *siteIconRefresher) refresh(ctx context.Context, job siteIconRefreshJob) bool {
 	now := r.config.now()
 	claimUntil := now.Add(siteIconClaimLease)
 	databaseCtx, cancelDatabase := context.WithTimeout(ctx, siteIconDatabaseBudget)
 	_, claimed, err := r.store.ClaimSiteIconRefresh(
-		databaseCtx, job.userID, job.site, now, claimUntil,
+		databaseCtx, job.userID, job.site, now, claimUntil, job.repair,
 	)
 	cancelDatabase()
 	if err != nil {
 		r.logger.Error().Err(err).Msg("claiming site favicon refresh")
-		return
+		return false
 	}
 	if !claimed {
-		return
+		return false
 	}
 
 	fetchCtx, cancelFetch := context.WithTimeout(ctx, siteIconFetchBudget)
@@ -224,4 +236,5 @@ func (r *siteIconRefresher) refresh(ctx context.Context, job siteIconRefreshJob)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		r.logger.Error().Err(err).Msg("completing site favicon refresh")
 	}
+	return true
 }

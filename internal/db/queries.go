@@ -122,17 +122,6 @@ func (q *Queries) GetActivitySummary(
 	return summary, nil
 }
 
-// GetActivityRecords returns records overlapping [start, end). Selecting
-// on overlap rather than on started_at is what makes a record spanning
-// midnight visible on both days.
-func (q *Queries) GetActivityRecords(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]ActivityRecordRow, error) {
-	summary, err := q.GetActivitySummary(ctx, userID, start, end, deviceID)
-	if err != nil {
-		return nil, err
-	}
-	return summary.Records, nil
-}
-
 // queryActivityRecords fetches one probe row past the source limit so callers
 // can distinguish an exactly full window from a truncated one.
 func (q *Queries) queryActivityRecords(
@@ -185,17 +174,6 @@ func (q *Queries) queryActivityRecords(
 		records = records[:ActivitySourceLimit]
 	}
 	return records, sourceTruncated, nil
-}
-
-// GetAppTotals sums per-app time within [start, end). It sums the part
-// of each record that falls inside the window, so a record spanning
-// midnight is not counted in full on both days.
-func (q *Queries) GetAppTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]AppTotalRow, error) {
-	summary, err := q.GetActivitySummary(ctx, userID, start, end, deviceID)
-	if err != nil {
-		return nil, err
-	}
-	return summary.Totals, nil
 }
 
 // SiteTotalLimit caps how many sites the summary lists.
@@ -289,6 +267,7 @@ func (q *Queries) ClaimSiteIconRefresh(
 	userID int64,
 	site string,
 	now, claimUntil time.Time,
+	repair bool,
 ) (*SiteIconRow, bool, error) {
 	tx, err := q.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -306,11 +285,11 @@ func (q *Queries) ClaimSiteIconRefresh(
 		 ON CONFLICT (user_id, site) DO UPDATE SET
 		     claim_until = EXCLUDED.claim_until,
 		     updated_at = EXCLUDED.updated_at
-		 WHERE site_icons.expires_at <= $3
-		   AND (site_icons.claim_until IS NULL OR site_icons.claim_until <= $3)
+			 WHERE ($5 OR site_icons.expires_at <= $3)
+			   AND (site_icons.claim_until IS NULL OR site_icons.claim_until <= $3)
 		 RETURNING id, user_id, site, png, sha256, width, height, attempted_at,
 		           expires_at, claim_until, created_at, updated_at`,
-		userID, site, now, claimUntil))
+		userID, site, now, claimUntil, repair))
 	claimed := err == nil
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -399,9 +378,15 @@ func (q *Queries) CompleteSiteIconRefresh(
 }
 
 func lockSiteIconUser(ctx context.Context, tx pgx.Tx, userID int64) error {
-	var lockedUserID int64
-	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&lockedUserID); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(-$1::bigint)`, userID); err != nil {
 		return fmt.Errorf("locking site icon user: %w", err)
+	}
+	return nil
+}
+
+func lockAppIconUser(ctx context.Context, tx pgx.Tx, userID int64) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1::bigint)`, userID); err != nil {
+		return fmt.Errorf("locking app icon user: %w", err)
 	}
 	return nil
 }
@@ -450,7 +435,8 @@ func scanSiteIcon(row siteIconScanner) (*SiteIconRow, error) {
 }
 
 // UpsertAppIcons stores application icons and prunes the oldest rows above
-// AppIconUserLimit. Locking the user row serializes retention across devices.
+// AppIconUserLimit. A user-scoped advisory lock serializes retention across
+// devices without blocking site favicon retention for the same user.
 func (q *Queries) UpsertAppIcons(ctx context.Context, userID int64, apps []icon.App) (int, error) {
 	type validatedApp struct {
 		app     icon.App
@@ -472,12 +458,8 @@ func (q *Queries) UpsertAppIcons(ctx context.Context, userID int64, apps []icon.
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var lockedUserID int64
-	if err := tx.QueryRow(
-		ctx,
-		`SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID,
-	).Scan(&lockedUserID); err != nil {
-		return 0, fmt.Errorf("locking app icon user: %w", err)
+	if err := lockAppIconUser(ctx, tx, userID); err != nil {
+		return 0, err
 	}
 	var acceptedAt time.Time
 	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&acceptedAt); err != nil {

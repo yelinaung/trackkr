@@ -160,14 +160,14 @@ The upsert and prune run in one transaction. Before either statement, the
 transaction executes:
 
 ```sql
-SELECT id FROM users WHERE id = $1 FOR UPDATE;
+SELECT pg_advisory_xact_lock($1::bigint);
 ```
 
-This row lock is deliberate, not incidental over-locking. Under PostgreSQL's
+This application-icon-specific per-user lock is deliberate. Under PostgreSQL's
 default isolation, two devices can otherwise each prune against a snapshot
-that does not include the other's inserts and commit above the cap. Locking the
-one user serializes retention for that account while different users remain
-concurrent.
+that does not include the other's inserts and commit above the cap. The
+positive user ID key serializes application-icon retention for that account;
+site icons use the negative key so the two subsystems remain independent.
 
 After acquiring the user lock, the transaction reads one `clock_timestamp()`
 and passes it explicitly to every insert and update in the batch. PostgreSQL's
@@ -538,7 +538,7 @@ changes are part of this phase.
 ### Step 1: Shared contract and storage
 
 Add `internal/icon`, migration 003, `AppIconRow`, database queries, the
-per-user row lock, retention cap, and concurrent-upload test.
+per-user advisory lock, retention cap, and concurrent-upload test.
 
 ### Step 2: Server and dashboard
 

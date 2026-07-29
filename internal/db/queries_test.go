@@ -306,7 +306,7 @@ func TestInsertActivityRecordsDuplicates(t *testing.T) {
 	}
 }
 
-func TestGetActivityRecords(t *testing.T) {
+func TestGetActivitySummary(t *testing.T) {
 	pool := testPool(t)
 	q := NewQueries(pool)
 	ctx := context.Background()
@@ -351,38 +351,42 @@ func TestGetActivityRecords(t *testing.T) {
 	}
 
 	// All records in range
-	got, err := q.GetActivityRecords(ctx, user.ID, now.Add(-time.Minute), now.Add(time.Minute), nil)
+	summary, err := q.GetActivitySummary(ctx, user.ID, now.Add(-time.Minute), now.Add(time.Minute), nil)
 	if err != nil {
-		t.Fatalf("GetActivityRecords: %v", err)
+		t.Fatalf("GetActivitySummary: %v", err)
 	}
+	got := summary.Records
 	if len(got) != 2 {
 		t.Errorf("got %d records, want 2", len(got))
 	}
 
 	// With device filter
 	deviceID := device.ID
-	got, err = q.GetActivityRecords(ctx, user.ID, now.Add(-time.Minute), now.Add(time.Minute), &deviceID)
+	summary, err = q.GetActivitySummary(ctx, user.ID, now.Add(-time.Minute), now.Add(time.Minute), &deviceID)
 	if err != nil {
-		t.Fatalf("GetActivityRecords with device filter: %v", err)
+		t.Fatalf("GetActivitySummary with device filter: %v", err)
 	}
+	got = summary.Records
 	if len(got) != 2 {
 		t.Errorf("got %d records with device filter, want 2", len(got))
 	}
 
 	// Time range that excludes records
-	got, err = q.GetActivityRecords(ctx, user.ID, now.Add(time.Hour), now.Add(2*time.Hour), nil)
+	summary, err = q.GetActivitySummary(ctx, user.ID, now.Add(time.Hour), now.Add(2*time.Hour), nil)
 	if err != nil {
-		t.Fatalf("GetActivityRecords empty range: %v", err)
+		t.Fatalf("GetActivitySummary empty range: %v", err)
 	}
+	got = summary.Records
 	if len(got) != 0 {
 		t.Errorf("got %d records for empty range, want 0", len(got))
 	}
 
 	// Verify URL was stored
-	got, err = q.GetActivityRecords(ctx, user.ID, now.Add(-time.Minute), now.Add(time.Minute), nil)
+	summary, err = q.GetActivitySummary(ctx, user.ID, now.Add(-time.Minute), now.Add(time.Minute), nil)
 	if err != nil {
-		t.Fatalf("GetActivityRecords for URL check: %v", err)
+		t.Fatalf("GetActivitySummary for URL check: %v", err)
 	}
+	got = summary.Records
 	if got[0].URL == nil || *got[0].URL != url {
 		t.Errorf("URL = %v, want %q", got[0].URL, url)
 	}
@@ -418,7 +422,7 @@ func TestGetUserByID(t *testing.T) {
 
 // A record spanning midnight must appear on both days, clamped by the
 // caller. Selecting on started_at alone would hide it on the later day.
-func TestGetActivityRecordsSelectsOverlap(t *testing.T) {
+func TestGetActivitySummarySelectsOverlap(t *testing.T) {
 	pool := testPool(t)
 	q := NewQueries(pool)
 	ctx := context.Background()
@@ -436,10 +440,11 @@ func TestGetActivityRecordsSelectsOverlap(t *testing.T) {
 		{"day the record started", day.AddDate(0, 0, -1)},
 		{"day the record ended", day},
 	} {
-		records, err := q.GetActivityRecords(ctx, user.ID, tc.start, tc.start.AddDate(0, 0, 1), nil)
+		summary, err := q.GetActivitySummary(ctx, user.ID, tc.start, tc.start.AddDate(0, 0, 1), nil)
 		if err != nil {
-			t.Fatalf("%s: GetActivityRecords: %v", tc.name, err)
+			t.Fatalf("%s: GetActivitySummary: %v", tc.name, err)
 		}
+		records := summary.Records
 		if len(records) != 1 {
 			t.Errorf("%s: records = %d, want 1", tc.name, len(records))
 		}
@@ -448,7 +453,7 @@ func TestGetActivityRecordsSelectsOverlap(t *testing.T) {
 
 // Summing duration_s over overlapping rows would count a boundary record
 // in full on both days; only the overlapping slice belongs to each.
-func TestGetAppTotalsCountsOnlyOverlap(t *testing.T) {
+func TestGetActivitySummaryTotalsCountOnlyOverlap(t *testing.T) {
 	pool := testPool(t)
 	q := NewQueries(pool)
 	ctx := context.Background()
@@ -459,10 +464,11 @@ func TestGetAppTotalsCountsOnlyOverlap(t *testing.T) {
 	// 10 minutes before midnight, 20 minutes after.
 	insertRecord(t, q, device.ID, testFirefoxApp, day.Add(-10*time.Minute), day.Add(20*time.Minute))
 
-	totals, err := q.GetAppTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	summary, err := q.GetActivitySummary(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
 	if err != nil {
-		t.Fatalf("GetAppTotals: %v", err)
+		t.Fatalf("GetActivitySummary: %v", err)
 	}
+	totals := summary.Totals
 	if len(totals) != 1 {
 		t.Fatalf("totals = %+v, want one app", totals)
 	}
@@ -470,10 +476,11 @@ func TestGetAppTotalsCountsOnlyOverlap(t *testing.T) {
 		t.Errorf("seconds = %d, want 1200 (only the part inside the day)", totals[0].Seconds)
 	}
 
-	prev, err := q.GetAppTotals(ctx, user.ID, day.AddDate(0, 0, -1), day, nil)
+	summary, err = q.GetActivitySummary(ctx, user.ID, day.AddDate(0, 0, -1), day, nil)
 	if err != nil {
-		t.Fatalf("GetAppTotals (previous day): %v", err)
+		t.Fatalf("GetActivitySummary (previous day): %v", err)
 	}
+	prev := summary.Totals
 	if len(prev) != 1 || prev[0].Seconds != 600 {
 		t.Errorf("previous day = %+v, want 600 seconds", prev)
 	}
@@ -491,10 +498,11 @@ func TestFirefoxDesktopExtensionOverlapIsDeduplicated(t *testing.T) {
 	insertRecordWithURL(t, q, device.ID, "https://example.com/",
 		desktopStart.Add(2*time.Minute), desktopStart.Add(8*time.Minute))
 
-	records, err := q.GetActivityRecords(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	summary, err := q.GetActivitySummary(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
 	if err != nil {
-		t.Fatalf("GetActivityRecords: %v", err)
+		t.Fatalf("GetActivitySummary: %v", err)
 	}
+	records := summary.Records
 	if len(records) != 3 {
 		t.Fatalf("records = %+v, want browser record and two desktop slices", records)
 	}
@@ -503,10 +511,7 @@ func TestFirefoxDesktopExtensionOverlapIsDeduplicated(t *testing.T) {
 			records[0].DurationS, records[1].DurationS, records[2].DurationS)
 	}
 
-	totals, err := q.GetAppTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
-	if err != nil {
-		t.Fatalf("GetAppTotals: %v", err)
-	}
+	totals := summary.Totals
 	if len(totals) != 2 {
 		t.Fatalf("totals = %+v, want Firefox and firefox", totals)
 	}

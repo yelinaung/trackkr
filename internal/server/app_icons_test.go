@@ -145,6 +145,23 @@ func TestAppIconRateLimiterIsAtomicAndSweeps(t *testing.T) {
 	}
 }
 
+func TestSlidingWindowLimiterRefundsReservation(t *testing.T) {
+	t.Parallel()
+
+	limiter := newSlidingWindowLimiter(1, time.Hour)
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	allowed, _ := limiter.reserve(7, now)
+	if !allowed {
+		t.Fatal("initial reservation was denied")
+	}
+
+	limiter.refund(7, now)
+	allowed, _ = limiter.reserve(7, now)
+	if !allowed {
+		t.Fatal("refunded reservation still consumed the limit")
+	}
+}
+
 func TestAppIconUploadLogsEvictionWithoutKey(t *testing.T) {
 	t.Parallel()
 
