@@ -701,6 +701,8 @@ Phase 6 has a signal it can use.
     you stopped, not when you came back.
 13. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
     the daemon restarts and keeps its Accessibility grant.
-14. Rebuild, re-sign, and re-bundle, then confirm whether the grant
-    survives. With `TRACKKR_SIGN_IDENTITY` set it should; ad-hoc is the
-    case that may ask again, and the README should say which.
+14. Rebuild, re-sign, and re-bundle, then restart. Ad-hoc signing loses
+    the grant every time -- measured, not predicted: `granted` before
+    the rebuild, `not granted` after it, because the identity is
+    computed from the binary. The `TRACKKR_SIGN_IDENTITY` half is still
+    unverified and needs a certificate in the login keychain.

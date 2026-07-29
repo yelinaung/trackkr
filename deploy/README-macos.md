@@ -68,9 +68,16 @@ a shell inherits the terminal's Accessibility grant and reports success no
 matter what trackkr itself was given. Read `~/Library/Logs/trackkr/daemon.log`
 instead.
 
-Ad-hoc signing changes identity when the binary changes, which can require a
-new grant after every rebuild. For a stable local identity, create a
-self-signed Code Signing certificate in the login keychain and install with:
+Ad-hoc signing loses the grant on every rebuild. This is measured, not
+cautionary: `mise bundle-macos` computes an ad-hoc identity from the binary,
+so any code change produces a new one, and a daemon that reported
+`Accessibility permission granted` before the rebuild reports
+`not granted` after it. macOS may still show trackkr as ticked, because the
+list shows the path while the check matches the signature. Untick and re-tick
+it, or remove it with `-` and add it again with `+`.
+
+If you rebuild often, create a self-signed Code Signing certificate in the
+login keychain once and install with a stable identity instead:
 
 ```sh
 TRACKKR_SIGN_IDENTITY="trackkr local signing" mise bundle-macos
