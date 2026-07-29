@@ -707,9 +707,9 @@ based on an environment that can actually run them.
 
 ### Site Normalization
 
-Removing a trailing DNS dot in `siteExpr` remains a cheap independent
-correctness fix. It is not required for macOS application icons and should
-land separately when site grouping is next touched.
+The trailing DNS dot correction in `siteExpr` landed separately after Phase 6.
+It merges URLs such as `example.com.` and `example.com` without coupling that
+site-grouping correction to application icon delivery.
 
 ## Manual Verification
 

@@ -190,11 +190,13 @@ const SiteTotalLimit = 25
 //
 // Innermost first: take the authority, drop any userinfo before "@",
 // drop a trailing port while keeping a bracketed IPv6 literal intact,
-// lowercase, then strip a leading "www.".
+// lowercase, remove a trailing DNS root dot, then strip a leading "www.".
 const siteExpr = `regexp_replace(
-	lower(regexp_replace(
-		regexp_replace(substring(ar.url from '^[a-z][a-z0-9+.-]*://([^/?#]*)'), '^[^@]*@', ''),
-		'^(\[[^\]]+\]|[^:]+)(:[0-9]+)?$', '\1')),
+	regexp_replace(
+		lower(regexp_replace(
+			regexp_replace(substring(ar.url from '^[a-z][a-z0-9+.-]*://([^/?#]*)'), '^[^@]*@', ''),
+			'^(\[[^\]]+\]|[^:]+)(:[0-9]+)?$', '\1')),
+		'\.$', ''),
 	'^www\.', '')`
 
 // GetSiteTotals sums browsing time per site within [start, end).

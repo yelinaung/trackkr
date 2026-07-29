@@ -588,13 +588,15 @@ func TestGetSiteTotalsUsesHostnameOnly(t *testing.T) {
 	user, device := seedUserAndDevice(t, pool, q)
 	day := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
 
-	// All five are the same site once the hostname is extracted.
+	// All seven are the same site once the hostname is extracted.
 	for i, url := range []string{
 		"https://example.com/a",
 		"https://www.example.com/b",
 		"https://EXAMPLE.com/c",
 		"https://example.com:8443/d",
 		"https://someone:hunter2@example.com/e",
+		"https://example.com./f",
+		"https://www.example.com./g",
 	} {
 		start := day.Add(time.Duration(i) * time.Hour)
 		insertRecordWithURL(t, q, device.ID, url, start, start.Add(time.Minute))
@@ -611,8 +613,8 @@ func TestGetSiteTotalsUsesHostnameOnly(t *testing.T) {
 	if totals[0].Site != "example.com" {
 		t.Errorf("site = %q, want example.com", totals[0].Site)
 	}
-	if totals[0].Seconds != 300 {
-		t.Errorf("seconds = %d, want 300 across the five visits", totals[0].Seconds)
+	if totals[0].Seconds != 420 {
+		t.Errorf("seconds = %d, want 420 across the seven visits", totals[0].Seconds)
 	}
 	// The password must not reach the dashboard by any route.
 	if strings.Contains(totals[0].Site, "hunter2") || strings.Contains(totals[0].Site, "@") {
