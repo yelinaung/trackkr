@@ -374,10 +374,10 @@ func (q *Queries) CompleteSiteIconRefresh(
 
 	row, err := scanSiteIcon(tx.QueryRow(ctx,
 		`UPDATE site_icons SET
-		     png = CASE WHEN $5::bytea IS NULL THEN png ELSE $4 END,
-		     sha256 = CASE WHEN $5::bytea IS NULL THEN sha256 ELSE $5 END,
-		     width = CASE WHEN $5::bytea IS NULL THEN width ELSE $6 END,
-		     height = CASE WHEN $5::bytea IS NULL THEN height ELSE $7 END,
+		     png = CASE WHEN $4::bytea IS NULL THEN png ELSE $4 END,
+		     sha256 = CASE WHEN $4::bytea IS NULL THEN sha256 ELSE $5 END,
+		     width = CASE WHEN $4::bytea IS NULL THEN width ELSE $6 END,
+		     height = CASE WHEN $4::bytea IS NULL THEN height ELSE $7 END,
 		     attempted_at = $8,
 		     expires_at = $9,
 		     claim_until = NULL,

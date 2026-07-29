@@ -71,7 +71,7 @@ func (l *slidingWindowLimiter) reserve(key int64, now time.Time) (bool, time.Dur
 
 	if l.lastSweep.IsZero() || now.Sub(l.lastSweep) >= rateLimitSweepPeriod {
 		for id, hits := range l.hits {
-			hits = activeIconHits(hits, now.Add(-l.window))
+			hits = activeRateHits(hits, now.Add(-l.window))
 			if len(hits) == 0 {
 				delete(l.hits, id)
 				continue
@@ -81,7 +81,7 @@ func (l *slidingWindowLimiter) reserve(key int64, now time.Time) (bool, time.Dur
 		l.lastSweep = now
 	}
 
-	hits := activeIconHits(l.hits[key], now.Add(-l.window))
+	hits := activeRateHits(l.hits[key], now.Add(-l.window))
 	if len(hits) >= l.limit {
 		l.hits[key] = hits
 		return false, max(hits[0].Add(l.window).Sub(now), time.Second)
@@ -90,7 +90,7 @@ func (l *slidingWindowLimiter) reserve(key int64, now time.Time) (bool, time.Dur
 	return true, 0
 }
 
-func activeIconHits(hits []time.Time, cutoff time.Time) []time.Time {
+func activeRateHits(hits []time.Time, cutoff time.Time) []time.Time {
 	first := 0
 	for first < len(hits) && !hits[first].After(cutoff) {
 		first++

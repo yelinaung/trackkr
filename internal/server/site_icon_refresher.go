@@ -100,6 +100,9 @@ func (r *siteIconRefresher) Enqueue(userID int64, site string) bool {
 	if _, exists := r.pending[job]; exists {
 		return true
 	}
+	if len(r.pending) >= r.config.queueLimit {
+		return false
+	}
 	if r.pendingByUser[userID] >= r.config.userPendingLimit {
 		return false
 	}
@@ -126,13 +129,36 @@ func (r *siteIconRefresher) run() {
 		case <-r.ctx.Done():
 			return
 		case job := <-r.jobs:
-			allowed, _ := r.limiter.reserve(job.userID, r.config.now())
-			if allowed {
-				r.refresh(r.ctx, job)
+			allowed, retryAfter := r.limiter.reserve(job.userID, r.config.now())
+			if !allowed {
+				r.deferJob(job, retryAfter)
+				continue
 			}
+			r.refresh(r.ctx, job)
 			r.finish(job)
 		}
 	}
+}
+
+func (r *siteIconRefresher) deferJob(job siteIconRefreshJob, retryAfter time.Duration) {
+	r.logger.Debug().
+		Int64("user_id", job.userID).
+		Dur("retry_after", retryAfter).
+		Msg("site favicon refresh rate limited")
+	r.wait.Go(func() {
+		timer := time.NewTimer(retryAfter)
+		defer timer.Stop()
+		select {
+		case <-r.ctx.Done():
+			r.finish(job)
+		case <-timer.C:
+			select {
+			case <-r.ctx.Done():
+				r.finish(job)
+			case r.jobs <- job:
+			}
+		}
+	})
 }
 
 func (r *siteIconRefresher) finish(job siteIconRefreshJob) {

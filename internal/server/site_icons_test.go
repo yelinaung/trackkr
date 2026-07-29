@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -193,6 +194,38 @@ func TestSiteIconRefresherBoundsConcurrencyAndPerUserPending(t *testing.T) {
 	for range 4 {
 		store.waitForCompletion(t)
 	}
+}
+
+func TestSiteIconRefresherDefersRateLimitedJob(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		store := newMemorySiteIconStore()
+		fetcher := &fakeSiteFaviconFetcher{err: errors.New("no favicon")}
+		logger := zerolog.Nop()
+		config := defaultSiteIconRefresherConfig()
+		config.workers = 1
+		config.queueLimit = 4
+		config.userPendingLimit = 4
+		config.rateLimit = 1
+		refresher := newSiteIconRefresher(store, fetcher, &logger, config)
+		t.Cleanup(refresher.Close)
+
+		if !refresher.Enqueue(1, "first.example") ||
+			!refresher.Enqueue(1, "second.example") {
+			t.Fatal("refresh jobs were not queued")
+		}
+		synctest.Wait()
+		if got := fetcher.callCount(); got != 1 {
+			t.Fatalf("fetches before retry = %d, want 1", got)
+		}
+
+		time.Sleep(siteIconRateWindow)
+		synctest.Wait()
+		if got := fetcher.callCount(); got != 2 {
+			t.Errorf("fetches after retry = %d, want 2", got)
+		}
+	})
 }
 
 func signedSiteIconPath(srv *Server, userID int64, site string) string {

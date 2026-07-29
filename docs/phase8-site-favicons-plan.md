@@ -103,7 +103,8 @@ The image handler never performs outbound I/O. It queues a refresh without
 blocking and immediately serves the existing image or a short-lived monogram.
 Four workers consume a 64-entry global queue. At most 16 jobs may be pending
 for one user, and one user may start at most 60 refreshes per hour. Duplicate
-user/site jobs share one pending slot.
+user/site jobs share one pending slot. A rate-limited job keeps that slot and
+is deferred until the limiter's retry time rather than being discarded.
 
 An atomic 15-second database lease allows only one worker to refresh an
 expired row. Completion updates a row only when the lease token still matches,
