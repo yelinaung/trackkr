@@ -419,8 +419,20 @@ button:focus-visible {
 
 /* ---------- totals ---------- */
 
-.totals {
+.totals-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 1.5rem;
   margin-top: 2.5rem;
+}
+
+.totals {
+  min-width: 0;
+}
+
+.totals:only-child {
+  grid-column: 1 / -1;
 }
 
 .totals__title {
@@ -456,7 +468,7 @@ button:focus-visible {
 }
 
 .totals__item--app {
-  grid-template-columns: 1.375rem 0.75rem 1fr auto;
+  grid-template-columns: 1.375rem 1fr auto;
 }
 
 .totals__icon {
@@ -472,15 +484,19 @@ button:focus-visible {
   font-weight: 700;
 }
 
-/* The fill comes from the same hash the bars use, passed as an SVG
-   attribute so the swatch matches its bar without inline CSS. */
-.totals__swatch {
-  display: block;
-}
-
 .totals__time {
   font-family: var(--font-mono);
   font-size: 0.9rem;
+}
+
+@media (max-width: 48rem) {
+  .totals-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .totals:only-child {
+    grid-column: auto;
+  }
 }
 
 /* ---------- devices ---------- */

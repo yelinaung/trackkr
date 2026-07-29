@@ -128,18 +128,15 @@ func TestFormsCarryCSRFToken(t *testing.T) {
 	}
 }
 
-// The swatch must carry the same colour as the app's bars; the earlier
-// data-app attribute was inert and every swatch rendered identically.
-func TestTotalsSwatchesMatchBarColours(t *testing.T) {
+func TestTotalsUseIconsWithoutRedundantSwatches(t *testing.T) {
 	t.Parallel()
 	html := renderPartial(t, "timeline", sampleTimelineData())
 
-	fill := appColor(testFirefoxLower)
-	if !strings.Contains(html, "totals__swatch") {
-		t.Fatal("no swatch rendered")
+	if strings.Contains(html, "totals__swatch") {
+		t.Error("redundant colour swatch is still rendered beside an icon")
 	}
-	if strings.Count(html, `fill="`+fill+`"`) < 2 {
-		t.Errorf("swatch and bar do not share fill %q:\n%s", fill, html)
+	if !strings.Contains(html, "totals__icon") {
+		t.Error("total rows have no icon or monogram fallback")
 	}
 	if strings.Contains(html, "data-app=") {
 		t.Error("dead data-app attribute is still emitted")
@@ -188,7 +185,10 @@ func TestTimelineListsSitesSeparatelyFromApps(t *testing.T) {
 	t.Parallel()
 	html := renderPartial(t, "timeline", sampleTimelineData())
 
-	if !strings.Contains(html, "Which pages") {
+	if !strings.Contains(html, `class="totals-grid"`) {
+		t.Error("app and website summaries do not share the two-column layout")
+	}
+	if !strings.Contains(html, "Websites") {
 		t.Error("no per-site section rendered")
 	}
 	for _, want := range []string{"youtube.com", "github.com", "20m", "10m"} {
@@ -197,7 +197,7 @@ func TestTimelineListsSitesSeparatelyFromApps(t *testing.T) {
 		}
 	}
 	// The two sections are distinct: apps still summarise the day.
-	if !strings.Contains(html, "Where the day went") {
+	if !strings.Contains(html, "Applications") {
 		t.Error("the app summary disappeared")
 	}
 }
@@ -243,7 +243,7 @@ func TestTimelineOmitsSitesWhenThereAreNone(t *testing.T) {
 			data := sampleTimelineData()
 			data.Sites = sites
 
-			if strings.Contains(renderPartial(t, "timeline", data), "Which pages") {
+			if strings.Contains(renderPartial(t, "timeline", data), "Websites") {
 				t.Errorf("%s site list rendered an empty section", name)
 			}
 		})

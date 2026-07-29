@@ -45,54 +45,51 @@
   </div>
 </section>
 
-<section class="totals" aria-label="Time per application">
-  <h2 class="totals__title">Where the day went</h2>
-  <p class="totals__sum">{{duration .TotalSeconds}} tracked</p>
-  <ol class="totals__list">
-    {{range .Totals}}
-    <li class="totals__item totals__item--app">
-      {{if .IconURL}}
-      <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
-      {{else}}
-      <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
-        <rect width="22" height="22" rx="6" fill="{{.Fill}}"></rect>
-        <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
-      </svg>
+<div class="totals-grid">
+  <section class="totals" aria-label="Time per application">
+    <h2 class="totals__title">Applications</h2>
+    <p class="totals__sum">{{duration .TotalSeconds}} tracked</p>
+    <ol class="totals__list">
+      {{range .Totals}}
+      <li class="totals__item totals__item--app">
+        {{if .IconURL}}
+        <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
+        {{else}}
+        <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
+          <rect width="22" height="22" rx="6" fill="{{.Fill}}"></rect>
+          <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
+        </svg>
+        {{end}}
+        <span class="totals__app">{{.AppName}}</span>
+        <span class="totals__time">{{duration .Seconds}}</span>
+      </li>
       {{end}}
-      <svg class="totals__swatch" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-        <rect width="12" height="12" rx="3" fill="{{.Fill}}"></rect>
-      </svg>
-      <span class="totals__app">{{.AppName}}</span>
-      <span class="totals__time">{{duration .Seconds}}</span>
-    </li>
-    {{end}}
-  </ol>
-</section>
+    </ol>
+  </section>
 
-{{if .Sites}}
-<section class="totals" aria-label="Time per site">
-  <h2 class="totals__title">Which pages</h2>
-  <ol class="totals__list">
-    {{range .Sites}}
-    <li class="totals__item totals__item--app">
-	  {{if .IconURL}}
-      <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
-	  {{else}}
-	  <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
-		<rect width="22" height="22" rx="6" fill="{{.Fill}}"></rect>
-		<text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
-	  </svg>
-	  {{end}}
-      <svg class="totals__swatch" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-        <rect width="12" height="12" rx="3" fill="{{.Fill}}"></rect>
-      </svg>
-      <span class="totals__app">{{.AppName}}</span>
-      <span class="totals__time">{{duration .Seconds}}</span>
-    </li>
-    {{end}}
-  </ol>
-</section>
-{{end}}
+  {{if .Sites}}
+  <section class="totals" aria-label="Time per website">
+    <h2 class="totals__title">Websites</h2>
+    <p class="totals__sum">Browser activity</p>
+    <ol class="totals__list">
+      {{range .Sites}}
+      <li class="totals__item totals__item--app">
+        {{if .IconURL}}
+        <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
+        {{else}}
+        <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
+          <rect width="22" height="22" rx="6" fill="{{.Fill}}"></rect>
+          <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
+        </svg>
+        {{end}}
+        <span class="totals__app">{{.AppName}}</span>
+        <span class="totals__time">{{duration .Seconds}}</span>
+      </li>
+      {{end}}
+    </ol>
+  </section>
+  {{end}}
+</div>
 {{else}}
 <p class="empty">
   Nothing tracked on this day. Once <code>trackkrd</code> reports activity for
