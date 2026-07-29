@@ -1,19 +1,15 @@
-//go:build !linux
+//go:build !linux && !darwin
 
 package tracker
 
 import (
-	"errors"
 	"fmt"
 	"runtime"
+
+	"github.com/rs/zerolog"
 )
 
-// ErrUnsupportedPlatform is returned when the current platform has no
-// window detector implementation.
-var ErrUnsupportedPlatform = errors.New("window detection not supported on this platform")
-
-// NewWindowDetector returns the platform's window detector. Only
-// Linux/X11 is implemented so far; macOS support is planned.
-func NewWindowDetector() (WindowDetector, error) {
+// NewWindowDetector reports that this platform has no window detector.
+func NewWindowDetector(_ *Config, _ *zerolog.Logger) (WindowDetector, error) {
 	return nil, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, runtime.GOOS)
 }

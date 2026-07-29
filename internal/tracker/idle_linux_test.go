@@ -58,7 +58,7 @@ func TestNewIdleDetectorOrNop(t *testing.T) {
 
 	// Should return either XIdleDetector or NopIdleDetector
 	// depending on whether xprintidle is installed.
-	d := NewIdleDetectorOrNop(&logger)
+	d := NewIdleDetectorOrNop(DefaultConfig(), &logger)
 	if d == nil {
 		t.Fatal("NewIdleDetectorOrNop returned nil")
 	}

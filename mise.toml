@@ -116,3 +116,19 @@ run = [
   "mkdir -p .cache/go-build .cache/go-mod",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go run ./cmd/trackkrd",
 ]
+
+[tasks.portability]
+description = "Compile platform fallbacks that CI cannot execute"
+run = [
+  "mkdir -p .cache/go-build .cache/go-mod",
+  "CGO_ENABLED=0 GOOS=darwin GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build ./...",
+  "CGO_ENABLED=0 GOOS=windows GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build ./...",
+]
+
+[tasks.bundle-macos]
+description = "Build and install the signed macOS application bundle"
+run = ["./scripts/bundle-macos.sh"]
+
+[tasks.bundle-macos-test]
+description = "Test transactional macOS bundle replacement"
+run = ["bash ./scripts/bundle-macos_test.sh"]

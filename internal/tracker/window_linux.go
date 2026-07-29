@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/rs/zerolog"
 )
 
 // NewWindowDetector returns the platform's window detector. On Linux
 // this is the X11 detector backed by xdotool and xprop.
-func NewWindowDetector() (WindowDetector, error) {
+func NewWindowDetector(_ *Config, _ *zerolog.Logger) (WindowDetector, error) {
 	// Return an explicit nil interface on failure; returning the
 	// typed nil pointer directly would make the interface non-nil.
 	d, err := NewXWindowDetector()

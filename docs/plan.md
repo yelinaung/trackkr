@@ -79,10 +79,13 @@ trackkr/
 │   │   ├── tracker.go              # Main tracking loop + idle state machine
 │   │   ├── window.go               # ActiveWindow interface
 │   │   ├── window_linux.go         # Linux: xdotool + xprop
-│   │   ├── window_darwin.go        # macOS: CGWindow via cgo
+│   │   ├── window_darwin.go        # macOS adapter: CoreGraphics + AX via cgo
+│   │   ├── detector_core.go        # Portable active-app decision logic
+│   │   ├── titles.go               # Portable Accessibility trust policy
+│   │   ├── macos_darwin.m          # Objective-C boundary for app/title reads
 │   │   ├── idle.go                 # IdleDetector interface
 │   │   ├── idle_linux.go           # Linux: xprintidle
-│   │   ├── idle_darwin.go          # macOS: IOKit via cgo
+│   │   ├── idle_darwin.go          # macOS: CoreGraphics HID idle time via cgo
 │   │   ├── reporter.go             # Batch sender (queue + flush)
 │   │   └── config.go               # Client config
 │   └── models/
@@ -199,18 +202,18 @@ queries, so no separate `(device_id, started_at)` index is needed.
 ### Tracking Loop (polls every 3 seconds)
 
 ```
-                    ┌──────────────────────┐
-         ┌────────►│   TRACKING           │◄──────────┐
+                   ┌───────────────────────┐
+         ┌────────►│   TRACKING            │◄──────────┐
          │         │ (current app/title)   │           │
-         │         └──────┬───────┬────────┘           │
-         │                │       │                    │
-    window changed    idle > 5min │              input detected
-    (emit record,        │       │              (discard idle,
-     start new)          │       │               start new record)
-         │               ▼       │                     │
-         │         ┌─────────────┴──┐                  │
-         └─────────│     IDLE       ├──────────────────┘
-                   └────────────────┘
+         │         └─────┬────────┬────────┘           │
+         │               │        │                    │
+    window changed    idle > 5min │               input detected
+    (emit record,        │        │               (discard idle,
+     start new)          │        │               start new record)
+         │               ▼        │                     │
+         │         ┌──────────────┴──┐                  │
+         └─────────│     IDLE        ├──────────────────┘
+                   └─────────────────┘
 ```
 
 - **Window OR title changes**: finalize current record, start new one (e.g., switching files in VS Code = new record)
@@ -224,19 +227,24 @@ queries, so no separate `(device_id, started_at)` index is needed.
 
 ### Active Window Detection
 - **Linux**: `xdotool` for window name, `xprop` for WM_CLASS (app name)
-- **macOS**: `CGWindowListCopyWindowInfo` via cgo (or `osascript` fallback)
+- **macOS**: `CGWindowListCopyWindowInfo` supplies the owner and pid of the
+  frontmost layer-zero window. Accessibility reads its focused title only
+  when trusted, and app-name tracking continues without that permission.
 
 ### Idle Detection
 - **Linux**: `xprintidle` (returns idle ms)
-- **macOS**: IOKit `kHIDIdleTimeKey` via cgo
+- **macOS**: CoreGraphics
+  `CGEventSourceSecondsSinceLastEventType` for HID-system idle time
 
-### Config (`~/.config/trackkr/config.toml`)
+### Client Config (`os.UserConfigDir()/trackkr/config.toml`)
 ```toml
 server_url = "https://trackkr.example.com"
 api_key = "abc123..."
 device_name = "work-laptop"
 poll_interval = "3s"
 idle_threshold = "5m"
+macos_read_titles = true
+macos_prompt_for_accessibility = false
 ```
 
 ---
@@ -262,9 +270,9 @@ idle_threshold = "5m"
   while the in-flight tab lives in `storage.session` so a stale focus does
   not
 - Daemon enriches with `app_name = "Firefox"` and feeds into the reporter
-  queue. The desktop tracker separately records `firefox` from WM_CLASS, so
-  focused browsing is counted twice until Phase 6 deduplicates; the case
-  difference keeps the two visible as distinct rows
+  queue. Focused browsing is counted twice until Phase 6 deduplicates. The
+  stable discriminator is URL presence: extension records carry a URL and
+  desktop-window records do not, regardless of platform or application name
 
 ---
 
@@ -341,14 +349,14 @@ admin password hash: users live in the `users` table, created with
 3. Popup showing connection status
 4. Test tab tracking end-to-end
 
-### Phase 5: macOS Support + Polish (planned — see `phase5-plan.md`)
-1. `idle_darwin.go` via cgo — no permission needed
-2. `window_darwin.go` — frontmost app with no permission, titles behind
-   Accessibility
-3. Signed `.app` bundle, since TCC grants attach to a code signature and
-   bundle id rather than to a bare binary
-4. launchd user agent for auto-start
-5. Dockerfile + docker-compose for production
+### Phase 5: macOS Support (implemented — see `phase5-plan.md`)
+1. `idle_darwin.go` uses CoreGraphics and needs no permission
+2. `window_darwin.go` records the frontmost visible window owner without
+   permission and reads titles behind an Accessibility trust policy
+3. `scripts/bundle-macos.sh` installs and signs a stable `.app` bundle path
+4. A generated launchd user agent runs the bundled daemon in the GUI session
+
+Docker production packaging remains separate deployment polish.
 
 The systemd unit, graceful shutdown, and disk-persisted queue originally
 listed here all landed in Phase 2.

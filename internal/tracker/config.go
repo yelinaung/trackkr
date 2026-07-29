@@ -64,19 +64,23 @@ type Config struct {
 	// so restarting the daemon does not invalidate what is already
 	// pasted into the extension.
 	ExtensionToken string `toml:"extension_token"`
+
+	MacOSReadTitles             bool `toml:"macos_read_titles"`
+	MacOSPromptForAccessibility bool `toml:"macos_prompt_for_accessibility"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		ServerURL:     defaultServerURL,
-		DeviceName:    hostname(),
-		PollInterval:  Duration{3 * time.Second},
-		IdleThreshold: Duration{5 * time.Minute},
-		FlushInterval: Duration{30 * time.Second},
-		FlushSize:     20,
-		DataDir:       DefaultDataDir(),
-		ExtensionAddr: defaultExtensionAddr,
+		ServerURL:       defaultServerURL,
+		DeviceName:      hostname(),
+		PollInterval:    Duration{3 * time.Second},
+		IdleThreshold:   Duration{5 * time.Minute},
+		FlushInterval:   Duration{30 * time.Second},
+		FlushSize:       20,
+		DataDir:         DefaultDataDir(),
+		ExtensionAddr:   defaultExtensionAddr,
+		MacOSReadTitles: true,
 	}
 }
 
@@ -230,7 +234,7 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
-// DefaultConfigPath returns ~/.config/trackkr/config.toml.
+// DefaultConfigPath returns the platform-specific user config path.
 func DefaultConfigPath() string {
 	if dir, err := os.UserConfigDir(); err == nil {
 		return filepath.Join(dir, "trackkr", "config.toml")

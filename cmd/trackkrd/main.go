@@ -22,8 +22,8 @@ const httpTimeout = 30 * time.Second
 // detectors supplies the platform-specific pieces of the daemon so
 // tests can drive a full lifecycle without X11.
 type detectors struct {
-	newWindow func() (tracker.WindowDetector, error)
-	newIdle   func(*zerolog.Logger) tracker.IdleDetector
+	newWindow func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error)
+	newIdle   func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector
 }
 
 func platformDetectors() detectors {
@@ -92,7 +92,7 @@ func run(
 	// On a platform without a window detector the extension can still
 	// report tabs, so a missing detector is only fatal when it is the
 	// daemon's sole reason to exist.
-	window, err := d.newWindow()
+	window, err := d.newWindow(cfg, logger)
 	if err != nil {
 		if !cfg.ExtensionEnabled {
 			return fmt.Errorf("window detection unavailable: %w", err)
@@ -119,7 +119,7 @@ func run(
 
 	var trk *tracker.Tracker
 	if window != nil {
-		trk = tracker.NewTracker(cfg, window, d.newIdle(logger), reporter, logger)
+		trk = tracker.NewTracker(cfg, window, d.newIdle(cfg, logger), reporter, logger)
 	}
 
 	// Own a child context so the reporter goroutine can be released

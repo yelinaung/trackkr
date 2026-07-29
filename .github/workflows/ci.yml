@@ -232,3 +232,21 @@ jobs:
 
       - name: Run race detector
         run: mise test-race
+
+  portability:
+    name: Platform Fallback Builds
+    runs-on: [self-hosted, Linux, X64, playground-ubuntu]
+    needs: [lint]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Test transactional bundle replacement
+        run: mise bundle-macos-test
+
+      - name: Compile no-cgo platform fallbacks
+        run: mise portability

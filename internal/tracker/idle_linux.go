@@ -50,7 +50,7 @@ func parseIdleMs(output string) (time.Duration, error) {
 // NewIdleDetectorOrNop tries to create an XIdleDetector. If
 // xprintidle is not found, it logs a warning and returns a
 // NopIdleDetector.
-func NewIdleDetectorOrNop(logger *zerolog.Logger) IdleDetector {
+func NewIdleDetectorOrNop(_ *Config, logger *zerolog.Logger) IdleDetector {
 	d, err := NewXIdleDetector()
 	if err != nil {
 		logger.Warn().Err(err).Msg("idle detection disabled")

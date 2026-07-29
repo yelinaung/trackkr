@@ -42,8 +42,10 @@ func (fakeIdle) IdleTime(context.Context) (time.Duration, error) { return 0, nil
 
 func fakeDetectors(info tracker.WindowInfo) detectors {
 	return detectors{
-		newWindow: func() (tracker.WindowDetector, error) { return fakeWindow{info: info}, nil },
-		newIdle:   func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+		newWindow: func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error) {
+			return fakeWindow{info: info}, nil
+		},
+		newIdle: func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
 	}
 }
 
@@ -110,10 +112,10 @@ func TestRunWithInvalidConfig(t *testing.T) {
 
 func TestRunWithoutWindowDetector(t *testing.T) {
 	d := detectors{
-		newWindow: func() (tracker.WindowDetector, error) {
+		newWindow: func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error) {
 			return nil, tracker.ErrNoActiveWindow
 		},
-		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+		newIdle: func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
 	}
 
 	logger := zerolog.Nop()
@@ -123,6 +125,49 @@ func TestRunWithoutWindowDetector(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "window detection unavailable") {
 		t.Errorf("error = %v, want it to mention window detection", err)
+	}
+}
+
+func TestRunPassesConfigToDetectors(t *testing.T) {
+	path := writeConfig(t, "http://127.0.0.1:1", `macos_read_titles = false
+macos_prompt_for_accessibility = true`)
+
+	var windowConfig, idleConfig *tracker.Config
+	var windowLogger, idleLogger *zerolog.Logger
+	d := detectors{
+		newWindow: func(cfg *tracker.Config, logger *zerolog.Logger) (tracker.WindowDetector, error) {
+			windowConfig = cfg
+			windowLogger = logger
+			return fakeWindow{info: tracker.WindowInfo{AppName: testFirefoxApp}}, nil
+		},
+		newIdle: func(cfg *tracker.Config, logger *zerolog.Logger) tracker.IdleDetector {
+			idleConfig = cfg
+			idleLogger = logger
+			return fakeIdle{}
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logger := zerolog.Nop()
+	if err := run(ctx, &logger, path, d); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if windowConfig == nil || idleConfig == nil {
+		t.Fatalf("detector configs = window %p, idle %p; want both non-nil", windowConfig, idleConfig)
+	}
+	if windowConfig != idleConfig {
+		t.Error("window and idle factories received different config instances")
+	}
+	if windowLogger != &logger || idleLogger != &logger {
+		t.Error("detector factories did not receive the daemon logger")
+	}
+	if windowConfig.MacOSReadTitles {
+		t.Error("MacOSReadTitles = true, want configured false")
+	}
+	if !windowConfig.MacOSPromptForAccessibility {
+		t.Error("MacOSPromptForAccessibility = false, want configured true")
 	}
 }
 
@@ -217,10 +262,10 @@ extension_addr = "127.0.0.1:0"
 extension_token = %q`, token))
 
 	d := detectors{
-		newWindow: func() (tracker.WindowDetector, error) {
+		newWindow: func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error) {
 			return nil, tracker.ErrNoActiveWindow
 		},
-		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+		newIdle: func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -268,10 +313,10 @@ extension_addr = %q
 extension_token = %q`, blocker.Addr().String(), token))
 
 	d := detectors{
-		newWindow: func() (tracker.WindowDetector, error) {
+		newWindow: func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error) {
 			return fakeWindow{info: tracker.WindowInfo{AppName: testFirefoxApp}}, nil
 		},
-		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+		newIdle: func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
 	}
 
 	logger := zerolog.Nop()
@@ -321,10 +366,10 @@ extension_token = %q`, blocker.Addr().String(), token))
 	}
 
 	d := detectors{
-		newWindow: func() (tracker.WindowDetector, error) {
+		newWindow: func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error) {
 			return fakeWindow{info: tracker.WindowInfo{AppName: testFirefoxApp}}, nil
 		},
-		newIdle: func(*zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
+		newIdle: func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector { return fakeIdle{} },
 	}
 
 	logger := zerolog.Nop()

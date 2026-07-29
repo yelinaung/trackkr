@@ -37,6 +37,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.DeviceName == "" {
 		t.Error("DeviceName is empty")
 	}
+	if !cfg.MacOSReadTitles {
+		t.Error("MacOSReadTitles = false, want true")
+	}
+	if cfg.MacOSPromptForAccessibility {
+		t.Error("MacOSPromptForAccessibility = true, want false")
+	}
 }
 
 // clearTrackkrEnv unsets the TRACKKR_* overrides so a test asserting
@@ -60,6 +66,8 @@ poll_interval = "5s"
 idle_threshold = "10m"
 flush_interval = "1m"
 flush_size = 50
+macos_read_titles = false
+macos_prompt_for_accessibility = true
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
@@ -89,6 +97,12 @@ flush_size = 50
 	}
 	if cfg.FlushSize != 50 {
 		t.Errorf("FlushSize = %d, want 50", cfg.FlushSize)
+	}
+	if cfg.MacOSReadTitles {
+		t.Error("MacOSReadTitles = true, want file value false")
+	}
+	if !cfg.MacOSPromptForAccessibility {
+		t.Error("MacOSPromptForAccessibility = false, want file value true")
 	}
 }
 

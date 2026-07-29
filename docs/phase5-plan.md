@@ -76,8 +76,7 @@ so every row can return it.
 | Capability | API | Permission |
 |---|---|---|
 | Idle time | `CGEventSourceSecondsSinceLastEventType` | none |
-| Frontmost app name and pid | `CGWindowListCopyWindowInfo` owner fields | none |
-| Bundle identifier for a pid | `NSRunningApplication` | none |
+| Frontmost window owner and pid | `CGWindowListCopyWindowInfo` owner fields | none |
 | Window title | Accessibility (`AXUIElement`) | Accessibility |
 | Window title (alternative) | `CGWindowListCopyWindowInfo` `kCGWindowName` | Screen Recording |
 
@@ -106,7 +105,7 @@ stands.
 the Nop, the first behavioural change the daemon will show: walking away
 now ends the current record at the idle threshold, as it does on Linux.
 
-### Step 2: `window_darwin.go` -- the frontmost application
+### Step 2: `window_darwin.go` -- the frontmost window owner
 
 **`NSWorkspace.frontmostApplication` is a trap in a daemon.** It reads
 like a query and behaves like a cache. Apple's `NSRunningApplication`
@@ -118,7 +117,7 @@ polling from a goroutine pumps nothing, so the value can pin to
 whichever application was frontmost at startup and stay there forever
 -- while every log line and every record looks healthy.
 
-So the frontmost application comes from the window server instead:
+So the frontmost visible window's owner comes from the window server:
 
 ```c
 CGWindowListCopyWindowInfo(
@@ -134,12 +133,12 @@ and pid. Both are readable without Screen Recording; only
 Accessibility anyway. The call is a snapshot with no notification
 delivery behind it, so no run loop is involved.
 
-Bundle identifiers are not in that snapshot. `NSRunningApplication
-runningApplicationWithProcessIdentifier:` supplies one for the pid, and
-its identifier does not vary over time, so the staleness above does not
-apply. Objective-C is not callable from cgo, so `macos_darwin.m`
-provides the C boundary for that lookup and wraps the CoreGraphics work
-beside it.
+This is the frontmost visible window, not necessarily the application
+that owns the menu bar. An application with no layer-zero windows is
+therefore attributed as whatever visible window sits behind it. The
+tradeoff is accepted here because the window snapshot stays fresh
+without pumping a run loop. Objective-C is not callable from cgo, so
+`macos_darwin.m` provides the C boundary around the CoreGraphics work.
 
 Should `CGWindowListCopyWindowInfo` prove insufficient -- an empty
 list under some Stage Manager arrangement, say -- the fallback is
@@ -153,14 +152,14 @@ weaker guarantee than not needing one.
 the title lookup needs a pid and happens only when trusted:
 
 ```c
-typedef struct { char *name; char *bundleID; pid_t pid; } trackkr_app;
+typedef struct { char *name; pid_t pid; } trackkr_app;
 
 #define TRACKKR_OK        0  // out is populated
-#define TRACKKR_NO_APP    1  // nobody is frontmost: ErrNoActiveWindow
+#define TRACKKR_NO_APP    1  // no layer-zero window: ErrNoActiveWindow
 #define TRACKKR_FAILED    2  // allocation or conversion failed: a real error
 
 // Zero-initializes *out before doing anything. On any non-OK return,
-// every partial allocation is freed and both pointers are NULL, so the
+// every partial allocation is freed and the name pointer is NULL, so the
 // caller never frees a dangling pointer and never mistakes a failed
 // conversion for an empty desktop.
 int trackkr_frontmost_app(trackkr_app *out);
@@ -169,8 +168,9 @@ int trackkr_frontmost_app(trackkr_app *out);
 // focused window, exposes no title, the AX call fails, or the call
 // times out. NULL is not an error; it means "no title".
 //
-// Calls AXUIElementSetMessagingTimeout(app, 0.5) before reading any
-// attribute.
+// Sets a 0.5-second messaging timeout on the application before reading
+// its focused window, then separately on that window before reading its
+// title. A timeout setup failure also returns NULL.
 char *trackkr_focused_window_title(pid_t pid);
 ```
 
@@ -228,27 +228,21 @@ released on the success and failure paths alike, and the Go side defers
 or CJK survives.
 
 **Which values cross the boundary.** `WindowInfo` has only `AppName` and
-`Title`, and this phase adds no field. The bundle identifier decides
-whether anyone is present; the pid looks up a title. Neither is stored
-or sent.
+`Title`, and this phase adds no field. The pid looks up a title; it is
+not stored or sent.
 
-**`ErrNoActiveWindow`, deterministically.** The detector returns the
-sentinel when the window list has no layer-zero entry, when the owner
-name is empty, or when the bundle identifier is one of:
-
-```
-com.apple.loginwindow             the login or lock screen
-com.apple.ScreenSaver.Engine      the screensaver
-```
-
-Someone can extend a list of identifiers. Nobody can implement "the
-loginwindow process".
+**`ErrNoActiveWindow`.** The detector returns the sentinel when the
+window list has no layer-zero entry or the owner name is empty. Lock and
+screensaver overlays sit above layer zero, so their bundle identifiers
+cannot be observed through this query. The detector deliberately makes
+no direct lock-state claim: while the screen is locked no input arrives,
+and the idle detector ends the record at `idle_threshold`.
 
 **A naming collision to decide now.** Linux reports `firefox` from
-WM_CLASS; macOS reports `Firefox` from `localizedName`, the string the
-browser extension already sends. The case difference that keeps the two
-observations apart on Linux collapses here, and Phase 6's deduplication
-was going to lean on it.
+WM_CLASS; macOS normally reports `Firefox` from the window owner name,
+the string the browser extension already sends. The case difference
+that keeps the two observations apart on Linux collapses here, and
+Phase 6's deduplication was going to lean on it.
 
 Use the presence of a URL. An extension record always carries one; a
 window record never does. The distinction holds on both platforms,
@@ -584,10 +578,9 @@ for "nobody is frontmost" would force the core to infer emptiness from a
 blank name, the guessing the three statuses exist to remove.
 
 `window_darwin.go` builds a `detectorCore` from the two C calls wrapped
-as Go functions, and does nothing else. Which bundle identifiers mean
-`ErrNoActiveWindow`, whether to consult the policy, what to do when a
-trusted read yields no title -- all of it is ordinary Go that the Linux
-runner executes with fakes for both seams.
+as Go functions, and does nothing else. Whether to consult the policy
+and what to do when a trusted read yields no title are ordinary Go that
+the Linux runner executes with fakes for both seams.
 
 `titles_test.go`, `detector_core_test.go`, and `config_test.go` run in
 CI and cover:
@@ -604,8 +597,8 @@ CI and cover:
   that titles-off means prompt-off;
 - `mapFrontmost` over all three statuses, so an adapter switch typo
   fails on Linux;
-- `ErrNoActiveWindow` for a nil application, an empty name, and each
-  listed bundle identifier, through the injected `frontmost`;
+- `ErrNoActiveWindow` for a nil application and an empty name through
+  the injected `frontmost`;
 - a trusted read whose `titleFor` returns "" keeping the application
   record with an empty title;
 - an operational failure from `frontmost` surfacing as an error and not
@@ -613,6 +606,10 @@ CI and cover:
 - a cancelled context returning before `titleFor` is called, so shutdown
   never waits on a native call;
 - the config keys and their defaults.
+
+`bundle-macos_test.sh` runs on Linux CI and exercises a fresh install,
+a successful replacement, and a forced replacement failure that must
+restore the prior bundle.
 
 A daemon test in `cmd/trackkrd` asserts that the loaded config and the
 logger both reach the factory, since a factory that silently ignores its
@@ -650,14 +647,20 @@ Phase 6 has a signal it can use.
    timeline. Every application should be there. A frontmost lookup
    frozen on one application produces a plausible-looking record and no
    error anywhere, so only this catches it.
-7. Without Accessibility granted: records carry app names and empty
+7. Focus an application with no open windows and confirm the timeline
+   attributes that interval to the frontmost visible window behind it,
+   as documented, rather than to the menu-bar application.
+8. Lock the screen past `idle_threshold` and confirm the current record
+   ends at the idle boundary. This detector does not claim a direct lock
+   signal because lock-screen windows are above layer zero.
+9. Without Accessibility granted: records carry app names and empty
    titles, and the log says so once, not every poll.
-8. Grant Accessibility to the bundled app, wait for the recheck, and
+10. Grant Accessibility to the bundled app, wait for the recheck, and
    confirm titles start appearing with no restart.
-9. Walk away past the idle threshold and confirm the record ends when
+11. Walk away past the idle threshold and confirm the record ends when
    you stopped, not when you came back.
-10. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
+12. `launchctl bootstrap gui/$UID …`, log out and back in, and confirm
     the daemon restarts and keeps its Accessibility grant.
-11. Rebuild, re-sign, and re-bundle, then confirm whether the grant
+13. Rebuild, re-sign, and re-bundle, then confirm whether the grant
     survives. With `TRACKKR_SIGN_IDENTITY` set it should; ad-hoc is the
     case that may ask again, and the README should say which.
