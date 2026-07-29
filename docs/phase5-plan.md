@@ -245,9 +245,21 @@ not stored or sent.
 **`ErrNoActiveWindow`.** The detector returns the sentinel when the
 window list has no layer-zero entry or the owner name is empty. Lock and
 screensaver overlays sit above layer zero, so their bundle identifiers
-cannot be observed through this query. The detector deliberately makes
-no direct lock-state claim: while the screen is locked no input arrives,
-and the idle detector ends the record at `idle_threshold`.
+cannot be observed through this query. Sampling both APIs every two
+seconds across a real lock says so plainly:
+
+```text
+12:49:05 window=Ghostty  menubar=Preview
+12:49:07 window=Ghostty  menubar=loginwindow
+13:00:51 window=Ghostty  menubar=loginwindow
+```
+
+Twelve minutes locked, and the window list reports the application
+underneath the lock screen for every one of them. A `com.apple.loginwindow`
+check on this query would never have fired, which is why there is not
+one. The detector makes no direct lock-state claim: while the screen is
+locked no input arrives, and the idle detector ends the record at
+`idle_threshold`.
 
 **A naming collision to decide now.** Linux reports `firefox` from
 WM_CLASS; macOS normally reports `Firefox` from the window owner name,
