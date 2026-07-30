@@ -25,6 +25,11 @@
 const CURRENT_KEY = "current";
 const QUEUE_KEY = "queue";
 
+// DELIVERY_TIMEOUT_MS bounds one upload attempt. Delivery runs on the same
+// serialization chain as every tracking event, so this is the ceiling on how
+// long a wedged daemon can stall them.
+const DELIVERY_TIMEOUT_MS = 10_000;
+
 // Every handler runs through this chain.
 //
 // Browser events arrive concurrently -- a navigation fires a URL update
@@ -193,22 +198,34 @@ async function deliver() {
     return false;
   }
 
+  // Delivery shares the serialization chain with every tracking event, so an
+  // unbounded request is not just a slow upload -- a daemon that accepts the
+  // connection and never answers holds up activations, focus changes, and idle
+  // transitions behind it until Chrome kills the worker, taking their
+  // in-memory transition times with it. Recovery could then infer only the
+  // final tab. The deadline sits well below Chrome's own request limit; the
+  // batch stays queued and is retried.
+  const timeout = new AbortController();
+  const deadline = setTimeout(() => timeout.abort(), DELIVERY_TIMEOUT_MS);
   try {
-    const resp = await fetch(`${daemonUrl}${ACTIVITY_PATH}`, {
+    const resp = await fetch(new URL(ACTIVITY_PATH, daemonUrl), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ records: batch }),
+      signal: timeout.signal,
     });
     if (!resp.ok) {
       return false;
     }
   } catch (err) {
-    // Daemon down, permission revoked, or the browser is quitting. The
-    // records stay queued for the next event.
+    // Daemon down, permission revoked, request aborted at the deadline, or the
+    // browser is quitting. The records stay queued for the next event.
     return false;
+  } finally {
+    clearTimeout(deadline);
   }
 
   // Remove by identity, not by count: a record appended while the
@@ -382,15 +399,24 @@ globalThis.recover = function recover() {
 };
 
 async function resume() {
+  // Reconcile before delivering. A successful delivery removes the queued
+  // record, and that record is the only evidence that the session copy was
+  // already finalized -- deliver first and recovery cannot tell an interrupted
+  // finalization from a live segment, so it keeps timing under an identity the
+  // daemon has already stored. The replay is then discarded as a duplicate and
+  // everything since is lost.
+  const current = await readCurrent();
+  let keepCurrent = false;
+  if (current) {
+    keepCurrent = await resolveRecoveredSegment(current);
+  }
+
   await deliver();
 
-  const current = await readCurrent();
-  if (current) {
-    if (await resolveRecoveredSegment(current)) {
-      // Still the tab the user is looking at: keep its original start time
-      // rather than restarting the clock on a visit already in progress.
-      return;
-    }
+  if (keepCurrent) {
+    // Still the tab the user is looking at: keep its original start time
+    // rather than restarting the clock on a visit already in progress.
+    return;
   }
 
   // Window focus alone is not presence. idle.onStateChanged does not fire
@@ -477,9 +503,11 @@ async function upgradeLegacySegment(current) {
     return null;
   }
 
+  // Both fields were absent to reach here, so both are minted rather than
+  // repaired.
   const upgraded = {
     ...current,
-    recordId: validRecordId(current.recordId) ? current.recordId : crypto.randomUUID(),
+    recordId: crypto.randomUUID(),
     incognito: false,
   };
   await writeCurrent(upgraded);

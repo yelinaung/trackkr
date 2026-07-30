@@ -35,7 +35,7 @@ function show(kind, text, detail) {
 // probe would leave the user with no way to grant it.
 async function probeDaemon(daemonUrl, token) {
   try {
-    const resp = await fetch(`${daemonUrl}/extension/status`, {
+    const resp = await fetch(new URL("/extension/status", daemonUrl), {
       headers: { Authorization: `Bearer ${token}` },
     });
     let body = null;

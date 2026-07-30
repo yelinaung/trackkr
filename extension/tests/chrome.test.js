@@ -10,7 +10,16 @@ function chromeHarness(extra = {}) {
   return createHarness({
     ...CHROME,
     tabs: {
-      10: { id: 10, windowId: 1, active: true, url: "https://example.com/a", title: "Docs" },
+      // A real browser always populates incognito, and the legacy upgrade path
+      // needs it to prove a tab was not private.
+      10: {
+        id: 10,
+        windowId: 1,
+        active: true,
+        url: "https://example.com/a",
+        title: "Docs",
+        incognito: false,
+      },
     },
     windows: { 1: { id: 1, focused: true } },
     focusedWindowId: 1,
@@ -65,7 +74,7 @@ test("every listener exists before any storage read", () => {
     assert.ok(h.registered(name), `${name} was not registered synchronously`);
   }
 
-  assert.equal(h.state.reads, 0, "recovery read storage before registration finished");
+  assert.equal(h.state.reads, 0, "registration must complete before any storage read");
 });
 
 function requestPaths(h) {
@@ -160,8 +169,8 @@ test("recovery clears a session copy already present in the queue", async () => 
   await h.fire("runtime.onStartup");
   await h.settled();
 
-  assert.equal(h.queue().length, 1, "recovery appended the same record a second time");
-  assert.equal(h.current(), null, "the reconciled session copy was not cleared");
+  assert.equal(h.queue().length, 1, "the queued record must not be appended twice");
+  assert.equal(h.current(), null, "a reconciled session copy must be cleared");
 });
 
 test("recovery discards state it cannot vouch for", async () => {
@@ -204,7 +213,7 @@ test("recovery discards state it cannot vouch for", async () => {
     await h.fire("runtime.onStartup");
     await h.settled();
 
-    assert.equal(h.queue().length, 0, `${name} was converted into a record`);
+    assert.equal(h.queue().length, 0, `${name} must not become a record`);
   }
 });
 
@@ -222,7 +231,7 @@ test("finalizing twice queues the record once", async () => {
   assert.equal(h.queue().length, 1, "the first finalize queued the record");
 
   await assert.rejects(() => h.fire("windows.onFocusChanged", -1));
-  assert.equal(h.queue().length, 1, "the second finalize duplicated the record");
+  assert.equal(h.queue().length, 1, "finalizing twice must queue the record once");
   assert.equal(h.queue()[0].record_id, segment.recordId);
 });
 
@@ -348,4 +357,149 @@ test("the two manifests agree on everything shared", () => {
   ]) {
     assert.deepEqual(chrome[key], firefox[key], `${key} has drifted between the manifests`);
   }
+});
+
+test("a delivered segment does not keep being timed under its spent identity", async () => {
+  // A title change queues segment x, then the worker dies before the session
+  // copy is cleared. On recovery, delivery succeeds and removes x from the
+  // queue -- so the queued marker recovery relies on is gone. stillActive
+  // ignores the title, so the segment looks live and keeps its spent ID. The
+  // next finalization replays x, the daemon keeps the first shorter record, and
+  // everything browsed since the title change is lost.
+  const recordId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+  const startedAt = Date.now() - 600_000;
+  const h = chromeHarness({
+    session: {
+      current: {
+        recordId,
+        tabId: 10,
+        windowId: 1,
+        url: "https://example.com/a",
+        title: "Docs",
+        incognito: false,
+        startedAt,
+      },
+    },
+    local: {
+      queue: [
+        {
+          record_id: recordId,
+          url: "https://example.com/a",
+          title: "Docs",
+          started_at: new Date(startedAt).toISOString(),
+          ended_at: new Date(startedAt + 60_000).toISOString(),
+        },
+      ],
+    },
+  });
+  await h.settled();
+
+  assert.equal(h.state.requests.length, 1, "the queued record should have been delivered");
+  const current = h.current();
+  if (current) {
+    assert.notEqual(
+      current.recordId,
+      recordId,
+      "a delivered identity must not keep being timed",
+    );
+  }
+});
+
+// The legacy repair path exists for state an older build wrote. Anything with a
+// present-but-wrong field is corrupt, not old, and repairing it would convert
+// state explicitly marked private into reportable activity.
+test("present-but-invalid state is discarded, not repaired", async () => {
+  const base = {
+    tabId: 10,
+    windowId: 1,
+    url: "https://example.com/a",
+    title: "Docs",
+    startedAt: Date.now() - 600_000,
+  };
+  const cases = {
+    "explicitly private": { ...base, recordId: undefined, incognito: true },
+    "private with a valid id": {
+      ...base,
+      recordId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+      incognito: true,
+    },
+    "malformed id, new schema": { ...base, recordId: "not-a-uuid", incognito: false },
+    "malformed id and private": { ...base, recordId: "not-a-uuid", incognito: true },
+  };
+
+  for (const [name, current] of Object.entries(cases)) {
+    // The live tab is present and non-private, which is exactly the condition
+    // the upgrade path would have accepted as proof.
+    const h = chromeHarness({ respond: () => ({ ok: false, status: 503 }), session: { current } });
+    await h.settled();
+
+    assert.equal(h.queue().length, 0, `${name} must not become a record`);
+
+    // A repaired segment keeps its original start time; a discarded one is
+    // replaced by a fresh segment for the live tab. The start time is what
+    // distinguishes them, and it is what would silently backdate private
+    // browsing into the record.
+    const now = h.current();
+    if (now) {
+      assert.notEqual(
+        now.startedAt,
+        current.startedAt,
+        `${name} must not keep the discarded segment's start time`,
+      );
+      assert.equal(now.incognito, false, `${name} must yield an explicit privacy flag`);
+    }
+  }
+});
+
+// A genuine predecessor segment is still recoverable when the live tab proves it.
+test("state from an older build is upgraded when the tab proves it", async () => {
+  const startedAt = Date.now() - 600_000;
+  const h = chromeHarness({
+    respond: () => ({ ok: false, status: 503 }),
+    session: {
+      current: {
+        tabId: 10,
+        windowId: 1,
+        url: "https://example.com/a",
+        title: "Docs",
+        startedAt,
+      },
+    },
+  });
+  await h.settled();
+
+  const current = h.current();
+  assert.ok(current, "a provable legacy segment should survive recovery");
+  assert.match(current.recordId, /^[0-9a-f-]{36}$/, "it gained a canonical identity");
+  assert.equal(current.incognito, false, "and an explicit privacy flag");
+  assert.equal(current.startedAt, startedAt, "keeping its original start");
+});
+
+test("a wedged daemon does not stall tracking indefinitely", async () => {
+  // Delivery shares the serialization chain with every tracking event, so a
+  // daemon that accepts the connection and never answers would hold up
+  // activations and focus changes behind it until Chrome killed the worker --
+  // taking their in-memory transition times with it.
+  const h = chromeHarness();
+  await h.settled();
+  h.age(600_000);
+
+  const held = h.holdFetch();
+  const finalizing = h.fire("windows.onFocusChanged", -1);
+  await held.started;
+
+  // The request is in flight and nothing is answering. The deadline must abort
+  // it rather than wait for the browser to intervene.
+  h.abortPendingFetch();
+  await finalizing;
+  await h.settled();
+
+  assert.equal(h.queue().length, 1, "an aborted upload must leave the batch queued");
+
+  // A later event still reaches durable state.
+  held.resolve();
+  h.state.focusedWindowId = 1;
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: 1 });
+  await h.settled();
+  assert.ok(h.current(), "an event after an aborted upload must still update state");
 });

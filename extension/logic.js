@@ -168,17 +168,30 @@
     return !isIgnored(current.url, ignored);
   }
 
-  // legacySegment reports state written before record IDs and the
-  // explicit incognito flag existed. It is only upgradable, never
-  // directly usable.
+  // legacySegment reports state written before record IDs and the explicit
+  // incognito flag existed, and only that.
+  //
+  // Both fields must be absent, not merely invalid. Treating a present-but-bad
+  // value as legacy hands it to the upgrade path, which would overwrite
+  // incognito: true with false and mint a fresh ID over a malformed one --
+  // turning state explicitly marked private, or partly corrupt state, into
+  // ordinary reportable activity. Anything present and wrong is discarded
+  // instead.
   function legacySegment(current) {
     if (!current || typeof current !== "object") {
       return false;
     }
-    if (validRecordId(current.recordId) && current.incognito === false) {
+    if (current.recordId !== undefined || current.incognito !== undefined) {
       return false;
     }
-    return positiveInteger(current.tabId) && isWebUrl(current.url);
+    // The full predecessor shape, so only what the old build really wrote is
+    // eligible for repair.
+    return (
+      positiveInteger(current.tabId) &&
+      positiveInteger(current.windowId) &&
+      Number.isFinite(current.startedAt) &&
+      isWebUrl(current.url)
+    );
   }
 
   function positiveInteger(value) {

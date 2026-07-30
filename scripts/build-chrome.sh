@@ -8,6 +8,11 @@
 # before loading it.
 set -euo pipefail
 
+command -v python3 >/dev/null || {
+  echo "error: python3 is required to read and compare the manifests" >&2
+  exit 1
+}
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "${script_dir}/.." && pwd)"
 source_dir="${repo_dir}/extension"

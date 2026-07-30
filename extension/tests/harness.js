@@ -202,7 +202,16 @@ function createHarness(options = {}) {
       // starts interfering; appending earlier would race the handler
       // rather than the delivery.
       state.pendingFetch.started();
-      await state.pendingFetch.promise;
+      await Promise.race([
+        state.pendingFetch.promise,
+        new Promise((_, reject) => {
+          if (!init || !init.signal) {
+            return;
+          }
+          state.pendingAbort = () => reject(new DOMException("aborted", "AbortError"));
+          init.signal.addEventListener("abort", state.pendingAbort);
+        }),
+      ]);
     }
     const result = respond(state.requests.length);
     if (result instanceof Error) {
@@ -225,6 +234,8 @@ function createHarness(options = {}) {
     Boolean,
     setTimeout,
     clearTimeout,
+    AbortController,
+    DOMException,
     ...(entrypoint === "background-cr.js" ? { chrome: api } : { browser: api }),
     crypto: {
       // Deterministic and canonical: recovery and queue idempotence are
@@ -320,6 +331,14 @@ function createHarness(options = {}) {
 
     failSessionRemove() {
       state.failSessionRemove = true;
+    },
+
+    // abortPendingFetch fires the delivery deadline without waiting for it,
+    // so a test does not have to sleep for the real timeout.
+    abortPendingFetch() {
+      if (state.pendingAbort) {
+        state.pendingAbort();
+      }
     },
 
     queue() {
