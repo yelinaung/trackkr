@@ -83,14 +83,18 @@ async function writeQueue(queue) {
 // Focus alone is not enough: a live-updating page can change its title
 // while the user is away, and without this check that event would start
 // a fresh segment and quietly record the rest of their absence.
-async function userIsActive() {
+async function userState() {
   try {
-    return (await api.idle.queryState(IDLE_SECONDS)) === "active";
+    return await api.idle.queryState(IDLE_SECONDS);
   } catch (err) {
     // If the state cannot be read, assume presence rather than
     // silently stopping all tracking.
-    return true;
+    return "active";
   }
+}
+
+async function userIsActive() {
+  return (await userState()) === "active";
 }
 
 // isFocused reports whether a window currently has the user's
@@ -394,8 +398,22 @@ globalThis.registerListeners = function registerListeners() {
 // that was killed mid-finalization leaves a segment behind, and an older build
 // leaves one without an identity, so this treats persisted state as untrusted
 // input rather than as its own memory.
+// Coalesced, because recovery has two triggers that fire together. The
+// entrypoint starts it during evaluation, and onStartup or onInstalled is
+// usually the very event that woke the worker -- so a startup wake queued two
+// recoveries, each with its own delivery attempt. Against a daemon that accepts
+// connections and never answers, that meant two consecutive deadlines and about
+// twenty seconds of blocked tracking rather than the ten the deadline promises.
+let recovering = null;
+
 globalThis.recover = function recover() {
-  return serialize(resume);
+  if (recovering) {
+    return recovering;
+  }
+  recovering = serialize(resume).finally(() => {
+    recovering = null;
+  });
+  return recovering;
 };
 
 async function resume() {
@@ -482,8 +500,7 @@ async function resolveRecoveredSegment(current) {
   // handler, and finalizing at "now" would leave the handler with no segment to
   // backdate -- silently adding the whole idle threshold to nearly every
   // segment that ends after a cold wake.
-  const endedAt = (await userIsActive()) ? now : idleEndedAt(now);
-  await finalize(endedAt);
+  await finalize(idleEndsAt(await userState(), now));
   return false;
 }
 

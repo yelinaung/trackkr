@@ -316,6 +316,35 @@ test("a cold wake by idle keeps the idle backdating", async () => {
   );
 });
 
+test("a cold wake by lock ends the segment without backdating", async () => {
+  // A lock is deliberate and immediate, unlike an idle transition. Recovery
+  // runs before the waking handler, so it must preserve that distinction when
+  // it closes the inherited segment itself.
+  const now = Date.now();
+  const h = chromeHarness({
+    respond: () => ({ ok: false, status: 503 }),
+    idleState: "locked",
+    session: {
+      current: {
+        recordId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        tabId: 10,
+        windowId: 1,
+        url: "https://example.com/a",
+        title: "Docs",
+        incognito: false,
+        startedAt: now - 60_000,
+      },
+    },
+  });
+
+  await h.fire("idle.onStateChanged", "locked");
+  await h.settled();
+
+  assert.equal(h.queue().length, 1, "the segment was not finalized");
+  const endedAt = Date.parse(h.queue()[0].ended_at);
+  assert.ok(endedAt >= now - 2_000, `lock was incorrectly backdated to ${endedAt}`);
+});
+
 test("recovery does not start tracking while the user is already idle", async () => {
   // A browser start or extension update can run recovery with no valid segment
   // while the machine is idle. idle.onStateChanged does not fire just because a
@@ -354,6 +383,7 @@ test("the two manifests agree on everything shared", () => {
     "optional_host_permissions",
     "action",
     "options_ui",
+    "icons",
   ]) {
     assert.deepEqual(chrome[key], firefox[key], `${key} has drifted between the manifests`);
   }
@@ -488,12 +518,17 @@ test("a wedged daemon does not stall tracking indefinitely", async () => {
   const finalizing = h.fire("windows.onFocusChanged", -1);
   await held.started;
 
-  // The request is in flight and nothing is answering. The deadline must abort
-  // it rather than wait for the browser to intervene.
-  h.abortPendingFetch();
+  const signal = h.pendingSignal();
+  assert.ok(signal, "delivery must pass an AbortSignal so it can be bounded");
+  assert.equal(signal.aborted, false, "the request is still in flight");
+
+  // Fire the deadline the production code scheduled, rather than rejecting the
+  // request from the outside: that would pass even with no timer at all.
+  assert.ok(h.runTimers() > 0, "delivery must schedule a deadline");
+  assert.equal(signal.aborted, true, "the deadline must abort the request");
+
   await finalizing;
   await h.settled();
-
   assert.equal(h.queue().length, 1, "an aborted upload must leave the batch queued");
 
   // A later event still reaches durable state.
@@ -502,4 +537,33 @@ test("a wedged daemon does not stall tracking indefinitely", async () => {
   await h.fire("tabs.onActivated", { tabId: 10, windowId: 1 });
   await h.settled();
   assert.ok(h.current(), "an event after an aborted upload must still update state");
+});
+
+test("a startup wake does not run recovery twice", async () => {
+  // The entrypoint starts recovery during evaluation, and onStartup is usually
+  // the very event that woke the worker. Two recoveries mean two delivery
+  // attempts, and against a daemon that never answers that is two consecutive
+  // deadlines -- twice the bound the deadline promises.
+  const h = chromeHarness({
+    respond: () => ({ ok: false, status: 503 }),
+    local: {
+      queue: [
+        {
+          record_id: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+          url: "https://example.com/a",
+          title: "Docs",
+          started_at: new Date(Date.now() - 600_000).toISOString(),
+          ended_at: new Date(Date.now() - 540_000).toISOString(),
+        },
+      ],
+    },
+  });
+
+  // Fired before the initial recovery settles, which is the real ordering.
+  const startup = h.fire("runtime.onStartup");
+  await h.settled();
+  await startup;
+  await h.settled();
+
+  assert.equal(h.state.requests.length, 1, "recovery must coalesce into one delivery attempt");
 });

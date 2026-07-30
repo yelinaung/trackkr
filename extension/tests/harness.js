@@ -58,6 +58,7 @@ function createHarness(options = {}) {
     // before recovery began.
     reads: 0,
     failSessionRemove: false,
+    timers: [],
     idleState,
     permitted,
     requests: [],
@@ -197,6 +198,7 @@ function createHarness(options = {}) {
 
   async function fetchImpl(url, init) {
     state.requests.push({ url, init, body: JSON.parse(init.body) });
+    state.pendingSignal = init && init.signal ? init.signal : null;
     if (state.pendingFetch) {
       // Tell the test the request is genuinely in flight before it
       // starts interfering; appending earlier would race the handler
@@ -208,8 +210,9 @@ function createHarness(options = {}) {
           if (!init || !init.signal) {
             return;
           }
-          state.pendingAbort = () => reject(new DOMException("aborted", "AbortError"));
-          init.signal.addEventListener("abort", state.pendingAbort);
+          init.signal.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
         }),
       ]);
     }
@@ -232,8 +235,19 @@ function createHarness(options = {}) {
     Object,
     String,
     Boolean,
-    setTimeout,
-    clearTimeout,
+    // Captured rather than real, so a test can fire the delivery deadline the
+    // production code actually scheduled instead of reaching past it to reject
+    // the request directly.
+    setTimeout: (fn, delay) => {
+      const handle = { fn, delay, cancelled: false };
+      state.timers.push(handle);
+      return handle;
+    },
+    clearTimeout: (handle) => {
+      if (handle) {
+        handle.cancelled = true;
+      }
+    },
     AbortController,
     DOMException,
     ...(entrypoint === "background-cr.js" ? { chrome: api } : { browser: api }),
@@ -333,12 +347,23 @@ function createHarness(options = {}) {
       state.failSessionRemove = true;
     },
 
-    // abortPendingFetch fires the delivery deadline without waiting for it,
-    // so a test does not have to sleep for the real timeout.
-    abortPendingFetch() {
-      if (state.pendingAbort) {
-        state.pendingAbort();
+    // runTimers fires every scheduled, uncancelled callback -- the production
+    // deadline included -- without waiting for wall-clock time. Returns how
+    // many ran, so a test can assert one was actually scheduled.
+    runTimers() {
+      const due = state.timers.filter((timer) => !timer.cancelled);
+      state.timers = [];
+      for (const timer of due) {
+        timer.cancelled = true;
+        timer.fn();
       }
+      return due.length;
+    },
+
+    // The AbortSignal of the request currently in flight, so a test can assert
+    // the deadline actually aborted it rather than that something rejected.
+    pendingSignal() {
+      return state.pendingSignal || null;
     },
 
     queue() {
