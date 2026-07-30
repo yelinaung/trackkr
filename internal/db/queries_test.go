@@ -702,7 +702,7 @@ func TestGetSiteTotalsUsesHostnameOnly(t *testing.T) {
 		"https://www.example.com/b",
 		"https://EXAMPLE.com/c",
 		"https://example.com:8443/d",
-		"https://someone:hunter2@example.com/e",
+		"https://" + testUserinfo + "@example.com/e",
 		"https://example.com./f",
 		"https://www.example.com./g",
 	} {

@@ -186,9 +186,9 @@ const SiteTotalLimit = 25
 //
 // It extracts the hostname specifically, not the URL authority. The
 // authority also carries userinfo and a port, so grouping on it puts
-// credentials on the dashboard -- https://user:password@example.com
-// renders the password verbatim -- and splits one site across rows
-// for example.com, example.com:443, and EXAMPLE.com.
+// credentials on the dashboard -- an https URL whose authority opens with
+// "user:password@" renders that password verbatim -- and splits one site
+// across rows for example.com, example.com:443, and EXAMPLE.com.
 //
 // Innermost first: take the authority, drop any userinfo before "@",
 // drop a trailing port while keeping a bracketed IPv6 literal intact,

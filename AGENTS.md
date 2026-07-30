@@ -136,8 +136,12 @@ coverage at or above 50% — CI fails below that.
 - Live in `internal/db`. `testPool(t)` (see `testhelper_test.go`) connects,
   runs migrations, and calls `t.Skipf` when Postgres is unreachable — so
   `mise run test` passes on a machine with no database.
-- Override the DSN with `TRACKKR_TEST_DSN`; the default targets the
-  `mise run db` compose service on port 5455.
+- Override the DSN with `TRACKKR_TEST_DSN`. Without it the DSN is assembled
+  from `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`,
+  `POSTGRES_PASSWORD` and `POSTGRES_DB`, each falling back to the `mise run db`
+  compose service on port 5455. CI sets those variables for its service
+  container rather than spelling out a connection string, which would put
+  credentials in the tree for secret scanning to report.
 - Do NOT use `t.Parallel()` in database tests, and clean up rows you create
   (`cleanupUser`).
 

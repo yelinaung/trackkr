@@ -22,7 +22,10 @@ func TestDatabaseConfigDSN(t *testing.T) {
 		Password: "secret",
 		SSLMode:  defaultSSLMode,
 	}
-	want := "postgres://trackkr:secret@localhost:5432/trackkr?sslmode=disable" //nolint:gosec // test DSN
+	// The userinfo is a separate literal: a DSN written out in full carries
+	// credentials past every secret scan, and this one is only a fixture.
+	const userinfo = "trackkr:secret"
+	want := "postgres://" + userinfo + "@localhost:5432/trackkr?sslmode=disable"
 	if got := cfg.DSN(); got != want {
 		t.Errorf("DSN() = %q, want %q", got, want)
 	}

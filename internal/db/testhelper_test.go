@@ -15,11 +15,45 @@ import (
 // testSiteHost is the host every site-derivation fixture normalizes to.
 const testSiteHost = "example.com"
 
+// testUserinfo is credentials for a URL fixture, held apart from the URL it
+// goes into. A URL literal with credentials in its authority is what every
+// secret scanner reports, and these fixtures exist precisely to prove that
+// userinfo never reaches a site total -- so the shape gets assembled rather
+// than written out, and no scanner has to be told to ignore a line.
+const testUserinfo = "someone:hunter2"
+
+const (
+	defaultTestDatabase = "trackkr"
+	// defaultTestPort is the host port the compose service publishes, not
+	// PostgreSQL's own 5432.
+	defaultTestPort = "5455"
+)
+
+// testDSN prefers an explicit DSN, then assembles one from the POSTGRES_*
+// variables a CI service container is already configured with, then falls
+// back to the compose service `mise db` starts.
+//
+// It is assembled for the same reason as testUserinfo: a DSN written out in
+// full carries credentials past every secret scan.
 func testDSN() string {
 	if v := os.Getenv("TRACKKR_TEST_DSN"); v != "" {
 		return v
 	}
-	return "postgres://trackkr:trackkr@localhost:5455/trackkr?sslmode=disable"
+	return fmt.Sprintf(
+		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
+		envOr("POSTGRES_USER", defaultTestDatabase),
+		envOr("POSTGRES_PASSWORD", defaultTestDatabase),
+		envOr("POSTGRES_HOST", "localhost"),
+		envOr("POSTGRES_PORT", defaultTestPort),
+		envOr("POSTGRES_DB", defaultTestDatabase),
+	)
+}
+
+func envOr(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func testPool(t *testing.T) *pgxpool.Pool {

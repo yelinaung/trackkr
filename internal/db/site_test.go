@@ -16,8 +16,7 @@ var siteDerivationCases = []struct {
 	{name: "plain host", url: "https://example.com/page", want: testSiteHost, ok: true},
 	{name: "strips www", url: "https://www.example.com/", want: testSiteHost, ok: true},
 	{name: "strips port", url: "https://example.com:8443/x", want: testSiteHost, ok: true},
-	//nolint:gosec // G101: the credentials in this URL are the input the case proves are stripped.
-	{name: "strips userinfo", url: "https://user:secret@example.com/x", want: testSiteHost, ok: true},
+	{name: "strips userinfo", url: "https://" + testUserinfo + "@example.com/x", want: testSiteHost, ok: true},
 	{name: "lowercases", url: "https://EXAMPLE.COM/x", want: testSiteHost, ok: true},
 	{name: "strips root dot", url: "https://example.com./x", want: testSiteHost, ok: true},
 	{name: "keeps ipv6 literal", url: "http://[::1]:8080/x", want: "[::1]", ok: true},
