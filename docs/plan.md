@@ -12,8 +12,8 @@ Build a cross-platform activity/time tracking app that monitors active windows a
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │ Linux Daemon │     │ macOS Daemon │     │ Android App  │
 │  (trackkrd)  │     │  (trackkrd)  │     │  (future)    │
-│  + Firefox   │     │  + Firefox   │     │              │
-│   Extension  │     │   Extension  │     │              │
+│ + Firefox /  │     │ + Firefox /  │     │              │
+│    Chrome    │     │    Chrome    │     │              │
 └──────┬───────┘     └──────┬───────┘     └──────┬───────┘
        │                    │                    │
        │  POST /api/v1/activity (batched)        │
@@ -40,8 +40,8 @@ Build a cross-platform activity/time tracking app that monitors active windows a
   vendored, no Bootstrap JS), inline SVG timeline bars
 - **Database**: PostgreSQL 18 (`postgres:18-alpine`, digest-pinned in docker-compose)
 - **Desktop client**: Go daemon, platform-specific window/idle detection
-- **Browser extension**: Firefox WebExtension (Manifest V3), talks to a
-  token-authenticated loopback listener on 127.0.0.1:7600
+- **Browser extensions**: Firefox and Google Chrome Manifest V3 extensions,
+  talking to a token-authenticated loopback listener on 127.0.0.1:7600
 - **Deployment**: Docker (multi-stage build), docker-compose for dev
 - **Auto-start**: systemd (Linux), launchd (macOS)
 - **Task runner**: mise
@@ -116,11 +116,15 @@ trackkr/
 │       ├── htmx.min.js             # 2.0.x, exact version pinned
 │       └── fonts/
 ├── extension/
-│   ├── manifest.json               # MV3
+│   ├── manifest.json               # Firefox MV3 source manifest
+│   ├── manifest.chrome.json        # Chrome MV3 source manifest
 │   ├── common.js                   # shared helpers
-│   ├── background.js               # tab, focus, and idle listeners
+│   ├── background-core.js          # shared tab, focus, idle, queue logic
+│   ├── background-fx.js            # Firefox event-page entrypoint
+│   ├── background-cr.js            # Chrome service-worker entrypoint
 │   ├── popup.html / popup.js / popup.css
 │   ├── options.html / options.js / options.css
+│   ├── tests/                      # shared Node harness and browser tests
 │   └── icons/
 ├── deploy/
 │   ├── trackkrd.service            # systemd unit
@@ -137,7 +141,10 @@ trackkr/
 │   ├── phase3-plan.md              # Web dashboard design
 │   ├── phase4-plan.md              # Firefox extension design
 │   ├── phase5-plan.md              # macOS support design
-│   └── phase6-icons-plan.md        # macOS application-icon design
+│   ├── phase6-icons-plan.md        # macOS application-icon design
+│   ├── phase7-dedup-plan.md        # browser/desktop deduplication design
+│   ├── phase8-site-favicons-plan.md # server-fetched favicon design
+│   └── phase9-chrome-extension-plan.md # Chrome extension design
 ├── go.mod
 ├── go.sum
 ├── mise.toml                       # Task runner
@@ -290,17 +297,20 @@ macos_prompt_for_accessibility = false
 
 ---
 
-## Firefox Extension
+## Browser Extensions
 
-- Talks to the daemon at `http://127.0.0.1:7600/extension/activity`, with a
+- Firefox talks to `/extension/activity`; Chrome talks to
+  `/extension/activity/chrome`. Both use a
   bearer token from `trackkrd -print-extension-token`. "Localhost only" is
   not sufficient on its own: any local process can post to the port, and a
   visited web page can attempt a cross-origin write, so the listener also
   requires `Content-Type: application/json` (which forces a preflight it
-  never answers) and rejects any `Origin` that is not `moz-extension://`
-- Manifest V3, so the background script is a non-persistent event page and
-  Firefox treats host permissions as optional — the extension requests the
-  daemon origin at runtime and the popup reports when it is missing
+  never answers) and accepts only parsed `moz-extension://` or
+  `chrome-extension://` origins
+- Both use Manifest V3 and request the daemon's loopback host permission at
+  runtime. Chrome 142 and newer additionally require a foreground popup or
+  options request to grant Local Network Access before its service worker can
+  deliver
 - Listens for `tabs.onActivated`, `tabs.onUpdated`, `windows.onFocusChanged`,
   and `idle.onStateChanged`, so leaving the browser or the desk both end the
   current segment as the desktop tracker's idle handling does
@@ -310,10 +320,15 @@ macos_prompt_for_accessibility = false
   unsent queue lives in `storage.local` so it survives a browser restart,
   while the in-flight tab lives in `storage.session` so a stale focus does
   not
-- Daemon enriches with `app_name = "Firefox"` and feeds into the reporter
-  queue. Dashboard queries give URL-bearing extension records precedence over
-  overlapping desktop Firefox records on the same device; desktop-only gaps
-  remain visible. See `phase7-dedup-plan.md`.
+- A shared core owns tracking and queue semantics. Firefox loads a thin event
+  page entrypoint; Chrome loads a thin service-worker entrypoint with all
+  listeners registered synchronously. Queue-first finalization and stable
+  record IDs make worker termination replay-safe
+- The route stamps the trusted browser producer and canonical application name
+  before feeding the reporter. Dashboard queries subtract each browser's URL
+  coverage only from matching desktop observations on the same device;
+  desktop-only gaps remain visible. See `phase7-dedup-plan.md` and
+  `phase9-chrome-extension-plan.md`.
 
 ---
 
@@ -435,9 +450,9 @@ Linux application icons still need a separately exercised Linux resolver.
 
 ### Phase 7: Desktop/Extension Deduplication (implemented — see `phase7-dedup-plan.md`)
 
-1. Identify Firefox sources by normalized app key and URL presence
-2. Merge extension coverage per device
-3. Subtract only overlapping coverage from desktop Firefox records
+1. Identify Firefox and Chrome sources by trusted producer and browser family
+2. Merge extension coverage per device and browser family
+3. Subtract only overlapping coverage from matching desktop browser records
 4. Apply the same effective intervals to timeline records and app totals
 
 ### Phase 8: Server-Fetched Site Favicons (implemented — see `phase8-site-favicons-plan.md`)
@@ -448,12 +463,25 @@ Linux application icons still need a separately exercised Linux resolver.
 4. Bounded background fetching with private caching and monogram fallback
 5. Serialized per-user retention at 2,048 rows
 
-### Phase 9: Future Enhancements (parked)
+### Phase 9: Google Chrome Extension (implemented — see `phase9-chrome-extension-plan.md`)
+
+1. Stable activity record identities and route-stamped browser producers
+2. Browser-family-scoped deduplication, canonical totals, and icon aliases
+3. Shared tracking core with Firefox and Chrome lifecycle entrypoints
+4. Chrome MV3 service-worker packaging and clean allowlisted validation
+5. Chrome 142+ Local Network Access onboarding and recovery guidance
+
+The automated Node harness covers worker recreation with persistent extension
+storage. Actual Chrome termination during in-flight finalization and the Local
+Network Access prompt still require the manual acceptance checklist in the phase
+plan.
+
+### Phase 10: Future Enhancements (parked)
 
 - Android app
 - Wayland support
-- Weekly/monthly views, categories, productivity scoring
-- Data export
+- Monthly views, categories, productivity scoring
+- CSV and JSON data export
 
 ---
 
@@ -462,5 +490,6 @@ Linux application icons still need a separately exercised Linux resolver.
 1. **Server**: `curl -X POST -H "X-API-Key: ..." -d '{"records":[...]}' localhost:8080/api/v1/activity` returns 201
 2. **Client**: Run daemon, switch windows, verify records appear in DB
 3. **Dashboard**: Login, see today's timeline with colored blocks
-4. **Extension**: Install in Firefox, browse tabs, verify URLs appear in timeline
+4. **Extensions**: Install Firefox and the staged Chrome package, browse tabs in
+   both, and verify URLs appear without cross-browser subtraction
 5. **Docker**: `docker-compose up` starts server + postgres, dashboard accessible
