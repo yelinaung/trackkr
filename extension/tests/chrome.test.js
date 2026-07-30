@@ -225,3 +225,45 @@ test("finalizing twice queues the record once", async () => {
   assert.equal(h.queue().length, 1, "the second finalize duplicated the record");
   assert.equal(h.queue()[0].record_id, segment.recordId);
 });
+
+test("both manifests can request every loopback form the daemon may bind", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const { originFor } = require("../logic.js");
+  const dir = path.join(__dirname, "..");
+
+  // extension_addr is configurable and the daemon accepts any loopback bind.
+  // A manifest that declares only one form leaves the extension unable to ask
+  // for access to a config the daemon considers perfectly valid -- and a
+  // blocked request looks exactly like a dead daemon.
+  const addresses = ["http://127.0.0.1:7600", "http://localhost:7600", "http://[::1]:7600"];
+
+  for (const manifest of ["manifest.json", "manifest.chrome.json"]) {
+    const declared = JSON.parse(fs.readFileSync(path.join(dir, manifest), "utf8"))
+      .optional_host_permissions;
+    for (const address of addresses) {
+      assert.ok(
+        declared.includes(originFor(address)),
+        `${manifest} cannot request ${originFor(address)}`,
+      );
+    }
+  }
+});
+
+test("the Chrome manifest is a service worker with no Gecko keys", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "manifest.chrome.json"), "utf8"),
+  );
+
+  assert.equal(manifest.manifest_version, 3);
+  assert.equal(manifest.background.service_worker, "background-cr.js");
+  assert.equal("scripts" in manifest.background, false, "background.scripts is a Firefox key");
+  assert.equal(manifest.minimum_chrome_version, "116");
+  assert.deepEqual([...manifest.permissions].sort(), ["idle", "storage", "tabs"]);
+
+  for (const key of ["browser_specific_settings", "data_collection_permissions"]) {
+    assert.equal(key in manifest, false, `${key} is Gecko-only`);
+  }
+});

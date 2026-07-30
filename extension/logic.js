@@ -80,6 +80,63 @@
     return typeof id === "string" && RECORD_ID_PATTERN.test(id);
   }
 
+  // The states the popup and options page can report. They are distinct
+  // because the recovery each one needs is distinct, and collapsing two of
+  // them sends the user to fix the wrong thing.
+  const STATUS = {
+    NO_TOKEN: "no-token",
+    PERMISSION: "permission",
+    // Chrome 142 and newer gate loopback requests with Local Network Access
+    // on top of the host permission. Once the permission is granted, a
+    // request that fails before any HTTP response could be an LNA denial or
+    // a stopped daemon, and JavaScript cannot tell them apart -- so this
+    // state names both rather than guessing.
+    BLOCKED: "blocked",
+    TOKEN_REJECTED: "token-rejected",
+    UPGRADE: "upgrade",
+    HTTP_ERROR: "http-error",
+    CONNECTED: "connected",
+  };
+
+  // daemonSupportsBrowser requires the exact lowercase producer name. A
+  // daemon that predates this route answers without the field, and a
+  // differently cased entry is not a match: silently accepting either would
+  // let Chrome activity be stored as Firefox.
+  function daemonSupportsBrowser(body, kind) {
+    if (!body || typeof body !== "object" || body.ok !== true) {
+      return false;
+    }
+    return Array.isArray(body.browsers) && body.browsers.includes(kind);
+  }
+
+  // classifyStatus maps one status attempt onto a UI state.
+  //
+  // Only Chrome demands the capability field. The legacy Firefox route is
+  // permanent, so an older daemon serves Firefox correctly and must not be
+  // reported as needing an upgrade.
+  function classifyStatus({ hasToken, hasPermission, status, body, kind }) {
+    if (!hasToken) {
+      return STATUS.NO_TOKEN;
+    }
+    if (!hasPermission) {
+      return STATUS.PERMISSION;
+    }
+    // No status at all means the request never reached an HTTP response.
+    if (!Number.isFinite(status)) {
+      return STATUS.BLOCKED;
+    }
+    if (status === 401) {
+      return STATUS.TOKEN_REJECTED;
+    }
+    if (status < 200 || status > 299) {
+      return STATUS.HTTP_ERROR;
+    }
+    if (kind === "chrome" && !daemonSupportsBrowser(body, kind)) {
+      return STATUS.UPGRADE;
+    }
+    return STATUS.CONNECTED;
+  }
+
   // usableSegment decides whether persisted session state may become
   // activity. Session storage survives a service-worker restart, so on
   // recovery it is untrusted input rather than something this code wrote:
@@ -295,6 +352,9 @@
     shouldSwitch,
     buildRecord,
     validRecordId,
+    STATUS,
+    daemonSupportsBrowser,
+    classifyStatus,
     usableSegment,
     legacySegment,
     queueHasRecord,

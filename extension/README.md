@@ -21,6 +21,37 @@ mise ext-lint                 # web-ext lint, warnings are errors
 mise ext-test                 # logic and background tests, no browser
 ```
 
+## Chrome
+
+The Chrome build is packaged rather than loaded from source, because its
+manifest and entrypoint differ:
+
+```sh
+mise ext-build-chrome
+```
+
+That stages `dist/chrome/` from an explicit allowlist and writes
+`dist/trackkr-chrome-<version>.zip`. Open `chrome://extensions`, enable
+Developer mode, choose Load unpacked, and select `dist/chrome/`. Then paste the
+daemon token in Settings and grant loopback access.
+
+Upgrade the daemon first. Chrome records go to `/extension/activity/chrome`, and
+a daemon without that route answers 404 -- which the extension retries rather
+than misfiling. The popup says `Daemon upgrade required` when the daemon does
+not advertise `chrome`, so the failure is visible instead of silently storing
+Chrome activity as Firefox.
+
+Chrome 142 and newer gate loopback requests with Local Network Access on top of
+the host permission. The prompt is raised by a foreground extension page, never
+by the service worker, so the popup issues its status request immediately after
+you grant the host permission. If that request fails before any HTTP response,
+JavaScript cannot tell an LNA denial from a stopped daemon -- so the popup names
+both and offers Retry.
+
+`mise ext-lint` still validates the Firefox manifest only. `manifest.chrome.json`
+and `background-cr.js` are excluded from it, and the Chrome package has its own
+check, `mise ext-validate-chrome`, which runs against the staged directory.
+
 ## Ignoring sites
 
 The options page takes one host per line, and those hosts are never
@@ -79,6 +110,13 @@ pinned `http://127.0.0.1:7600/*` breaks the moment someone changes the
 port -- silently, because a blocked request looks like a dead daemon.
 
 ## Layout
+
+`background-core.js` holds the shared tracking runtime; `background-fx.js` and
+`background-cr.js` are thin entrypoints that add only what their browser
+provides. Firefox registers `runtime.onSuspend`, which Chrome has no equivalent
+for; Chrome loads the shared files through `importScripts`. Listener
+registration is synchronous in both, because Chrome delivers the event that woke
+a worker only if the listener already exists when evaluation finishes.
 
 `logic.js` holds the decision rules: which tabs count, when a segment
 ends, what gets sent. It touches no browser API, so `node:test` covers

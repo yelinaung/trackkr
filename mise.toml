@@ -59,6 +59,14 @@ description = "Run the extension's logic tests"
 # as a module path and fails to resolve it.
 run = ["node --test 'extension/tests/*.test.js'"]
 
+[tasks.ext-build-chrome]
+description = "Stage and package the Chrome extension into dist/"
+run = ["./scripts/build-chrome.sh"]
+
+[tasks.ext-validate-chrome]
+description = "Validate the staged Chrome package"
+run = ["./scripts/validate-chrome-package.sh"]
+
 [tasks.ext-run]
 description = "Launch Firefox with the extension loaded"
 run = ["web-ext run --source-dir extension"]
