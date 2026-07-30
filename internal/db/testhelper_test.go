@@ -12,6 +12,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// testSiteHost is the host every site-derivation fixture normalizes to.
+const testSiteHost = "example.com"
+
 func testDSN() string {
 	if v := os.Getenv("TRACKKR_TEST_DSN"); v != "" {
 		return v

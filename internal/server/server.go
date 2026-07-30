@@ -150,6 +150,8 @@ func newRouter(s *Server) *chi.Mux {
 		priv.Use(RequireCSRF(s.codec))
 		priv.Get("/", h.handleDashboard())
 		priv.Get("/timeline", h.handleTimeline())
+		priv.Get("/activity", h.handleActivityDetail())
+		priv.Get("/activity/panel", h.handleActivityPanel())
 		priv.Get("/app-icons/{id}/{sha256}.png", h.handleAppIcon())
 		priv.Get("/site-icons/{site}", h.handleSiteIcon())
 		priv.Get("/devices", h.handleDevices())

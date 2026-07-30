@@ -49,7 +49,7 @@ func TestIngestActivity(t *testing.T) {
 			},
 			{
 				AppName:   "VS Code",
-				Title:     "main.go",
+				Title:     testWindowTitle,
 				StartedAt: now.Add(30 * time.Second),
 				EndedAt:   now.Add(60 * time.Second),
 				DurationS: 30,
@@ -278,7 +278,7 @@ func TestIngestActivityURLOptional(t *testing.T) {
 		Records: stampIngestIdentity(t, []ingestRecord{
 			{
 				AppName:   "VS Code",
-				Title:     "main.go",
+				Title:     testWindowTitle,
 				StartedAt: now,
 				EndedAt:   now.Add(30 * time.Second),
 				DurationS: 30,

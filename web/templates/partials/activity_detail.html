@@ -1,0 +1,135 @@
+{{/* The way back carries the period on screen, so changing the date, view or
+     device has to rewrite it. It sits above the filters rather than inside
+     the swapped panel, so on an htmx swap it is updated out of band -- one
+     definition serves both renders, and the two cannot drift apart. */}}
+{{define "detail_back"}}
+<p class="detail-back" id="detail-back"{{if .Partial}} hx-swap-oob="true"{{end}}>
+  <a href="{{.Detail.BackURL}}">&larr; Back to the timeline</a>
+</p>
+{{end}}
+
+{{define "breakdown_row"}}
+<li class="breakdown__item">
+  <span class="breakdown__label" title="{{.Label}}">{{.Label}}</span>
+  <svg class="breakdown__bar" viewBox="0 0 100 10" preserveAspectRatio="none" aria-hidden="true">
+    <rect x="0" y="0" width="{{.Width}}" height="10" fill="{{.Fill}}"></rect>
+  </svg>
+  <span class="breakdown__time">{{if .Seconds}}{{duration .Seconds}}{{else}}&mdash;{{end}}</span>
+</li>
+{{end}}
+
+{{define "session_row"}}
+<li class="session">
+  <span class="session__clock">{{.Start}} &ndash; {{.End}}</span>
+  <span class="session__time">{{duration .Seconds}}</span>
+  <span class="session__where">{{if .Title}}{{.Title}}{{else}}&mdash;{{end}}</span>
+  <span class="session__device">{{.DeviceName}}</span>
+</li>
+{{end}}
+
+{{define "activity_detail"}}
+{{$detail := .Detail}}
+{{$fill := $detail.Entry.Fill}}
+
+{{if .Partial}}{{template "detail_back" .}}{{end}}
+
+<p class="detail__period">{{.DateLabel}}</p>
+
+{{if .SourceTruncated}}
+<p class="notice" role="status">
+  This range exceeds {{.SourceLimit}} source records. The chart and sessions show
+  the earliest bounded portion rather than the complete range.
+</p>
+{{else if .Truncated}}
+<p class="notice" role="status">
+  Showing the first {{.RecordLimit}} records of this range, so the chart and the
+  session list stop early. The total above covers the selected range.
+</p>
+{{end}}
+
+<div class="stat-row">
+  <div class="stat">
+    <p class="stat__label">Time spent</p>
+    <p class="stat__value">{{duration $detail.Seconds}}</p>
+  </div>
+  <div class="stat">
+    <p class="stat__label">Share of tracked</p>
+    <p class="stat__value">{{$detail.SharePct}}%</p>
+  </div>
+  <div class="stat">
+    <p class="stat__label">Sessions</p>
+    <p class="stat__value">{{$detail.SessionCount}}</p>
+  </div>
+  <div class="stat">
+    <p class="stat__label">Longest stretch</p>
+    <p class="stat__value">{{duration $detail.Longest}}</p>
+  </div>
+</div>
+
+{{if $detail.SessionCount}}
+{{template "chart" .Chart}}
+<p class="detail__legend">
+  <span class="detail__swatch" aria-hidden="true">
+    <svg viewBox="0 0 12 12" width="12" height="12"><rect width="12" height="12" fill="{{$fill}}"></rect></svg>
+  </span>
+  Solid blocks are {{$detail.Entry.AppName}}. Everything else tracked in this
+  period is faded behind them, so the same day reads the same way it does on the
+  timeline.
+</p>
+{{else}}
+<p class="empty">
+  Nothing tracked for {{$detail.Entry.AppName}} in this period. Try another date
+  or switch to the week view.
+</p>
+{{end}}
+
+{{if $detail.Days}}
+<section class="detail-section" aria-label="Time per day">
+  <h2 class="totals__title">By day</h2>
+  <ol class="breakdown">
+    {{range $detail.Days}}{{template "breakdown_row" .}}{{end}}
+  </ol>
+</section>
+{{end}}
+
+{{if $detail.Titles}}
+<section class="detail-section" aria-label="Time per window title">
+  <h2 class="totals__title">{{if eq $detail.Kind "site"}}Pages{{else}}Windows{{end}}</h2>
+  <ol class="breakdown">
+    {{range $detail.Titles}}{{template "breakdown_row" .}}{{end}}
+  </ol>
+</section>
+{{end}}
+
+{{if $detail.Sessions}}
+<section class="detail-section" aria-label="Sessions">
+  <h2 class="totals__title">Sessions</h2>
+  <ol class="sessions">
+    {{range $index, $session := $detail.Sessions}}
+    {{if lt $index $detail.SessionsShown}}{{template "session_row" $session}}{{end}}
+    {{end}}
+  </ol>
+  {{if gt (len $detail.Sessions) $detail.SessionsShown}}
+  <details class="totals__more">
+    <summary>
+      <span class="totals__more-closed">
+        Show {{sub (len $detail.Sessions) $detail.SessionsShown}} more
+      </span>
+      <span class="totals__more-open">Show less</span>
+    </summary>
+    <ol class="sessions">
+      {{range $index, $session := $detail.Sessions}}
+      {{if ge $index $detail.SessionsShown}}{{template "session_row" $session}}{{end}}
+      {{end}}
+    </ol>
+  </details>
+  {{end}}
+  {{if gt $detail.SessionCount (len $detail.Sessions)}}
+  <p class="detail__note">
+    {{$detail.SessionCount}} sessions in this period; the {{len $detail.Sessions}}
+    earliest are listed.
+  </p>
+  {{end}}
+</section>
+{{end}}
+{{end}}

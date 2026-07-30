@@ -32,7 +32,10 @@ const (
 	maxPasswordBytes = 72
 
 	// uniqueViolation is PostgreSQL's SQLSTATE for a duplicate key.
-	uniqueViolation        = "23505"
+	uniqueViolation = "23505"
+	// dateLayout is the value the date input submits and the dashboard links
+	// carry.
+	dateLayout             = "2006-01-02"
 	flashKindError         = "error"
 	dashboardViewDay       = "day"
 	dashboardViewWeek      = "week"
@@ -320,10 +323,53 @@ func (h *webHandlers) handleTimeline() http.HandlerFunc {
 		}
 
 		data.Partial = true
-		if err := h.templates.renderPartial(w, "timeline", data); err != nil {
+		if err := h.templates.renderPartial(w, partialTimeline, data); err != nil {
 			h.fail(w, err, "rendering timeline")
 		}
 	}
+}
+
+// dashboardWindow is the period one request selects: the day it names, the
+// day-or-week span that follows from it, and an optional single device.
+type dashboardWindow struct {
+	day        time.Time
+	view       string
+	start, end time.Time
+	deviceID   *int64
+}
+
+func (h *webHandlers) parseWindow(r *http.Request) *dashboardWindow {
+	day := h.parseDay(r.URL.Query().Get(dateParam))
+	view := parseDashboardView(r.URL.Query().Get(viewParam))
+	start, end := dayBounds(day)
+	if view == dashboardViewWeek {
+		start, end = weekBounds(day)
+	}
+	return &dashboardWindow{
+		day:      day,
+		view:     view,
+		start:    start,
+		end:      end,
+		deviceID: parseDeviceID(r.URL.Query().Get("device")),
+	}
+}
+
+func (w *dashboardWindow) label() string {
+	if w.view == dashboardViewWeek {
+		return weekLabel(w.start, w.end)
+	}
+	return w.start.Format("Monday, 2 January 2006")
+}
+
+// apply writes the filter state every page with the period controls needs.
+func (h *webHandlers) applyWindow(data *pageData, win *dashboardWindow) {
+	if win.deviceID != nil {
+		data.SelectedDevice = *win.deviceID
+	}
+	data.Date = win.day.Format(dateLayout)
+	data.Today = time.Now().In(h.loc).Format(dateLayout)
+	data.DateLabel = win.label()
+	data.View = win.view
 }
 
 // timelineData gathers the selected day or week for the signed-in user.
@@ -338,25 +384,15 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 		return nil, err
 	}
 	data := h.base(r, token)
-
-	day := h.parseDay(r.URL.Query().Get("date"))
-	view := parseDashboardView(r.URL.Query().Get("view"))
-	start, end := dayBounds(day)
-	if view == dashboardViewWeek {
-		start, end = weekBounds(day)
-	}
-
-	deviceID := parseDeviceID(r.URL.Query().Get("device"))
-	if deviceID != nil {
-		data.SelectedDevice = *deviceID
-	}
+	win := h.parseWindow(r)
+	h.applyWindow(data, win)
 
 	devices, err := h.queries.ListDevicesByUser(r.Context(), user.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	activity, err := h.queries.GetActivitySummary(r.Context(), user.ID, start, end, deviceID)
+	activity, err := h.queries.GetActivitySummary(r.Context(), user.ID, win.start, win.end, win.deviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -364,33 +400,13 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	totals := activity.Totals
 	displayTotals := totals[:min(len(totals), dashboardTotalLimit)]
 
-	// One application can be stored under several keys: the macOS detector
-	// reports "Google Chrome" and the Linux X11 detector "google-chrome", so a
-	// user with both devices has two icon rows for one browser. Ask for every
-	// candidate and choose by the ordered alias list below, never by whichever
-	// row the database returned first.
-	appKeys := make([]string, 0, len(displayTotals)*2)
-	seenKeys := make(map[string]struct{}, len(displayTotals)*2)
+	appNames := make([]string, 0, len(displayTotals))
 	for _, total := range displayTotals {
-		for _, key := range db.AppIconKeys(total.AppName) {
-			if _, dup := seenKeys[key]; dup {
-				continue
-			}
-			seenKeys[key] = struct{}{}
-			appKeys = append(appKeys, key)
-		}
+		appNames = append(appNames, total.AppName)
 	}
-	iconRows, err := h.icons.AppIconMetadata(r.Context(), user.ID, appKeys)
-	if err != nil {
-		h.logger.Warn().Err(err).Msg("application icon metadata unavailable")
-		iconRows = nil
-	}
-	iconsByKey := make(map[string]db.AppIconRow, len(iconRows))
-	for i := range iconRows {
-		iconsByKey[iconRows[i].AppKey] = iconRows[i]
-	}
+	iconsByKey := h.appIcons(r.Context(), user.ID, appNames)
 
-	sites, err := h.queries.GetSiteTotals(r.Context(), user.ID, start, end, deviceID)
+	sites, err := h.queries.GetSiteTotals(r.Context(), user.ID, win.start, win.end, win.deviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -398,23 +414,8 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 
 	siteViews := make([]TotalView, 0, len(displaySites))
 	for _, site := range displaySites {
-		fill, chip, monogramFill := appPalette(site.Site)
-		view := TotalView{
-			AppName:      site.Site,
-			Seconds:      site.Seconds,
-			Fill:         fill,
-			Monogram:     appMonogram(site.Site),
-			MonogramFill: monogramFill,
-			MonogramBG:   chip,
-		}
-		canonical, canonicalErr := favicon.CanonicalSite(site.Site)
-		if canonicalErr == nil && canonical == site.Site {
-			view.IconURL = fmt.Sprintf(
-				"/site-icons/%s?sig=%s",
-				site.Site,
-				h.codec.siteIconSignature(user.ID, site.Site),
-			)
-		}
+		view := h.siteTotalView(user.ID, site)
+		view.DetailURL = detailURL(detailKindSite, site.Site, win)
 		siteViews = append(siteViews, view)
 	}
 
@@ -423,44 +424,102 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	}
 	views := make([]TotalView, 0, len(displayTotals))
 	for _, t := range displayTotals {
-		fill, chip, monogramFill := appPalette(t.AppName)
-		view := TotalView{
-			AppName:      t.AppName,
-			Seconds:      t.Seconds,
-			Fill:         fill,
-			Monogram:     appMonogram(t.AppName),
-			MonogramFill: monogramFill,
-			MonogramBG:   chip,
-		}
-		if row, ok := firstPresentIcon(iconsByKey, db.AppIconKeys(t.AppName)); ok {
-			view.IconURL = fmt.Sprintf(
-				"/app-icons/%d/%s.png",
-				row.ID,
-				hex.EncodeToString(row.SHA256),
-			)
-		}
+		view := appTotalView(t, iconsByKey)
+		view.DetailURL = detailURL(detailKindApp, t.AppName, win)
 		views = append(views, view)
 	}
 
 	data.Devices = devices
 	data.Totals = views
 	data.Sites = siteViews
-	if view == dashboardViewWeek {
-		data.Chart = layoutWeek(records, devices, start, end)
+	if win.view == dashboardViewWeek {
+		data.Chart = layoutWeek(records, devices, win.start, win.end)
 	} else {
-		data.Chart = layout(records, devices, day)
+		data.Chart = layout(records, devices, win.day)
 	}
-	data.Date = day.Format("2006-01-02")
-	data.Today = time.Now().In(h.loc).Format("2006-01-02")
-	data.DateLabel = start.Format("Monday, 2 January 2006")
-	if view == dashboardViewWeek {
-		data.DateLabel = weekLabel(start, end)
-	}
-	data.View = view
 	data.Truncated = activity.TimelineTruncated
 	data.SourceTruncated = activity.SourceTruncated
 
 	return data, nil
+}
+
+// appIcons resolves stored icons for a set of application names.
+//
+// One application can be stored under several keys: the macOS detector
+// reports "Google Chrome" and the Linux X11 detector "google-chrome", so a
+// user with both devices has two icon rows for one browser. Ask for every
+// candidate and choose by the ordered alias list in appTotalView, never by
+// whichever row the database returned first.
+//
+// A failure here loses the icons, not the page: monograms stand in.
+func (h *webHandlers) appIcons(
+	ctx context.Context,
+	userID int64,
+	appNames []string,
+) map[string]db.AppIconRow {
+	keys := make([]string, 0, len(appNames)*2)
+	seen := make(map[string]struct{}, len(appNames)*2)
+	for _, name := range appNames {
+		for _, key := range db.AppIconKeys(name) {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			keys = append(keys, key)
+		}
+	}
+
+	rows, err := h.icons.AppIconMetadata(ctx, userID, keys)
+	if err != nil {
+		h.logger.Warn().Err(err).Msg("application icon metadata unavailable")
+		return nil
+	}
+	byKey := make(map[string]db.AppIconRow, len(rows))
+	for i := range rows {
+		byKey[rows[i].AppKey] = rows[i]
+	}
+	return byKey
+}
+
+// appTotalView builds one application row from its total and the icons
+// already resolved for the page.
+func appTotalView(total db.AppTotalRow, iconsByKey map[string]db.AppIconRow) TotalView {
+	view := newTotalView(total.AppName, total.Seconds)
+	if row, ok := firstPresentIcon(iconsByKey, db.AppIconKeys(total.AppName)); ok {
+		view.IconURL = fmt.Sprintf(
+			"/app-icons/%d/%s.png",
+			row.ID,
+			hex.EncodeToString(row.SHA256),
+		)
+	}
+	return view
+}
+
+// siteTotalView builds one website row. Only a site key the fetcher would
+// accept gets a signed icon URL; anything else keeps its monogram.
+func (h *webHandlers) siteTotalView(userID int64, site db.SiteTotalRow) TotalView {
+	view := newTotalView(site.Site, site.Seconds)
+	canonical, err := favicon.CanonicalSite(site.Site)
+	if err == nil && canonical == site.Site {
+		view.IconURL = fmt.Sprintf(
+			"/site-icons/%s?sig=%s",
+			site.Site,
+			h.codec.siteIconSignature(userID, site.Site),
+		)
+	}
+	return view
+}
+
+func newTotalView(name string, seconds int64) TotalView {
+	fill, chip, monogramFill := appPalette(name)
+	return TotalView{
+		AppName:      name,
+		Seconds:      seconds,
+		Fill:         fill,
+		Monogram:     appMonogram(name),
+		MonogramFill: monogramFill,
+		MonogramBG:   chip,
+	}
 }
 
 func appMonogram(name string) string {
@@ -483,7 +542,7 @@ func appMonogram(name string) string {
 // parseDay falls back to today in the server's timezone.
 func (h *webHandlers) parseDay(raw string) time.Time {
 	if raw != "" {
-		if day, err := time.ParseInLocation("2006-01-02", raw, h.loc); err == nil {
+		if day, err := time.ParseInLocation(dateLayout, raw, h.loc); err == nil {
 			return day
 		}
 	}
@@ -593,7 +652,7 @@ func (h *webHandlers) handleDeleteDevice() http.HandlerFunc {
 			return
 		}
 
-		if err := h.templates.renderPartial(w, "device_rows", data); err != nil {
+		if err := h.templates.renderPartial(w, partialDevices, data); err != nil {
 			h.fail(w, err, "rendering device rows")
 		}
 	}

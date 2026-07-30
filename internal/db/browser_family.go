@@ -70,10 +70,14 @@ func familyForDesktopName(appName string) (browserFamily, bool) {
 	return browserFamily{}, false
 }
 
-// canonicalAppName folds a record onto its family's display name so one browser
+// CanonicalAppName folds a record onto its family's display name so one browser
 // does not appear as two rows. An application in no known family keeps the name
 // it was stored under.
-func canonicalAppName(record *ActivityRecordRow) string {
+//
+// It is exported because matching a summary row back to the records behind it
+// has to fold aliases exactly the way the totals did, or the detail view of
+// "Google Chrome" would miss every record stored as "google-chrome".
+func CanonicalAppName(record *ActivityRecordRow) string {
 	if family, ok := familyForProducer(record.Producer); ok {
 		return family.canonical
 	}

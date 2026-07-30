@@ -39,6 +39,10 @@ type Bar struct {
 	Title     string
 	TimeRange string
 	Bucket    int // 0-11, drives the CSS stagger without a per-bar delay.
+	// Muted marks a bar drawn only as context, on a chart focused on one
+	// application or site. It keeps the day's shape visible behind the
+	// subject without competing with it.
+	Muted bool
 }
 
 // Lane is one device's row of bars.
@@ -373,6 +377,70 @@ func layoutScaled(
 	showDates bool,
 	scale *activeHourScale,
 ) Chart {
+	return layoutFocused(nil, focus{records: records}, devices, start, end, marks, showDates, scale)
+}
+
+// focus is one subject drawn against the rest of a period: the records that
+// belong to it, and the colour the page identifies it by.
+//
+// The fill is the subject's, not each record's. A site is observed through a
+// browser, so colouring its bars by application name would paint
+// news.ycombinator.com in Chrome's hue while the legend beside the chart
+// showed the site's -- and the same split happens to a browser stored under a
+// platform alias.
+type focus struct {
+	records []db.ActivityRecordRow
+	fill    string
+}
+
+// layoutFocusDay draws one day with focus highlighted against all as context.
+// The window and the compressed axis come from the full set, so the detail
+// chart lines up with the dashboard the reader arrived from.
+func layoutFocusDay(all []db.ActivityRecordRow, subject focus, devices []db.DeviceRow, day time.Time) Chart {
+	dayStart, dayEnd := dayBounds(day)
+	start, end := chartWindow(all, dayStart, dayEnd)
+	context := mergeAdjacentActivity(all)
+	merged := focus{records: mergeAdjacentActivity(subject.records), fill: subject.fill}
+	if scale := newActiveHourScale(context, start, end); scale != nil {
+		return layoutFocused(context, merged, devices, start, end, scale.marks(start), false, scale)
+	}
+	return layoutFocused(context, merged, devices, start, end, hourMarks(start, end), false, nil)
+}
+
+// layoutFocusWeek is layoutFocusDay over a fixed calendar week.
+func layoutFocusWeek(
+	all []db.ActivityRecordRow,
+	subject focus,
+	devices []db.DeviceRow,
+	start, end time.Time,
+) Chart {
+	return layoutFocused(
+		mergeAdjacentActivity(all),
+		focus{records: mergeAdjacentActivity(subject.records), fill: subject.fill},
+		devices,
+		start, end,
+		dayMarks(start, end),
+		true,
+		nil,
+	)
+}
+
+// layoutFocused draws two record sets onto one axis: context first, muted,
+// then focus over it. A dashboard chart passes no context and every bar is
+// focused, which is the same chart as before this split.
+//
+// Lanes come from the union of both sets so the two layers stay in the same
+// rows: a device that only appears in the context still gets its lane, or the
+// focused bars would shift up into it.
+func layoutFocused(
+	context []db.ActivityRecordRow,
+	subject focus,
+	devices []db.DeviceRow,
+	start, end time.Time,
+	marks []HourMark,
+	showDates bool,
+	scale *activeHourScale,
+) Chart {
 	span := end.Sub(start).Minutes()
 	if scale != nil {
 		span = float64(scale.kept) * 60
@@ -393,18 +461,26 @@ func layoutScaled(
 	}
 
 	byDevice := make(map[int64][]Bar)
-	for i := range records {
-		rec := &records[i]
-		bar, ok := toBar(rec, start, end, span, i, showDates, scale)
-		if !ok {
-			continue
+	collect := func(records []db.ActivityRecordRow, muted bool, fill string) {
+		for i := range records {
+			rec := &records[i]
+			bar, ok := toBar(rec, start, end, span, i, showDates, scale)
+			if !ok {
+				continue
+			}
+			bar.Muted = muted
+			if fill != "" {
+				bar.Fill = fill
+			}
+			if _, known := names[rec.DeviceID]; !known {
+				names[rec.DeviceID] = fmt.Sprintf("device %d", rec.DeviceID)
+				order = append(order, rec.DeviceID)
+			}
+			byDevice[rec.DeviceID] = append(byDevice[rec.DeviceID], bar)
 		}
-		if _, known := names[rec.DeviceID]; !known {
-			names[rec.DeviceID] = fmt.Sprintf("device %d", rec.DeviceID)
-			order = append(order, rec.DeviceID)
-		}
-		byDevice[rec.DeviceID] = append(byDevice[rec.DeviceID], bar)
 	}
+	collect(context, true, "")
+	collect(subject.records, false, subject.fill)
 
 	for _, id := range order {
 		bars, ok := byDevice[id]

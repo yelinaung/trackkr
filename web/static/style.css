@@ -451,6 +451,13 @@ button:focus-visible,
   animation: bar-in 320ms ease-out forwards;
 }
 
+/* Context on a chart focused elsewhere: the day keeps its shape, the
+   subject keeps the reader's eye. Drawn first, so the focused bars paint
+   over it. */
+.bar--muted {
+  animation-name: bar-in-muted;
+}
+
 .bar:hover {
   stroke: var(--ink);
   stroke-width: 1;
@@ -479,12 +486,18 @@ button:focus-visible,
   to   { opacity: 1; transform: none; }
 }
 
+@keyframes bar-in-muted {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 0.16; transform: none; }
+}
+
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: none; }
 }
 
-#timeline {
+#timeline,
+#detail {
   animation: fade-swap 220ms ease-out;
 }
 
@@ -497,10 +510,17 @@ button:focus-visible,
   .bar,
   .auth-card,
   #timeline,
+  #detail,
   .totals__more summary::after {
     animation: none;
     opacity: 1;
     transition: none;
+  }
+
+  /* The muted state is meaning, not decoration: it survives the reset that
+     removes the animation carrying it. */
+  .bar--muted {
+    opacity: 0.16;
   }
 }
 
@@ -597,18 +617,42 @@ button:focus-visible,
 }
 
 .totals__item {
-  display: grid;
-  grid-template-columns: 0.75rem 1fr auto;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.45rem 0.75rem;
   border: 1px solid var(--edge);
   border-radius: var(--radius);
   background-color: var(--paper-raised);
 }
 
-.totals__item--app {
+.totals__item:hover {
+  border-color: var(--accent);
+}
+
+/* The whole row is the target, not the name: a summary row is one thing to
+   click, and a link the width of the card is easier to hit than a word. */
+.totals__link {
+  display: grid;
+  grid-template-columns: 0.75rem 1fr auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.45rem 0.75rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.totals__item--app .totals__link {
   grid-template-columns: 1.375rem 1fr auto;
+}
+
+.totals__link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.totals__app {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .totals__icon {
@@ -672,6 +716,232 @@ button:focus-visible,
   .site-header__inner {
     flex-wrap: wrap;
     gap: 0.75rem;
+  }
+}
+
+/* ---------- one application or website ---------- */
+
+.detail-back {
+  margin-bottom: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+/* Bootstrap resolves `a` through --bs-link-color-rgb, which the palette at
+   the top of this file does not set, so a plain body link comes out its
+   default blue. Every other link on the site is styled by its own class;
+   this one has to be too. */
+.detail-back a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.detail-back a:hover {
+  color: var(--accent-warm);
+  text-decoration: underline;
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.detail-head__icon {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.6rem;
+}
+
+.detail-head__text {
+  min-width: 0;
+}
+
+.detail-head__kind {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-soft);
+}
+
+.detail-head .page-title {
+  margin: 0.1rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.detail__period {
+  margin-bottom: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.detail__legend {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.detail__swatch {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+
+.detail__note {
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.detail-section {
+  margin-top: 2.25rem;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.stat {
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background-color: var(--paper-raised);
+}
+
+.stat__label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+}
+
+.stat__value {
+  margin: 0.25rem 0 0;
+  font-family: var(--font-mono);
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.breakdown {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.breakdown__item {
+  display: grid;
+  grid-template-columns: minmax(0, 12rem) minmax(0, 1fr) 4.5rem;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.breakdown__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+}
+
+/* Stretched to the row: the rect's width attribute is a share of 100, so
+   the track is the full column whatever the column measures. */
+.breakdown__bar {
+  width: 100%;
+  height: 0.6rem;
+  border-radius: 3px;
+  background-color: #f1f3f5;
+}
+
+.breakdown__time {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  text-align: right;
+  color: var(--ink-soft);
+}
+
+.sessions {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.session {
+  display: grid;
+  /* The clock column sizes to its longest entry: a week's sessions carry a
+     weekday, a day's do not, and neither should wrap. */
+  grid-template-columns: max-content 4.5rem minmax(0, 1fr) minmax(0, 8rem);
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background-color: var(--paper-raised);
+}
+
+.session__clock,
+.session__time {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.session__where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.session__device {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  text-align: right;
+  color: var(--ink-soft);
+}
+
+@media (max-width: 48rem) {
+  .stat-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 34rem) {
+  .breakdown__item {
+    grid-template-columns: minmax(0, 1fr) 4.5rem;
+  }
+
+  /* The bar drops to its own row rather than shrinking to a stub beside a
+     truncated label. */
+  .breakdown__bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .session {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .session__where,
+  .session__device {
+    grid-column: 1 / -1;
+    text-align: left;
   }
 }
 

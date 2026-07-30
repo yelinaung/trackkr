@@ -1,0 +1,31 @@
+{{define "title"}}{{.Detail.Entry.AppName}} &middot; trackkr{{end}}
+
+{{define "content"}}
+{{template "detail_back" .}}
+
+<header class="detail-head">
+  {{if .Detail.Entry.IconURL}}
+  <img class="detail-head__icon" src="{{.Detail.Entry.IconURL}}" width="44" height="44" alt="" decoding="async">
+  {{else}}
+  <svg class="detail-head__icon totals__monogram" viewBox="0 0 22 22" width="44" height="44" aria-hidden="true">
+    <rect width="22" height="22" rx="6" fill="{{.Detail.Entry.MonogramBG}}"></rect>
+    <text x="11" y="14.5" text-anchor="middle" fill="{{.Detail.Entry.MonogramFill}}">{{.Detail.Entry.Monogram}}</text>
+  </svg>
+  {{end}}
+  <div class="detail-head__text">
+    <p class="detail-head__kind">{{.Detail.KindLabel}}</p>
+    <h1 class="page-title" id="page-title">{{.Detail.Entry.AppName}}</h1>
+  </div>
+</header>
+
+<form class="filters" hx-get="/activity/panel" hx-target="#detail" hx-swap="innerHTML"
+      hx-trigger="change" hx-indicator="#timeline-loading">
+  <input type="hidden" name="kind" value="{{.Detail.Kind}}">
+  <input type="hidden" name="name" value="{{.Detail.Entry.AppName}}">
+  {{template "period_fields" .}}
+</form>
+
+<div id="detail">
+  {{template "activity_detail" .}}
+</div>
+{{end}}

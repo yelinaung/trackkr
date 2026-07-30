@@ -1,0 +1,62 @@
+{{/* The chrome every period view shares: the date, period and device
+     controls, and the positioned chart itself. The dashboard and the
+     single-application page differ in what they draw beside these, not in
+     these. */}}
+
+{{define "period_fields"}}
+<fieldset class="filters__field filters__period">
+  <legend>View</legend>
+  <div class="view-switch">
+    <input id="view-day" name="view" type="radio" value="day" {{if ne .View "week"}}checked{{end}}>
+    <label for="view-day">Day</label>
+    <input id="view-week" name="view" type="radio" value="week" {{if eq .View "week"}}checked{{end}}>
+    <label for="view-week">Week</label>
+  </div>
+</fieldset>
+
+<div class="filters__field">
+  <label for="date">Date</label>
+  <input id="date" name="date" type="date" value="{{.Date}}" max="{{.Today}}">
+</div>
+
+<div class="filters__field">
+  <label for="device">Device</label>
+  <select id="device" name="device">
+    <option value="">All devices</option>
+    {{range .Devices}}
+    <option value="{{.ID}}" {{if eq $.SelectedDevice .ID}}selected{{end}}>{{.Name}}</option>
+    {{end}}
+  </select>
+</div>
+
+<span id="timeline-loading" class="htmx-indicator" aria-hidden="true">updating</span>
+{{end}}
+
+{{/* chart takes a Chart rather than the page, so both views position bars
+     on exactly the same axis. */}}
+{{define "chart"}}
+{{$span := .SpanMin}}
+<section class="timeline" aria-label="Activity timeline">
+  <div class="timeline__scroll">
+    <div class="timeline__axis" aria-hidden="true">
+      {{range .HourMarks}}<span class="timeline__hour timeline__hour--{{.SpanHours}}{{if .GapBefore}} timeline__hour--break{{end}}">{{.Label}}</span>{{end}}
+    </div>
+
+    {{range .Lanes}}
+    <div class="lane">
+      <p class="lane__name" title="{{.DeviceName}}">{{.DeviceName}}</p>
+      <svg class="lane__bars" viewBox="0 0 {{$span}} 24"
+           preserveAspectRatio="none" role="img"
+           aria-label="Activity for {{.DeviceName}}">
+        {{range .Bars}}
+        <rect class="bar bar--{{.Bucket}}{{if .Muted}} bar--muted{{end}}" x="{{.X}}" y="0"
+              width="{{.Width}}" height="24" fill="{{.Fill}}">
+          <title>{{.AppName}} &middot; {{.TimeRange}}{{if .Title}} &middot; {{.Title}}{{end}}</title>
+        </rect>
+        {{end}}
+      </svg>
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}

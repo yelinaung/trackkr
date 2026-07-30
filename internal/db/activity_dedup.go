@@ -147,7 +147,7 @@ func (d *activityDeduplicator) totals(start, end time.Time) []AppTotalRow {
 			// Fold aliases together: a Chrome extension observation and a
 			// residual "google-chrome" desktop slice are one application to
 			// a reader, so they must be one row.
-			durations[canonicalAppName(record)] += duration
+			durations[CanonicalAppName(record)] += duration
 		}
 	}
 

@@ -37,6 +37,9 @@ type pageData struct {
 	RecordLimit     int
 	SourceLimit     int
 
+	// Detail is set only on the single-application or single-site page.
+	Detail *DetailView
+
 	// Partial marks an htmx fragment render, which emits the
 	// out-of-band heading update a full page render must not.
 	Partial bool
@@ -51,6 +54,59 @@ type TotalView struct {
 	Monogram     string
 	MonogramFill string
 	MonogramBG   string
+	// DetailURL opens this row on its own page, carrying the date, period
+	// and device the reader was already looking at.
+	DetailURL string
+}
+
+// DetailView is one application or website examined on its own: the same
+// window the dashboard was showing, narrowed to a single subject.
+type DetailView struct {
+	Kind string // detailKindApp or detailKindSite.
+	// KindLabel names the kind in prose: "Application" or "Website".
+	KindLabel string
+	Entry     TotalView
+	Seconds   int64
+	// SharePct is this subject's share of everything tracked in the window,
+	// rounded to a whole percent for display only.
+	SharePct int
+	// Longest is the longest single uninterrupted session, in seconds. It
+	// separates a morning of focus from the same total in scattered minutes.
+	Longest int64
+	// SessionCount counts every session in the window, including the ones
+	// past the cap on Sessions.
+	SessionCount int
+	Sessions     []SessionView
+	// SessionsShown is how many of Sessions the page lists before the
+	// disclosure, so the summary can name the remainder.
+	SessionsShown int
+	// Titles ranks the window or page titles seen within the subject.
+	Titles []BreakdownView
+	// Days is the per-day split, filled in for the week view only.
+	Days []BreakdownView
+	// BackURL returns to the dashboard with the same filters.
+	BackURL string
+}
+
+// SessionView is one uninterrupted stretch of use.
+type SessionView struct {
+	DeviceName string
+	Start      string
+	End        string
+	Seconds    int64
+	Title      string
+}
+
+// BreakdownView is one labelled bar in a ranked split: a day of the week, or
+// a window title within one application.
+type BreakdownView struct {
+	Label   string
+	Seconds int64
+	// Width is the bar length in a 0-100 viewBox. Geometry travels as an SVG
+	// attribute rather than inline CSS, the same as the timeline bars, so the
+	// page needs no style-src concession.
+	Width float64
+	Fill  string
 }
 
 // templates holds one parsed set per page, plus the standalone partials.
@@ -66,12 +122,20 @@ const (
 	pageRegister  = "register"
 	pageDashboard = "dashboard"
 	pageDevices   = "devices"
+	pageActivity  = "activity"
+)
+
+const (
+	partialTimeline = "timeline"
+	partialDetail   = "activity_detail"
+	partialDevices  = "device_rows"
 )
 
 var templateFuncs = template.FuncMap{
 	"duration":       humanDuration,
 	"date":           func(t time.Time) string { return t.Format("2 Jan 2006") },
 	"nextTotalCount": nextTotalCount,
+	"sub":            func(a, b int) int { return a - b },
 }
 
 func nextTotalCount(total int) int {
@@ -82,16 +146,27 @@ func nextTotalCount(total int) int {
 // partials it embeds. Pages are parsed separately so two pages can both
 // define "content" without colliding.
 func parseTemplates() (*templates, error) {
-	partialFiles := []string{
-		"templates/partials/timeline.html",
-		"templates/partials/device_rows.html",
+	const (
+		periodFile   = "templates/partials/period.html"
+		timelineFile = "templates/partials/timeline.html"
+		detailFile   = "templates/partials/activity_detail.html"
+		devicesFile  = "templates/partials/device_rows.html"
+	)
+
+	// A partial is a set rather than a file: the timeline and the detail
+	// page both draw the chart, so "chart" is parsed into both.
+	partialFiles := map[string][]string{
+		partialTimeline: {timelineFile, periodFile},
+		partialDetail:   {detailFile, periodFile},
+		partialDevices:  {devicesFile},
 	}
 
 	pageFiles := map[string][]string{
 		pageLogin:     {"templates/login.html"},
 		pageRegister:  {"templates/register.html"},
-		pageDashboard: {"templates/dashboard.html", "templates/partials/timeline.html"},
-		pageDevices:   {"templates/devices.html", "templates/partials/device_rows.html"},
+		pageDashboard: {"templates/dashboard.html", timelineFile, periodFile},
+		pageDevices:   {"templates/devices.html", devicesFile},
+		pageActivity:  {"templates/activity.html", detailFile, periodFile},
 	}
 
 	t := &templates{
@@ -110,23 +185,17 @@ func parseTemplates() (*templates, error) {
 		t.pages[name] = parsed
 	}
 
-	for _, file := range partialFiles {
+	for name, files := range partialFiles {
 		set := template.New("partial").Funcs(templateFuncs)
 
-		parsed, err := set.ParseFS(web.Templates, file)
+		parsed, err := set.ParseFS(web.Templates, files...)
 		if err != nil {
-			return nil, fmt.Errorf("parsing partial %s: %w", file, err)
+			return nil, fmt.Errorf("parsing partial %s: %w", name, err)
 		}
-		// Key on the defined name: "timeline", "device_rows".
-		t.partials[partialName(file)] = parsed
+		t.partials[name] = parsed
 	}
 
 	return t, nil
-}
-
-func partialName(path string) string {
-	base := path[len("templates/partials/") : len(path)-len(".html")]
-	return base
 }
 
 // renderPage writes a full page, buffering first so a template error

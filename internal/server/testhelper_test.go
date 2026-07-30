@@ -31,6 +31,7 @@ const (
 	testUsernameField = "username"
 	testNewUser       = "newcomer"
 	testGoodPassword  = "a-long-enough-password"
+	testWindowTitle   = "main.go"
 )
 
 // mockQuerier implements Querier for unit tests without a database.

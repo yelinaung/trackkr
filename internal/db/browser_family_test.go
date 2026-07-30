@@ -148,7 +148,7 @@ func TestCanonicalAppNameKeepsUnknownNames(t *testing.T) {
 	t.Parallel()
 
 	record := ActivityRecordRow{Producer: identity.ProducerDesktop, AppName: testGhosttyApp}
-	if got := canonicalAppName(&record); got != testGhosttyApp {
-		t.Errorf("canonicalAppName = %q, want the stored name", got)
+	if got := CanonicalAppName(&record); got != testGhosttyApp {
+		t.Errorf("CanonicalAppName = %q, want the stored name", got)
 	}
 }
