@@ -48,41 +48,9 @@ if [[ "${actual}" != "${want}" ]]; then
   exit 1
 fi
 
-python3 - "${stage_dir}/manifest.json" <<'PY'
-import json, sys
+"${script_dir}/check-chrome-manifest.py" "${stage_dir}/manifest.json"
 
-manifest = json.load(open(sys.argv[1]))
-problems = []
-
-if manifest.get("manifest_version") != 3:
-    problems.append("manifest_version must be 3")
-if manifest.get("background", {}).get("service_worker") != "background-cr.js":
-    problems.append("background must be the background-cr.js service worker")
-if "scripts" in manifest.get("background", {}):
-    problems.append("background.scripts is a Firefox event-page key")
-if manifest.get("minimum_chrome_version") != "116":
-    problems.append("minimum_chrome_version must be 116, the Promise idle.queryState floor")
-
-for key in ("browser_specific_settings", "data_collection_permissions"):
-    if key in manifest:
-        problems.append(f"{key} is Gecko-only and must not ship to Chrome")
-
-if sorted(manifest.get("permissions", [])) != ["idle", "storage", "tabs"]:
-    problems.append("permissions must be exactly tabs, storage, idle")
-
-# Every loopback form the daemon may bind must be requestable, or a valid
-# extension_addr leaves the extension unable to ask for access.
-wanted_origins = {"http://127.0.0.1/*", "http://localhost/*", "http://[::1]/*"}
-if set(manifest.get("optional_host_permissions", [])) != wanted_origins:
-    problems.append("optional_host_permissions must cover every loopback form")
-
-if problems:
-    for problem in problems:
-        print(f"chrome manifest invalid: {problem}", file=sys.stderr)
-    sys.exit(1)
-PY
-
-version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "${stage_dir}/manifest.json")"
+version="$("${script_dir}/manifest-field.py" "${stage_dir}/manifest.json" version)"
 archive="${repo_dir}/dist/trackkr-chrome-${version}.zip"
 [[ -f "${archive}" ]] || fail "${archive} is missing"
 unzip -tqq "${archive}" || fail "${archive} failed its integrity check"
