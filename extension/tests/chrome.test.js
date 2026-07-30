@@ -267,3 +267,85 @@ test("the Chrome manifest is a service worker with no Gecko keys", () => {
     assert.equal(key in manifest, false, `${key} is Gecko-only`);
   }
 });
+
+test("a cold wake by idle keeps the idle backdating", async () => {
+  // A worker asleep when the user goes idle is woken by idle.onStateChanged.
+  // Recovery is serialized first and sees a non-active user, so if it finalizes
+  // at "now" the later idle handler finds no segment and its backdating never
+  // applies -- adding the whole idle threshold to the segment.
+  const startedAt = Date.now() - 600_000;
+  const h = chromeHarness({
+    respond: () => ({ ok: false, status: 503 }),
+    // Already idle when the worker starts, with a segment left behind: the
+    // exact state a worker inherits when an idle transition wakes it.
+    idleState: "idle",
+    session: {
+      current: {
+        recordId: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+        tabId: 10,
+        windowId: 1,
+        url: "https://example.com/a",
+        title: "Docs",
+        incognito: false,
+        startedAt,
+      },
+    },
+  });
+
+  // No settle in between: recovery and the idle handler are both in flight,
+  // which is the ordering a cold wake produces.
+  await h.fire("idle.onStateChanged", "idle");
+  await h.settled();
+
+  assert.equal(h.queue().length, 1, "the segment was not finalized");
+  const endedAt = Date.parse(h.queue()[0].ended_at);
+  const idleMs = h.context.IDLE_SECONDS * 1000;
+
+  assert.ok(
+    endedAt <= startedAt + 600_000 - idleMs + 2_000,
+    `segment ended at +${endedAt - startedAt}ms, want the idle threshold backdated off`,
+  );
+});
+
+test("recovery does not start tracking while the user is already idle", async () => {
+  // A browser start or extension update can run recovery with no valid segment
+  // while the machine is idle. idle.onStateChanged does not fire just because a
+  // listener was registered, so seeding on window focus alone would record the
+  // absence until some later event arrived.
+  const h = chromeHarness({ idleState: "idle" });
+  await h.settled();
+
+  assert.equal(h.current(), null, "an idle machine must not be credited with a new segment");
+});
+
+test("recovery still seeds when the user is present", async () => {
+  const h = chromeHarness();
+  await h.settled();
+
+  assert.equal(h.current().url, "https://example.com/a");
+});
+
+test("the two manifests agree on everything shared", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const dir = path.join(__dirname, "..");
+  const read = (name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"));
+
+  const firefox = read("manifest.json");
+  const chrome = read("manifest.chrome.json");
+
+  // They are separate source files: ext-lint validates only the Firefox one and
+  // Chrome rejects Gecko keys, so nothing else stops a release that bumps one
+  // from shipping the other stale.
+  for (const key of [
+    "name",
+    "version",
+    "description",
+    "permissions",
+    "optional_host_permissions",
+    "action",
+    "options_ui",
+  ]) {
+    assert.deepEqual(chrome[key], firefox[key], `${key} has drifted between the manifests`);
+  }
+});

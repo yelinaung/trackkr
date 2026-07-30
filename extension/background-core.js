@@ -393,6 +393,14 @@ async function resume() {
     }
   }
 
+  // Window focus alone is not presence. idle.onStateChanged does not fire
+  // merely because a listener was registered while the machine was already
+  // idle, so seeding here on focus alone would record the user's absence until
+  // some later event happened to arrive.
+  if (!(await userIsActive())) {
+    return;
+  }
+
   try {
     const win = await api.windows.getLastFocused({ populate: false });
     if (!win || win.focused !== true) {
@@ -442,9 +450,14 @@ async function resolveRecoveredSegment(current) {
     return true;
   }
 
-  // The tab moved on, closed, or lost focus while we were gone. Close the
-  // segment at recovery time through the same queue-first handoff.
-  await finalize(now);
+  // Close the segment through the same queue-first handoff. When the user is
+  // already idle, end it where the idle handler would have: an idle transition
+  // is what wakes a sleeping worker, recovery is serialized ahead of that
+  // handler, and finalizing at "now" would leave the handler with no segment to
+  // backdate -- silently adding the whole idle threshold to nearly every
+  // segment that ends after a cold wake.
+  const endedAt = (await userIsActive()) ? now : idleEndedAt(now);
+  await finalize(endedAt);
   return false;
 }
 

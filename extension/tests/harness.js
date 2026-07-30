@@ -42,11 +42,15 @@ function createHarness(options = {}) {
     // Which background entrypoint to load. Firefox is the default because it
     // is the only build that registers runtime.onSuspend.
     entrypoint = "background-fx.js",
+    session = {},
+    local = {},
   } = options;
 
   const state = {
-    session: {},
-    local: { token, daemonUrl: "http://127.0.0.1:7600", ignored: [] },
+    // Seeded before the scripts load, so a test can reproduce a cold wake:
+    // storage.session survives worker termination, the worker does not.
+    session: { ...session },
+    local: { token, daemonUrl: "http://127.0.0.1:7600", ignored: [], ...local },
     tabs: { ...tabs },
     windows: { ...windows },
     focusedWindowId,

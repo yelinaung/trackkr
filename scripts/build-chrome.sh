@@ -44,6 +44,34 @@ fi
 rm -rf "${stage_dir}"
 mkdir -p "${stage_dir}/icons"
 
+# The two manifests are separate source files -- ext-lint validates only the
+# Firefox one, and Chrome rejects Gecko keys -- so nothing stops a release that
+# bumps one from leaving the other behind. Everything they must agree on is
+# checked here rather than trusted.
+python3 - "${source_dir}/manifest.json" "${source_dir}/manifest.chrome.json" <<'PARITY'
+import json, sys
+
+firefox = json.load(open(sys.argv[1]))
+chrome = json.load(open(sys.argv[2]))
+
+shared = ["name", "version", "description", "permissions", "optional_host_permissions"]
+problems = [
+    f"{key}: firefox {firefox.get(key)!r} != chrome {chrome.get(key)!r}"
+    for key in shared
+    if firefox.get(key) != chrome.get(key)
+]
+# The popup and options pages are the same files in both packages.
+for key in ("action", "options_ui"):
+    if firefox.get(key) != chrome.get(key):
+        problems.append(f"{key} differs between the manifests")
+
+if problems:
+    print("error: the Chrome manifest has drifted from manifest.json", file=sys.stderr)
+    for problem in problems:
+        print(f"  {problem}", file=sys.stderr)
+    sys.exit(1)
+PARITY
+
 cp "${source_dir}/manifest.chrome.json" "${stage_dir}/manifest.json"
 for file in "${runtime_files[@]}" "${icon_files[@]}"; do
   if [[ ! -f "${source_dir}/${file}" ]]; then
