@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 type state int
@@ -142,7 +144,18 @@ func (t *Tracker) finalize(endedAt time.Time) {
 		return
 	}
 
+	// A fresh identity per finalized segment. A generator failure is not
+	// worth dropping the record over: ensureIdentity derives a stable ID
+	// from the content instead.
+	recordID, err := identity.New()
+	if err != nil {
+		t.logger.Warn().Err(err).Msg("falling back to a derived record id")
+		recordID = ""
+	}
+
 	rec := Record{
+		RecordID:  recordID,
+		Producer:  identity.ProducerDesktop,
 		AppName:   t.current.AppName,
 		Title:     t.current.Title,
 		StartedAt: t.current.StartedAt,

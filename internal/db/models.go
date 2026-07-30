@@ -2,11 +2,15 @@ package db
 
 import (
 	"time"
+
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 type ActivityRecordRow struct {
 	ID        int64
 	DeviceID  int64
+	RecordID  string
+	Producer  identity.Producer
 	AppName   string
 	Title     string
 	URL       *string

@@ -17,12 +17,19 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 const (
-	// extensionAppName marks URL-bearing browser records. Dashboard queries
+	// extensionAppName marks URL-bearing Firefox records. Dashboard queries
 	// give these records precedence over overlapping desktop Firefox records.
 	extensionAppName = "Firefox"
+
+	// chromeAppName is the canonical macOS and dashboard display name for
+	// Chrome. The Linux X11 detector reports "google-chrome"; both normalize
+	// into the same browser family for deduplication.
+	chromeAppName = "Google Chrome"
 
 	// minRecordDuration drops sub-second flicks through the tab strip.
 	minRecordDuration = time.Second
@@ -60,6 +67,10 @@ func GenerateExtensionToken() (string, error) {
 // extensionRecord is one tab segment as the extension reports it. The
 // daemon computes the duration itself rather than trusting the caller.
 type extensionRecord struct {
+	// RecordID is minted by the extension when a segment starts and carried
+	// through its durable queue, so its own retries replay rather than
+	// duplicate. An absent or non-canonical value is replaced downstream.
+	RecordID  string    `json:"record_id,omitempty"`
 	URL       string    `json:"url"`
 	Title     string    `json:"title"`
 	StartedAt time.Time `json:"started_at"`
@@ -68,6 +79,11 @@ type extensionRecord struct {
 
 type extensionRequest struct {
 	Records []extensionRecord `json:"records"`
+}
+
+type statusResponse struct {
+	OK       bool     `json:"ok"`
+	Browsers []string `json:"browsers"`
 }
 
 // enqueuer is the slice of Reporter the listener needs.
@@ -126,7 +142,13 @@ func NewExtensionServer(
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/extension/activity", e.handleActivity)
+	// The route selects the producer and the canonical application name.
+	// A caller-supplied name would let a Chrome build claim Firefox
+	// coverage, and an optional JSON field would let an old daemon accept a
+	// Chrome batch and silently store it as Firefox. An unknown browser
+	// route 404s, which the extension treats as retryable.
+	mux.HandleFunc("/extension/activity", e.activityHandler(identity.ProducerFirefox, extensionAppName))
+	mux.HandleFunc("/extension/activity/chrome", e.activityHandler(identity.ProducerChrome, chromeAppName))
 	mux.HandleFunc("/extension/status", e.handleStatus)
 
 	e.server = &http.Server{
@@ -199,10 +221,31 @@ func (e *ExtensionServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	// A Chrome build requires "chrome" here and reports "daemon upgrade
+	// required" otherwise, so a new extension against an old daemon fails
+	// visibly instead of having its records stored as Firefox. Older Firefox
+	// builds ignore the added field.
+	_ = json.NewEncoder(w).Encode(statusResponse{
+		OK:       true,
+		Browsers: []string{string(identity.ProducerFirefox), string(identity.ProducerChrome)},
+	})
 }
 
-func (e *ExtensionServer) handleActivity(w http.ResponseWriter, r *http.Request) {
+func (e *ExtensionServer) activityHandler(
+	producer identity.Producer,
+	appName string,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		e.handleActivity(w, r, producer, appName)
+	}
+}
+
+func (e *ExtensionServer) handleActivity(
+	w http.ResponseWriter,
+	r *http.Request,
+	producer identity.Producer,
+	appName string,
+) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
@@ -240,7 +283,7 @@ func (e *ExtensionServer) handleActivity(w http.ResponseWriter, r *http.Request)
 
 	accepted := 0
 	for i := range req.Records {
-		rec, ok := toRecord(&req.Records[i])
+		rec, ok := toRecord(&req.Records[i], producer, appName)
 		if !ok {
 			continue
 		}
@@ -262,7 +305,7 @@ func (e *ExtensionServer) handleActivity(w http.ResponseWriter, r *http.Request)
 // matter: any local process can reach a loopback port, and any page the
 // user visits can attempt a cross-origin write.
 func (e *ExtensionServer) authorized(w http.ResponseWriter, r *http.Request) bool {
-	if origin := r.Header.Get("Origin"); origin != "" && !strings.HasPrefix(origin, "moz-extension://") {
+	if !originAllowed(r.Header.Values("Origin")) {
 		http.Error(w, `{"error":"forbidden origin"}`, http.StatusForbidden)
 		return false
 	}
@@ -284,7 +327,7 @@ func hasJSONContentType(r *http.Request) bool {
 
 // toRecord validates and converts one reported segment. It reports false
 // for anything that should never reach the server.
-func toRecord(in *extensionRecord) (*Record, bool) {
+func toRecord(in *extensionRecord, producer identity.Producer, appName string) (*Record, bool) {
 	if !isWebURL(in.URL) {
 		return nil, false
 	}
@@ -307,14 +350,68 @@ func toRecord(in *extensionRecord) (*Record, bool) {
 		return nil, false
 	}
 
+	// A browser-supplied ID is preserved so a retry from the extension's own
+	// durable queue conflicts as a replay. Anything not canonical is dropped
+	// rather than normalized, and ensureIdentity derives a stable one.
+	recordID := ""
+	if identity.Valid(in.RecordID) {
+		recordID = in.RecordID
+	}
+
 	return &Record{
-		AppName:   extensionAppName,
+		RecordID:  recordID,
+		Producer:  producer,
+		AppName:   appName,
 		Title:     in.Title,
 		URL:       in.URL,
 		StartedAt: in.StartedAt,
 		EndedAt:   ended,
 		DurationS: int(dur.Seconds()),
 	}, true
+}
+
+// originAllowed accepts an absent Origin and otherwise requires exactly one
+// extension origin.
+//
+// The previous prefix test accepted anything beginning "moz-extension://",
+// including credentials, a port, a path, or a query -- all of which a browser
+// never sends and an attacker would have to construct deliberately. Parsing
+// and demanding an empty everything-else is the difference between "starts
+// with the right scheme" and "is an extension origin".
+func originAllowed(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	// Duplicate headers and comma-joined lists are never sent by a browser
+	// for Origin; treating either as one value invites confusion attacks.
+	if len(values) > 1 || strings.Contains(values[0], ",") {
+		return false
+	}
+
+	origin := values[0]
+	if origin == "" {
+		return true
+	}
+
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	switch parsed.Scheme {
+	case "moz-extension", "chrome-extension":
+	default:
+		return false
+	}
+	// "null" parses as an opaque value rather than a host, so Opaque must be
+	// empty and the host must be a bare extension ID with no port.
+	return parsed.Opaque == "" &&
+		parsed.User == nil &&
+		parsed.Hostname() != "" &&
+		parsed.Port() == "" &&
+		parsed.Host == parsed.Hostname() &&
+		parsed.Path == "" &&
+		parsed.RawQuery == "" &&
+		parsed.Fragment == ""
 }
 
 // isWebURL keeps about:, moz-extension:, and file: URLs out of the

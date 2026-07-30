@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
 	"github.com/yelinaung/trackkr/internal/icon"
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 const (
@@ -37,12 +39,42 @@ const (
 // Record is the client-side representation of an activity record
 // before it is sent to the server.
 type Record struct {
-	AppName   string    `json:"app_name"`
-	Title     string    `json:"title"`
-	URL       string    `json:"url,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	EndedAt   time.Time `json:"ended_at"`
-	DurationS int       `json:"duration_s"`
+	// RecordID is minted once, when the segment finalizes, and preserved
+	// through every retry so a replay conflicts instead of inserting again.
+	RecordID  string            `json:"record_id"`
+	Producer  identity.Producer `json:"producer"`
+	AppName   string            `json:"app_name"`
+	Title     string            `json:"title"`
+	URL       string            `json:"url,omitempty"`
+	StartedAt time.Time         `json:"started_at"`
+	EndedAt   time.Time         `json:"ended_at"`
+	DurationS int               `json:"duration_s"`
+}
+
+// ensureIdentity fills in an identity a record reached us without.
+//
+// Two sources produce them: a pending.json written by a build that predates
+// record IDs, and a Firefox extension that has not been reloaded. Deriving the
+// ID from the content means the same legacy replay always lands on the same
+// identity, so retrying an old queue cannot duplicate rows.
+func (r *Record) ensureIdentity() {
+	if !identity.ValidProducer(r.Producer) {
+		r.Producer = identity.ProducerDesktop
+		if r.URL != "" {
+			r.Producer = identity.ProducerFirefox
+		}
+	}
+	if identity.Valid(r.RecordID) {
+		return
+	}
+	r.RecordID = identity.Derive(
+		r.Producer,
+		r.AppName,
+		r.Title,
+		r.URL,
+		r.StartedAt.UTC().Format(time.RFC3339Nano),
+		r.EndedAt.UTC().Format(time.RFC3339Nano),
+	)
 }
 
 type ingestRequest struct {
@@ -119,8 +151,13 @@ func (r *Reporter) EnqueueAppIcon(appIcon icon.App) bool {
 // Enqueue adds a record to the queue. If the queue reaches
 // FlushSize, it signals a flush.
 func (r *Reporter) Enqueue(rec *Record) {
+	// One funnel for the native tracker and the loopback listener alike, so
+	// nothing reaches the queue without an identity.
+	queued := *rec
+	queued.ensureIdentity()
+
 	r.mu.Lock()
-	r.queue = append(r.queue, *rec)
+	r.queue = append(r.queue, queued)
 	n := len(r.queue)
 	r.mu.Unlock()
 
@@ -459,6 +496,11 @@ func (r *Reporter) loadPending() error {
 	}
 
 	if len(records) > 0 {
+		// A queue written before record IDs existed still has to replay
+		// exactly once.
+		for i := range records {
+			records[i].ensureIdentity()
+		}
 		r.mu.Lock()
 		r.queue = append(records, r.queue...)
 		r.mu.Unlock()

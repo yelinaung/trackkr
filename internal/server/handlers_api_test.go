@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 const (
@@ -37,7 +38,7 @@ func TestIngestActivity(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 	body := ingestRequest{
-		Records: []ingestRecord{
+		Records: stampIngestIdentity(t, []ingestRecord{
 			{
 				AppName:   testFirefoxApp,
 				Title:     testPageTitle,
@@ -53,7 +54,7 @@ func TestIngestActivity(t *testing.T) {
 				EndedAt:   now.Add(60 * time.Second),
 				DurationS: 30,
 			},
-		},
+		}),
 	}
 
 	b, _ := json.Marshal(body)
@@ -139,7 +140,7 @@ func TestIngestActivitySkipsNonPositiveIntervals(t *testing.T) {
 			srv, mock := unitServer(t)
 			fix := createMockFixtures(t, mock)
 			startedAt := time.Now().Truncate(time.Second)
-			body, err := json.Marshal(ingestRequest{Records: []ingestRecord{
+			body, err := json.Marshal(ingestRequest{Records: stampIngestIdentity(t, []ingestRecord{
 				{
 					AppName:   testFirefoxApp,
 					StartedAt: startedAt,
@@ -150,7 +151,7 @@ func TestIngestActivitySkipsNonPositiveIntervals(t *testing.T) {
 					StartedAt: startedAt,
 					EndedAt:   startedAt.Add(time.Second),
 				},
-			}})
+			})})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,11 +184,11 @@ func TestIngestActivityAcknowledgesAllInvalidBatch(t *testing.T) {
 	srv, mock := unitServer(t)
 	fix := createMockFixtures(t, mock)
 	startedAt := time.Now().Truncate(time.Second)
-	body, err := json.Marshal(ingestRequest{Records: []ingestRecord{{
+	body, err := json.Marshal(ingestRequest{Records: stampIngestIdentity(t, []ingestRecord{{
 		AppName:   testFirefoxApp,
 		StartedAt: startedAt,
 		EndedAt:   startedAt,
-	}}})
+	}})})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +239,7 @@ func TestIngestActivityInsertError(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 	body := ingestRequest{
-		Records: []ingestRecord{
+		Records: stampIngestIdentity(t, []ingestRecord{
 			{
 				AppName:   testFirefoxApp,
 				Title:     testPageTitle,
@@ -246,7 +247,7 @@ func TestIngestActivityInsertError(t *testing.T) {
 				EndedAt:   now.Add(30 * time.Second),
 				DurationS: 30,
 			},
-		},
+		}),
 	}
 
 	b, _ := json.Marshal(body)
@@ -274,7 +275,7 @@ func TestIngestActivityURLOptional(t *testing.T) {
 
 	now := time.Now().Truncate(time.Second)
 	body := ingestRequest{
-		Records: []ingestRecord{
+		Records: stampIngestIdentity(t, []ingestRecord{
 			{
 				AppName:   "VS Code",
 				Title:     "main.go",
@@ -290,7 +291,7 @@ func TestIngestActivityURLOptional(t *testing.T) {
 				EndedAt:   now.Add(60 * time.Second),
 				DurationS: 30,
 			},
-		},
+		}),
 	}
 
 	b, _ := json.Marshal(body)
@@ -422,4 +423,30 @@ func TestListDevicesRequiresAPIKey(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rec.Code)
 	}
+}
+
+// stampIngestIdentity fills in the identity a real daemon always sends.
+//
+// The authenticated activity API requires a canonical record ID and a known
+// producer since migration 006. These cases exercise validation, insertion, and
+// error handling rather than identity, so they get a fresh UUID and the
+// producer the legacy normalization would infer.
+func stampIngestIdentity(t *testing.T, records []ingestRecord) []ingestRecord {
+	t.Helper()
+	for i := range records {
+		if records[i].RecordID == "" {
+			id, err := identity.New()
+			if err != nil {
+				t.Fatalf("minting a test record id: %v", err)
+			}
+			records[i].RecordID = id
+		}
+		if records[i].Producer == "" {
+			records[i].Producer = identity.ProducerDesktop
+			if records[i].URL != "" {
+				records[i].Producer = identity.ProducerFirefox
+			}
+		}
+	}
+	return records
 }

@@ -31,10 +31,12 @@ func (q *Queries) InsertActivityRecords(ctx context.Context, records []ActivityR
 	for i := range records {
 		r := &records[i]
 		batch.Queue(
-			`INSERT INTO activity_records (device_id, app_name, title, url, started_at, ended_at, duration_s)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7)
-			 ON CONFLICT (device_id, started_at) DO NOTHING`,
-			r.DeviceID, r.AppName, r.Title, r.URL, r.StartedAt, r.EndedAt, r.DurationS,
+			`INSERT INTO activity_records
+			     (device_id, record_id, producer, app_name, title, url, started_at, ended_at, duration_s)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			 ON CONFLICT (device_id, record_id) DO NOTHING`,
+			r.DeviceID, r.RecordID, string(r.Producer), r.AppName, r.Title, r.URL,
+			r.StartedAt, r.EndedAt, r.DurationS,
 		)
 	}
 
@@ -136,7 +138,7 @@ func (q *Queries) queryActivityRecords(
 
 	if deviceID != nil {
 		rows, err = q.pool.Query(ctx,
-			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
+			`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
@@ -145,7 +147,7 @@ func (q *Queries) queryActivityRecords(
 			userID, start, end, *deviceID, ActivitySourceLimit+1)
 	} else {
 		rows, err = q.pool.Query(ctx,
-			`SELECT ar.id, ar.device_id, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
+			`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
@@ -161,7 +163,7 @@ func (q *Queries) queryActivityRecords(
 	var records []ActivityRecordRow
 	for rows.Next() {
 		var r ActivityRecordRow
-		if err := rows.Scan(&r.ID, &r.DeviceID, &r.AppName, &r.Title, &r.URL,
+		if err := rows.Scan(&r.ID, &r.DeviceID, &r.RecordID, &r.Producer, &r.AppName, &r.Title, &r.URL,
 			&r.StartedAt, &r.EndedAt, &r.DurationS, &r.CreatedAt); err != nil {
 			return nil, false, err
 		}

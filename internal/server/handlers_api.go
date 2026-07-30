@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/yelinaung/trackkr/internal/db"
+	"github.com/yelinaung/trackkr/internal/icon"
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 type ingestRequest struct {
@@ -13,12 +15,14 @@ type ingestRequest struct {
 }
 
 type ingestRecord struct {
-	AppName   string    `json:"app_name"`
-	Title     string    `json:"title"`
-	URL       string    `json:"url,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	EndedAt   time.Time `json:"ended_at"`
-	DurationS int       `json:"duration_s"`
+	RecordID  string            `json:"record_id"`
+	Producer  identity.Producer `json:"producer"`
+	AppName   string            `json:"app_name"`
+	Title     string            `json:"title"`
+	URL       string            `json:"url,omitempty"`
+	StartedAt time.Time         `json:"started_at"`
+	EndedAt   time.Time         `json:"ended_at"`
+	DurationS int               `json:"duration_s"`
 }
 
 type ingestResponse struct {
@@ -94,7 +98,23 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 
 		rows := make([]db.ActivityRecordRow, 0, len(req.Records))
 		rejected := 0
-		for _, rec := range req.Records {
+		for i := range req.Records {
+			rec := &req.Records[i]
+			// The producer is trusted downstream to scope deduplication, so
+			// an unknown non-empty value is a rejection rather than a
+			// silent coercion. A missing one is normalized for daemons
+			// that predate the field.
+			producer := rec.Producer
+			if producer == "" {
+				producer = identity.ProducerDesktop
+				if rec.URL != "" && icon.AppKey(rec.AppName) == "firefox" {
+					producer = identity.ProducerFirefox
+				}
+			}
+			if !identity.ValidProducer(producer) || !identity.Valid(rec.RecordID) {
+				rejected++
+				continue
+			}
 			if !rec.StartedAt.Before(rec.EndedAt) {
 				// Permanently invalid rows are acknowledged and discarded so one
 				// stale pending record cannot wedge a reporter's retry queue.
@@ -107,6 +127,8 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 			}
 			rows = append(rows, db.ActivityRecordRow{
 				DeviceID:  device.ID,
+				RecordID:  rec.RecordID,
+				Producer:  producer,
 				AppName:   rec.AppName,
 				Title:     rec.Title,
 				URL:       url,

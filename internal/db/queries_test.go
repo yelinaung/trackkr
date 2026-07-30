@@ -252,7 +252,7 @@ func TestInsertActivityRecords(t *testing.T) {
 		},
 	}
 
-	accepted, err := q.InsertActivityRecords(ctx, records)
+	accepted, err := q.InsertActivityRecords(ctx, stampIdentity(t, records))
 	if err != nil {
 		t.Fatalf("InsertActivityRecords: %v", err)
 	}
@@ -291,13 +291,13 @@ func TestInsertActivityRecordsDuplicates(t *testing.T) {
 		},
 	}
 
-	_, err = q.InsertActivityRecords(ctx, records)
+	_, err = q.InsertActivityRecords(ctx, stampIdentity(t, records))
 	if err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
 	// Same record again — ON CONFLICT DO NOTHING should deduplicate
-	accepted, err := q.InsertActivityRecords(ctx, records)
+	accepted, err := q.InsertActivityRecords(ctx, stampIdentity(t, records))
 	if err != nil {
 		t.Fatalf("second insert: %v", err)
 	}
@@ -313,12 +313,12 @@ func TestInsertActivityRecordsRejectsNonPositiveInterval(t *testing.T) {
 	_, device := seedUserAndDevice(t, pool, q)
 	now := time.Now().Truncate(time.Second)
 
-	_, err := q.InsertActivityRecords(ctx, []ActivityRecordRow{{
+	_, err := q.InsertActivityRecords(ctx, stampIdentity(t, []ActivityRecordRow{{
 		DeviceID:  device.ID,
 		AppName:   testFirefoxApp,
 		StartedAt: now,
 		EndedAt:   now,
-	}})
+	}}))
 	if err == nil {
 		t.Fatal("InsertActivityRecords accepted a zero-length interval")
 	}
@@ -364,7 +364,7 @@ func TestGetActivitySummary(t *testing.T) {
 		},
 	}
 
-	if _, err := q.InsertActivityRecords(ctx, records); err != nil {
+	if _, err := q.InsertActivityRecords(ctx, stampIdentity(t, records)); err != nil {
 		t.Fatalf("InsertActivityRecords: %v", err)
 	}
 
@@ -561,9 +561,9 @@ func TestActivitySummaryBoundsDenseSourceWindow(t *testing.T) {
 
 	_, err := pool.Exec(ctx,
 		`INSERT INTO activity_records (
-		     device_id, app_name, title, started_at, ended_at, duration_s
+		     device_id, record_id, producer, app_name, title, started_at, ended_at, duration_s
 		 )
-		 SELECT $1, 'Burst', '',
+		 SELECT $1, gen_random_uuid(), 'desktop', 'Burst', '',
 		        $2::timestamptz + n * interval '1 microsecond',
 		        $2::timestamptz + n * interval '1 microsecond' + interval '1 second',
 		        1
@@ -638,13 +638,13 @@ func seedUserAndDevice(t *testing.T, pool *pgxpool.Pool, q *Queries) (*UserRow, 
 func insertRecord(t *testing.T, q *Queries, deviceID int64, app string, start, end time.Time) {
 	t.Helper()
 
-	_, err := q.InsertActivityRecords(context.Background(), []ActivityRecordRow{{
+	_, err := q.InsertActivityRecords(context.Background(), stampIdentity(t, []ActivityRecordRow{{
 		DeviceID:  deviceID,
 		AppName:   app,
 		StartedAt: start,
 		EndedAt:   end,
 		DurationS: int(end.Sub(start).Seconds()),
-	}})
+	}}))
 	if err != nil {
 		t.Fatalf("InsertActivityRecords: %v", err)
 	}
@@ -786,7 +786,7 @@ func TestGetSiteTotalsCountsOnlyOverlap(t *testing.T) {
 func insertRecordWithURL(t *testing.T, q *Queries, deviceID int64, url string, start, end time.Time) {
 	t.Helper()
 
-	_, err := q.InsertActivityRecords(context.Background(), []ActivityRecordRow{{
+	_, err := q.InsertActivityRecords(context.Background(), stampIdentity(t, []ActivityRecordRow{{
 		DeviceID:  deviceID,
 		AppName:   testFirefoxApp,
 		Title:     "a page",
@@ -794,7 +794,7 @@ func insertRecordWithURL(t *testing.T, q *Queries, deviceID int64, url string, s
 		StartedAt: start,
 		EndedAt:   end,
 		DurationS: int(end.Sub(start).Seconds()),
-	}})
+	}}))
 	if err != nil {
 		t.Fatalf("InsertActivityRecords: %v", err)
 	}
