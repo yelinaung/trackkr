@@ -17,7 +17,6 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
 	"github.com/yelinaung/trackkr/internal/favicon"
-	"github.com/yelinaung/trackkr/internal/icon"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -365,9 +364,19 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	totals := activity.Totals
 	displayTotals := totals[:min(len(totals), dashboardTotalLimit)]
 
-	appKeys := make([]string, 0, len(displayTotals))
+	// One application can be stored under several keys: the macOS detector
+	// reports "Google Chrome" and the Linux X11 detector "google-chrome", so a
+	// user with both devices has two icon rows for one browser. Ask for every
+	// candidate and choose by the ordered alias list below, never by whichever
+	// row the database returned first.
+	appKeys := make([]string, 0, len(displayTotals)*2)
+	seenKeys := make(map[string]struct{}, len(displayTotals)*2)
 	for _, total := range displayTotals {
-		if key := icon.AppKey(total.AppName); key != "" && len(key) <= icon.MaxKeyBytes {
+		for _, key := range db.AppIconKeys(total.AppName) {
+			if _, dup := seenKeys[key]; dup {
+				continue
+			}
+			seenKeys[key] = struct{}{}
 			appKeys = append(appKeys, key)
 		}
 	}
@@ -423,7 +432,7 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 			MonogramFill: monogramFill,
 			MonogramBG:   chip,
 		}
-		if row, ok := iconsByKey[icon.AppKey(t.AppName)]; ok {
+		if row, ok := firstPresentIcon(iconsByKey, db.AppIconKeys(t.AppName)); ok {
 			view.IconURL = fmt.Sprintf(
 				"/app-icons/%d/%s.png",
 				row.ID,
@@ -609,4 +618,18 @@ func (h *webHandlers) devicesData(w http.ResponseWriter, r *http.Request) (*page
 	data := h.base(r, token)
 	data.Devices = devices
 	return data, nil
+}
+
+// firstPresentIcon picks the earliest candidate key that has a stored icon.
+//
+// The order is the caller's preference, not the database's: selecting by result
+// order would give a user with a Mac and a Linux box whichever row happened to
+// sort first, and the answer could change between renders.
+func firstPresentIcon(rows map[string]db.AppIconRow, keys []string) (db.AppIconRow, bool) {
+	for _, key := range keys {
+		if row, ok := rows[key]; ok {
+			return row, true
+		}
+	}
+	return db.AppIconRow{}, false
 }

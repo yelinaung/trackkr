@@ -8,7 +8,7 @@ import (
 	"github.com/yelinaung/trackkr/internal/identity"
 )
 
-const testChromeApp = "Google Chrome"
+const testChromeApp = ChromeAppName
 
 // The pair (device_id, started_at) could not tell these four apart. Losing any
 // of them to ON CONFLICT DO NOTHING looked exactly like an accepted write.
@@ -24,8 +24,8 @@ func TestSameStartDistinctRecordsAllInsert(t *testing.T) {
 	url := "https://example.com/"
 
 	rows := []ActivityRecordRow{
-		{DeviceID: device.ID, Producer: identity.ProducerDesktop, AppName: "Firefox", StartedAt: start, EndedAt: end, DurationS: 60},
-		{DeviceID: device.ID, Producer: identity.ProducerFirefox, AppName: "Firefox", URL: &url, StartedAt: start, EndedAt: end, DurationS: 60},
+		{DeviceID: device.ID, Producer: identity.ProducerDesktop, AppName: testFirefoxApp, StartedAt: start, EndedAt: end, DurationS: 60},
+		{DeviceID: device.ID, Producer: identity.ProducerFirefox, AppName: testFirefoxApp, URL: &url, StartedAt: start, EndedAt: end, DurationS: 60},
 		{DeviceID: device.ID, Producer: identity.ProducerChrome, AppName: testChromeApp, URL: &url, StartedAt: start, EndedAt: end, DurationS: 60},
 		// A second window of the same browser, active at the same instant.
 		{DeviceID: device.ID, Producer: identity.ProducerChrome, AppName: testChromeApp, URL: &url, StartedAt: start, EndedAt: end, DurationS: 60},

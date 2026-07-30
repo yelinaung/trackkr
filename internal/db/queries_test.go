@@ -532,15 +532,13 @@ func TestFirefoxDesktopExtensionOverlapIsDeduplicated(t *testing.T) {
 			records[0].DurationS, records[1].DurationS, records[2].DurationS)
 	}
 
+	// The macOS and Linux spellings of one browser aggregate into one row.
 	totals := summary.Totals
-	if len(totals) != 2 {
-		t.Fatalf("totals = %+v, want Firefox and firefox", totals)
+	if len(totals) != 1 {
+		t.Fatalf("totals = %+v, want one canonical Firefox row", totals)
 	}
-	if totals[0] != (AppTotalRow{AppName: testFirefoxApp, Seconds: 360}) {
-		t.Errorf("first total = %+v, want Firefox 360", totals[0])
-	}
-	if totals[1] != (AppTotalRow{AppName: firefoxAppKey, Seconds: 240}) {
-		t.Errorf("second total = %+v, want firefox 240", totals[1])
+	if totals[0] != (AppTotalRow{AppName: testFirefoxApp, Seconds: 600}) {
+		t.Errorf("total = %+v, want Firefox 600", totals[0])
 	}
 
 	sites, err := q.GetSiteTotals(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)

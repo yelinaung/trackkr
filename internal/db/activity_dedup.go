@@ -8,12 +8,9 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/yelinaung/trackkr/internal/icon"
 )
 
 const (
-	firefoxAppKey             = "firefox"
 	minEffectiveSliceDuration = time.Second
 	activityDedupWorkLimit    = ActivitySourceLimit * 4
 )
@@ -30,25 +27,29 @@ type activityCoverage struct {
 
 type activityDeduplicator struct {
 	records  []ActivityRecordRow
-	coverage map[int64]activityCoverage
+	coverage map[coverageKey]activityCoverage
 }
 
-// newActivityDeduplicator gives URL-bearing Firefox observations precedence
-// over desktop Firefox observations for the same device and time interval.
+// newActivityDeduplicator gives a browser's own tab observations precedence
+// over the native detector's observations of that browser, per device and per
+// browser family. Chrome tab time never erases desktop Firefox time.
 func newActivityDeduplicator(records []ActivityRecordRow) *activityDeduplicator {
-	intervalsByDevice := make(map[int64][]activityInterval)
+	intervalsByKey := make(map[coverageKey][]activityInterval)
 	for i := range records {
 		record := &records[i]
-		if isValidActivityRecord(record) && isFirefoxBrowserRecord(record) {
-			intervalsByDevice[record.DeviceID] = append(
-				intervalsByDevice[record.DeviceID],
+		if !isValidActivityRecord(record) {
+			continue
+		}
+		if key, ok := browserCoverageKey(record); ok {
+			intervalsByKey[key] = append(
+				intervalsByKey[key],
 				activityInterval{start: record.StartedAt, end: record.EndedAt},
 			)
 		}
 	}
 
-	coverage := make(map[int64]activityCoverage, len(intervalsByDevice))
-	for deviceID, intervals := range intervalsByDevice {
+	coverage := make(map[coverageKey]activityCoverage, len(intervalsByKey))
+	for key, intervals := range intervalsByKey {
 		merged := mergeActivityIntervals(intervals)
 		visibleGapPrefix := make([]time.Duration, len(merged))
 		for i := 0; i+1 < len(merged); i++ {
@@ -58,7 +59,7 @@ func newActivityDeduplicator(records []ActivityRecordRow) *activityDeduplicator 
 				visibleGapPrefix[i+1] += gap
 			}
 		}
-		coverage[deviceID] = activityCoverage{
+		coverage[key] = activityCoverage{
 			intervals:        merged,
 			visibleGapPrefix: visibleGapPrefix,
 		}
@@ -73,7 +74,10 @@ func (d *activityDeduplicator) timeline(recordLimit, workLimit int) ([]ActivityR
 	bounded := newBoundedActivityRecords(recordLimit)
 	for i := range d.records {
 		record := &d.records[i]
-		if !isValidActivityRecord(record) || isFirefoxDesktopRecord(record) {
+		if !isValidActivityRecord(record) {
+			continue
+		}
+		if _, covered := desktopCoverageKey(record); covered {
 			continue
 		}
 		bounded.add(record)
@@ -82,13 +86,17 @@ func (d *activityDeduplicator) timeline(recordLimit, workLimit int) ([]ActivityR
 	work := 0
 	for i := range d.records {
 		record := &d.records[i]
-		if !isValidActivityRecord(record) || !isFirefoxDesktopRecord(record) {
+		if !isValidActivityRecord(record) {
+			continue
+		}
+		key, covered := desktopCoverageKey(record)
+		if !covered {
 			continue
 		}
 
 		completed := visitUncoveredActivityIntervals(
 			activityInterval{start: record.StartedAt, end: record.EndedAt},
-			d.coverage[record.DeviceID].intervals,
+			d.coverage[key].intervals,
 			&work,
 			workLimit,
 			func(interval activityInterval) {
@@ -129,14 +137,17 @@ func (d *activityDeduplicator) totals(start, end time.Time) []AppTotalRow {
 		}
 
 		duration := overlap.end.Sub(overlap.start)
-		if isFirefoxDesktopRecord(record) {
-			duration = d.coverage[record.DeviceID].visibleUncoveredDuration(
+		if key, covered := desktopCoverageKey(record); covered {
+			duration = d.coverage[key].visibleUncoveredDuration(
 				overlap,
 				minEffectiveSliceDuration,
 			)
 		}
 		if duration > 0 {
-			durations[record.AppName] += duration
+			// Fold aliases together: a Chrome extension observation and a
+			// residual "google-chrome" desktop slice are one application to
+			// a reader, so they must be one row.
+			durations[canonicalAppName(record)] += duration
 		}
 	}
 
@@ -230,14 +241,6 @@ func visitUncoveredActivityIntervals(
 
 func isValidActivityRecord(record *ActivityRecordRow) bool {
 	return record.StartedAt.Before(record.EndedAt)
-}
-
-func isFirefoxBrowserRecord(record *ActivityRecordRow) bool {
-	return icon.AppKey(record.AppName) == firefoxAppKey && hasActivityURL(record)
-}
-
-func isFirefoxDesktopRecord(record *ActivityRecordRow) bool {
-	return icon.AppKey(record.AppName) == firefoxAppKey && !hasActivityURL(record)
 }
 
 func hasActivityURL(record *ActivityRecordRow) bool {

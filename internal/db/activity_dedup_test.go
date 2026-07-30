@@ -3,7 +3,13 @@ package db
 import (
 	"testing"
 	"time"
+
+	"github.com/yelinaung/trackkr/internal/identity"
 )
+
+// firefoxAppKey is the normalized Linux WM_CLASS name; the macOS detector
+// reports "Firefox". Both belong to the same browser family.
+const firefoxAppKey = "firefox"
 
 const testActivityURL = "https://example.com/"
 
@@ -123,15 +129,14 @@ func TestAppTotalsUsesEffectiveSlices(t *testing.T) {
 		activityRecord(2, 1, testFirefoxApp, &url, start.Add(2*time.Minute), start.Add(8*time.Minute)),
 	}
 
+	// "Firefox" and "firefox" are one browser to a reader, so the browser's
+	// 360 seconds and the desktop residue's 180 aggregate into one row.
 	got := newActivityDeduplicator(records).totals(start, start.Add(9*time.Minute))
-	if len(got) != 2 {
-		t.Fatalf("totals = %+v, want browser and desktop rows", got)
+	if len(got) != 1 {
+		t.Fatalf("totals = %+v, want one canonical Firefox row", got)
 	}
-	if got[0] != (AppTotalRow{AppName: testFirefoxApp, Seconds: 360}) {
-		t.Errorf("first total = %+v, want Firefox 360", got[0])
-	}
-	if got[1] != (AppTotalRow{AppName: firefoxAppKey, Seconds: 180}) {
-		t.Errorf("second total = %+v, want firefox 180", got[1])
+	if got[0] != (AppTotalRow{AppName: testFirefoxApp, Seconds: 540}) {
+		t.Errorf("total = %+v, want Firefox 540", got[0])
 	}
 }
 
@@ -163,10 +168,10 @@ func TestActivityDeduplicationBoundsExpansionWork(t *testing.T) {
 		t.Errorf("records = %d, want at most 100", len(got))
 	}
 	totals := deduplicator.totals(start, start.Add(time.Hour))
-	if len(totals) != 2 {
-		t.Fatalf("totals = %+v, want browser and desktop totals", totals)
+	if len(totals) != 1 {
+		t.Fatalf("totals = %+v, want one canonical Firefox row", totals)
 	}
-	if totals[0].Seconds+totals[1].Seconds != int64(time.Hour/time.Second) {
+	if totals[0].Seconds != int64(time.Hour/time.Second) {
 		t.Errorf("totals = %+v, want exact one-hour coverage", totals)
 	}
 }
@@ -225,10 +230,29 @@ func deduplicateActivityForTest(t *testing.T, records []ActivityRecordRow) []Act
 	return got
 }
 
+// activityRecord builds a record the way the pre-Chrome pipeline did: a URL
+// means the Firefox extension reported it, anything else came from the native
+// detector. Cases that care about the producer set it explicitly with
+// browserRecord instead.
 func activityRecord(id, deviceID int64, appName string, url *string, start, end time.Time) ActivityRecordRow {
+	producer := identity.ProducerDesktop
+	if url != nil && *url != "" {
+		producer = identity.ProducerFirefox
+	}
+	return browserRecord(id, deviceID, producer, appName, url, start, end)
+}
+
+func browserRecord(
+	id, deviceID int64,
+	producer identity.Producer,
+	appName string,
+	url *string,
+	start, end time.Time,
+) ActivityRecordRow {
 	return ActivityRecordRow{
 		ID:        id,
 		DeviceID:  deviceID,
+		Producer:  producer,
 		AppName:   appName,
 		URL:       url,
 		StartedAt: start,
