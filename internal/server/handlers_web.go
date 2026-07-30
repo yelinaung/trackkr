@@ -33,10 +33,13 @@ const (
 	maxPasswordBytes = 72
 
 	// uniqueViolation is PostgreSQL's SQLSTATE for a duplicate key.
-	uniqueViolation   = "23505"
-	flashKindError    = "error"
-	dashboardViewDay  = "day"
-	dashboardViewWeek = "week"
+	uniqueViolation        = "23505"
+	flashKindError         = "error"
+	dashboardViewDay       = "day"
+	dashboardViewWeek      = "week"
+	dashboardTotalPageSize = 10
+	// dashboardTotalLimit is two ten-row disclosure batches per column.
+	dashboardTotalLimit = 2 * dashboardTotalPageSize
 )
 
 // isUniqueViolation reports whether err is a duplicate-key error rather
@@ -360,9 +363,10 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	}
 	records := activity.Records
 	totals := activity.Totals
+	displayTotals := totals[:min(len(totals), dashboardTotalLimit)]
 
-	appKeys := make([]string, 0, len(totals))
-	for _, total := range totals {
+	appKeys := make([]string, 0, len(displayTotals))
+	for _, total := range displayTotals {
 		if key := icon.AppKey(total.AppName); key != "" && len(key) <= icon.MaxKeyBytes {
 			appKeys = append(appKeys, key)
 		}
@@ -381,16 +385,18 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	if err != nil {
 		return nil, err
 	}
+	displaySites := sites[:min(len(sites), dashboardTotalLimit)]
 
-	siteViews := make([]TotalView, 0, len(sites))
-	for _, site := range sites {
-		fill, monogramFill := appPalette(site.Site)
+	siteViews := make([]TotalView, 0, len(displaySites))
+	for _, site := range displaySites {
+		fill, chip, monogramFill := appPalette(site.Site)
 		view := TotalView{
 			AppName:      site.Site,
 			Seconds:      site.Seconds,
 			Fill:         fill,
 			Monogram:     appMonogram(site.Site),
 			MonogramFill: monogramFill,
+			MonogramBG:   chip,
 		}
 		canonical, canonicalErr := favicon.CanonicalSite(site.Site)
 		if canonicalErr == nil && canonical == site.Site {
@@ -403,16 +409,19 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 		siteViews = append(siteViews, view)
 	}
 
-	views := make([]TotalView, 0, len(totals))
-	for _, t := range totals {
-		data.TotalSeconds += t.Seconds
-		fill, monogramFill := appPalette(t.AppName)
+	for _, total := range totals {
+		data.TotalSeconds += total.Seconds
+	}
+	views := make([]TotalView, 0, len(displayTotals))
+	for _, t := range displayTotals {
+		fill, chip, monogramFill := appPalette(t.AppName)
 		view := TotalView{
 			AppName:      t.AppName,
 			Seconds:      t.Seconds,
 			Fill:         fill,
 			Monogram:     appMonogram(t.AppName),
 			MonogramFill: monogramFill,
+			MonogramBG:   chip,
 		}
 		if row, ok := iconsByKey[icon.AppKey(t.AppName)]; ok {
 			view.IconURL = fmt.Sprintf(

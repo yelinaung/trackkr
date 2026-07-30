@@ -22,16 +22,17 @@ import (
 // fakeWeb implements WebQuerier and nothing else, which is the point of
 // splitting the interfaces.
 type fakeWeb struct {
-	users   map[string]*db.UserRow
-	byID    map[int64]*db.UserRow
-	devices []db.DeviceRow
-	records []db.ActivityRecordRow
-	totals  []db.AppTotalRow
-	sites   []db.SiteTotalRow
-	deleted []int64
-	nextID  int64
-	icons   []db.AppIconRow
-	iconErr error
+	users    map[string]*db.UserRow
+	byID     map[int64]*db.UserRow
+	devices  []db.DeviceRow
+	records  []db.ActivityRecordRow
+	totals   []db.AppTotalRow
+	sites    []db.SiteTotalRow
+	deleted  []int64
+	nextID   int64
+	icons    []db.AppIconRow
+	iconErr  error
+	iconKeys []string
 
 	activityStart time.Time
 	activityEnd   time.Time
@@ -166,6 +167,7 @@ func (f *fakeWeb) AppIconMetadata(_ context.Context, userID int64, keys []string
 	if f.iconErr != nil {
 		return nil, f.iconErr
 	}
+	f.iconKeys = append([]string(nil), keys...)
 	wanted := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		wanted[key] = struct{}{}
@@ -517,6 +519,61 @@ func TestDashboardWeeklyViewUsesCalendarWeek(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("weekly dashboard is missing %q", want)
+		}
+	}
+}
+
+func TestDashboardTotalsUseTwoTenItemBatches(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "summary-pages", testPassword)
+	day := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+	fake.devices = []db.DeviceRow{{ID: 7, UserID: user.ID, Name: testLaptop}}
+	fake.records = []db.ActivityRecordRow{{
+		DeviceID: 7, AppName: testFirefoxLower,
+		StartedAt: day.Add(time.Hour), EndedAt: day.Add(2 * time.Hour),
+	}}
+	for index := 1; index <= dashboardTotalLimit+1; index++ {
+		fake.totals = append(fake.totals, db.AppTotalRow{
+			AppName: fmt.Sprintf("App %02d", index),
+			Seconds: int64(dashboardTotalLimit + 2 - index),
+		})
+		fake.sites = append(fake.sites, db.SiteTotalRow{
+			Site:    fmt.Sprintf("site-%02d.example.com", index),
+			Seconds: int64(dashboardTotalLimit + 2 - index),
+		})
+	}
+
+	srv := webServer(t, fake, false)
+	session, csrf := signIn(t, srv, user.ID)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?date=2026-05-04", nil)
+	r.AddCookie(session)
+	r.AddCookie(csrf)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.iconKeys) != dashboardTotalLimit {
+		t.Errorf("icon metadata keys = %d, want %d", len(fake.iconKeys), dashboardTotalLimit)
+	}
+
+	body := rec.Body.String()
+	if got := strings.Count(body, `<details class="totals__more">`); got != 2 {
+		t.Errorf("load-more controls = %d, want 2", got)
+	}
+	if got := strings.Count(body, "Load 10 more"); got != 2 {
+		t.Errorf("ten-item load-more labels = %d, want 2", got)
+	}
+	for _, want := range []string{"App 10", "App 11", "App 20", "site-10.example.com", "site-11.example.com", "site-20.example.com"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard is missing %q from its two batches", want)
+		}
+	}
+	for _, excluded := range []string{"App 21", "site-21.example.com"} {
+		if strings.Contains(body, excluded) {
+			t.Errorf("dashboard rendered %q beyond its two batches", excluded)
 		}
 	}
 }

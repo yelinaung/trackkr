@@ -50,6 +50,7 @@ type TotalView struct {
 	IconURL      string
 	Monogram     string
 	MonogramFill string
+	MonogramBG   string
 }
 
 // templates holds one parsed set per page, plus the standalone partials.
@@ -68,8 +69,13 @@ const (
 )
 
 var templateFuncs = template.FuncMap{
-	"duration": humanDuration,
-	"date":     func(t time.Time) string { return t.Format("2 Jan 2006") },
+	"duration":       humanDuration,
+	"date":           func(t time.Time) string { return t.Format("2 Jan 2006") },
+	"nextTotalCount": nextTotalCount,
+}
+
+func nextTotalCount(total int) int {
+	return min(max(total-dashboardTotalPageSize, 0), dashboardTotalPageSize)
 }
 
 // parseTemplates builds a set per page: base plus that page plus the

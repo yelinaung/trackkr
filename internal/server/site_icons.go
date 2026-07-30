@@ -135,7 +135,7 @@ func (h *webHandlers) setSiteIconCacheHeaders(w http.ResponseWriter, ttl time.Du
 
 func (h *webHandlers) serveSiteIconFallback(w http.ResponseWriter, r *http.Request) {
 	site := chi.URLParam(r, "site")
-	fill, foreground := appPalette(site)
+	_, fill, foreground := appPalette(site)
 	monogram := html.EscapeString(appMonogram(site))
 	w.Header().Set("Content-Type", siteIconSVGType)
 	_, _ = fmt.Fprintf(

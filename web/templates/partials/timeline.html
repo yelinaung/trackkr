@@ -1,3 +1,18 @@
+{{define "total_row"}}
+<li class="totals__item totals__item--app">
+  {{if .IconURL}}
+  <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
+  {{else}}
+  <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
+    <rect width="22" height="22" rx="6" fill="{{.MonogramBG}}"></rect>
+    <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
+  </svg>
+  {{end}}
+  <span class="totals__app">{{.AppName}}</span>
+  <span class="totals__time">{{duration .Seconds}}</span>
+</li>
+{{end}}
+
 {{define "timeline"}}
 {{$chart := .Chart}}
 
@@ -24,12 +39,12 @@
 <section class="timeline" aria-label="Activity timeline">
   <div class="timeline__scroll">
     <div class="timeline__axis" aria-hidden="true">
-      {{range $chart.HourMarks}}<span class="timeline__hour timeline__hour--{{.SpanHours}}">{{.Label}}</span>{{end}}
+      {{range $chart.HourMarks}}<span class="timeline__hour timeline__hour--{{.SpanHours}}{{if .GapBefore}} timeline__hour--break{{end}}">{{.Label}}</span>{{end}}
     </div>
 
     {{range $chart.Lanes}}
     <div class="lane">
-      <p class="lane__name">{{.DeviceName}}</p>
+      <p class="lane__name" title="{{.DeviceName}}">{{.DeviceName}}</p>
       <svg class="lane__bars" viewBox="0 0 {{$chart.SpanMin}} 24"
            preserveAspectRatio="none" role="img"
            aria-label="Activity for {{.DeviceName}}">
@@ -50,21 +65,23 @@
     <h2 class="totals__title">Applications</h2>
     <p class="totals__sum">{{duration .TotalSeconds}} tracked</p>
     <ol class="totals__list">
-      {{range .Totals}}
-      <li class="totals__item totals__item--app">
-        {{if .IconURL}}
-        <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
-        {{else}}
-        <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
-          <rect width="22" height="22" rx="6" fill="{{.Fill}}"></rect>
-          <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
-        </svg>
-        {{end}}
-        <span class="totals__app">{{.AppName}}</span>
-        <span class="totals__time">{{duration .Seconds}}</span>
-      </li>
+      {{range $index, $total := .Totals}}
+      {{if lt $index 10}}{{template "total_row" $total}}{{end}}
       {{end}}
     </ol>
+    {{if gt (len .Totals) 10}}
+    <details class="totals__more">
+      <summary>
+        <span class="totals__more-closed">Load {{nextTotalCount (len .Totals)}} more</span>
+        <span class="totals__more-open">Show less</span>
+      </summary>
+      <ol class="totals__list" start="11">
+        {{range $index, $total := .Totals}}
+        {{if and (ge $index 10) (lt $index 20)}}{{template "total_row" $total}}{{end}}
+        {{end}}
+      </ol>
+    </details>
+    {{end}}
   </section>
 
   {{if .Sites}}
@@ -72,21 +89,23 @@
     <h2 class="totals__title">Websites</h2>
     <p class="totals__sum">Browser activity</p>
     <ol class="totals__list">
-      {{range .Sites}}
-      <li class="totals__item totals__item--app">
-        {{if .IconURL}}
-        <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
-        {{else}}
-        <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
-          <rect width="22" height="22" rx="6" fill="{{.Fill}}"></rect>
-          <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
-        </svg>
-        {{end}}
-        <span class="totals__app">{{.AppName}}</span>
-        <span class="totals__time">{{duration .Seconds}}</span>
-      </li>
+      {{range $index, $site := .Sites}}
+      {{if lt $index 10}}{{template "total_row" $site}}{{end}}
       {{end}}
     </ol>
+    {{if gt (len .Sites) 10}}
+    <details class="totals__more">
+      <summary>
+        <span class="totals__more-closed">Load {{nextTotalCount (len .Sites)}} more</span>
+        <span class="totals__more-open">Show less</span>
+      </summary>
+      <ol class="totals__list" start="11">
+        {{range $index, $site := .Sites}}
+        {{if and (ge $index 10) (lt $index 20)}}{{template "total_row" $site}}{{end}}
+        {{end}}
+      </ol>
+    </details>
+    {{end}}
   </section>
   {{end}}
 </div>

@@ -21,6 +21,11 @@ const (
 	minBarFraction = 1.0 / 480.0
 	monogramDark   = "#000000"
 	monogramLight  = "#ffffff"
+
+	// The chip palette, kept as integers so the CSS string and the
+	// contrast calculation cannot drift apart.
+	monogramSaturation = 32
+	monogramLightness  = 68
 )
 
 // Bar is one activity block, positioned in minutes from the visible range.
@@ -62,6 +67,10 @@ type Chart struct {
 type HourMark struct {
 	Label     string
 	SpanHours int
+	// GapBefore marks a cell whose predecessor is not the hour before it,
+	// because the quiet hours between them were dropped. The chart has to
+	// say so: without a break the eye reads adjacency as continuity.
+	GapBefore bool
 }
 
 // dayBounds returns the wall-clock day containing t in its own location.
@@ -168,12 +177,169 @@ func ceilHour(t time.Time) time.Time {
 	return floor.Add(time.Hour)
 }
 
+// mergeAdjacentActivity collapses a run of touching records for the same
+// application on one device into a single bar.
+//
+// A three-second poll turns an hour in one application into hundreds of
+// consecutive records, and deduplication then carves the desktop ones around
+// each browser observation. Drawn one rectangle apiece they all land at the
+// minimum bar width and the lane reads as noise -- the chart becomes the least
+// legible thing on a page whose lists are perfectly clear. Merging is honest
+// here because the runs really are contiguous: the merged bar covers exactly
+// the same span as the records it replaces.
+//
+// Records arrive sorted by (StartedAt, DeviceID, ID), so the previous bar for
+// a device is the only merge candidate.
+func mergeAdjacentActivity(records []db.ActivityRecordRow) []db.ActivityRecordRow {
+	merged := make([]db.ActivityRecordRow, 0, len(records))
+	lastByDevice := make(map[int64]int, 4)
+
+	for i := range records {
+		record := records[i]
+		if index, ok := lastByDevice[record.DeviceID]; ok {
+			previous := &merged[index]
+			// Touching or overlapping, never bridging a gap: a pause
+			// belongs on the chart.
+			if previous.AppName == record.AppName && !record.StartedAt.After(previous.EndedAt) {
+				if record.EndedAt.After(previous.EndedAt) {
+					previous.EndedAt = record.EndedAt
+				}
+				previous.DurationS = int(previous.EndedAt.Sub(previous.StartedAt).Seconds())
+				// The run spans several titles, so naming one of them in
+				// the tooltip would be picking a winner arbitrarily.
+				if previous.Title != record.Title {
+					previous.Title = ""
+				}
+				continue
+			}
+		}
+		merged = append(merged, record)
+		lastByDevice[record.DeviceID] = len(merged) - 1
+	}
+	return merged
+}
+
+// activeHourScale drops hours no record touches, so a day with a quiet
+// afternoon spends its width on the hours that were worked.
+//
+// Bars keep their proportions. An hour survives when any record overlaps it,
+// so every hour a record touches survives, and the hours one record spans are
+// consecutive both in real time and in the compressed axis. A bar's width is
+// therefore still exactly its duration -- only empty stretches disappear.
+//
+// What is lost is adjacency: a bar ending at 12:58 can sit beside one
+// starting at 19:04. Every cell after a dropped run carries GapBefore so the
+// axis can draw the break rather than imply continuity.
+type activeHourScale struct {
+	// position[i] is the compressed index of absolute hour i, or -1 when
+	// that hour was dropped.
+	position []int
+	kept     int
+}
+
+func newActiveHourScale(records []db.ActivityRecordRow, start, end time.Time) *activeHourScale {
+	total := int(end.Sub(start) / time.Hour)
+	if total <= 0 {
+		return nil
+	}
+
+	active := make([]bool, total)
+	for i := range records {
+		record := &records[i]
+		from := maxChartTime(record.StartedAt, start)
+		to := minChartTime(record.EndedAt, end)
+		if !from.Before(to) {
+			continue
+		}
+		first := int(from.Sub(start) / time.Hour)
+		// An interval ending exactly on the hour does not reach into it.
+		last := int(to.Sub(start).Nanoseconds()-1) / int(time.Hour)
+		for h := max(first, 0); h <= min(last, total-1); h++ {
+			active[h] = true
+		}
+	}
+
+	scale := &activeHourScale{position: make([]int, total)}
+	for h := range active {
+		if active[h] {
+			scale.position[h] = scale.kept
+			scale.kept++
+			continue
+		}
+		scale.position[h] = -1
+	}
+	if scale.kept == 0 || scale.kept == total {
+		return nil // nothing to drop; keep the plain linear axis
+	}
+	return scale
+}
+
+// minutesAt maps a time onto the compressed axis. A time inside a dropped
+// hour cannot occur for a record, but clamps to the segment edge if it does.
+func (s *activeHourScale) minutesAt(t, start time.Time) float64 {
+	offset := t.Sub(start)
+	hour := int(offset / time.Hour)
+	if hour >= len(s.position) {
+		return float64(s.kept) * 60
+	}
+	if hour < 0 {
+		return 0
+	}
+	if s.position[hour] < 0 {
+		// Round to the nearest kept edge rather than inventing a position.
+		for h := hour; h >= 0; h-- {
+			if s.position[h] >= 0 {
+				return float64(s.position[h]+1) * 60
+			}
+		}
+		return 0
+	}
+	within := offset - time.Duration(hour)*time.Hour
+	return float64(s.position[hour])*60 + within.Minutes()
+}
+
+func (s *activeHourScale) marks(start time.Time) []HourMark {
+	marks := make([]HourMark, 0, s.kept)
+	gap := false
+	for h, position := range s.position {
+		if position < 0 {
+			gap = true
+			continue
+		}
+		marks = append(marks, HourMark{
+			Label:     start.Add(time.Duration(h) * time.Hour).Format("15"),
+			SpanHours: 1,
+			GapBefore: gap && len(marks) > 0,
+		})
+		gap = false
+	}
+	return marks
+}
+
+func maxChartTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func minChartTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
 // layout converts records into positioned bars for one day. Records are
 // clamped to the drawn window, which is what the overlapping database
 // query makes possible for spans crossing midnight.
 func layout(records []db.ActivityRecordRow, devices []db.DeviceRow, day time.Time) Chart {
 	dayStart, dayEnd := dayBounds(day)
 	start, end := chartWindow(records, dayStart, dayEnd)
+	merged := mergeAdjacentActivity(records)
+	if scale := newActiveHourScale(merged, start, end); scale != nil {
+		return layoutScaled(merged, devices, start, end, scale.marks(start), false, scale)
+	}
 	return layoutRange(records, devices, start, end, hourMarks(start, end), false)
 }
 
@@ -194,7 +360,23 @@ func layoutRange(
 	marks []HourMark,
 	showDates bool,
 ) Chart {
+	return layoutScaled(mergeAdjacentActivity(records), devices, start, end, marks, showDates, nil)
+}
+
+// layoutScaled places bars on either the plain linear axis (scale nil) or a
+// compressed one that has dropped its empty hours.
+func layoutScaled(
+	records []db.ActivityRecordRow,
+	devices []db.DeviceRow,
+	start, end time.Time,
+	marks []HourMark,
+	showDates bool,
+	scale *activeHourScale,
+) Chart {
 	span := end.Sub(start).Minutes()
+	if scale != nil {
+		span = float64(scale.kept) * 60
+	}
 
 	chart := Chart{
 		WindowStart: start,
@@ -213,7 +395,7 @@ func layoutRange(
 	byDevice := make(map[int64][]Bar)
 	for i := range records {
 		rec := &records[i]
-		bar, ok := toBar(rec, start, end, span, i, showDates)
+		bar, ok := toBar(rec, start, end, span, i, showDates, scale)
 		if !ok {
 			continue
 		}
@@ -246,6 +428,7 @@ func toBar(
 	span float64,
 	index int,
 	showDates bool,
+	scale *activeHourScale,
 ) (Bar, bool) {
 	from := rec.StartedAt
 	if from.Before(start) {
@@ -261,6 +444,12 @@ func toBar(
 
 	x := from.Sub(start).Minutes()
 	width := to.Sub(from).Minutes()
+	if scale != nil {
+		// Every hour a record touches survives the compression, so its
+		// endpoints stay in one run and the width is still its duration.
+		x = scale.minutesAt(from, start)
+		width = scale.minutesAt(to, start) - x
+	}
 	if minWidth := span * minBarFraction; width < minWidth {
 		width = minWidth
 	}
@@ -317,20 +506,29 @@ func dayMarks(start, end time.Time) []HourMark {
 // appColor maps an app name to a stable hue, so the same app keeps its
 // colour across days and devices.
 func appColor(app string) string {
-	fill, _ := appPalette(app)
+	fill, _, _ := appPalette(app)
 	return fill
 }
 
-func appPalette(app string) (string, string) {
+// appPalette returns the timeline fill, the monogram chip's background, and
+// the text colour that reads on that chip.
+//
+// The chip is deliberately paler than the bar. A monogram stands in for a
+// real icon, and at full saturation the placeholders shouted over the genuine
+// artwork beside them. Muting also buys contrast headroom: the worst hue on
+// the bar palette clears 4.5:1 by two percent, while the chip palette clears
+// it by more than half.
+func appPalette(app string) (string, string, string) {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(app))
 	hue := int(h.Sum32() % 360)
 	fill := fmt.Sprintf("hsl(%d 62%% 48%%)", hue)
-	return fill, monogramForeground(hue)
+	chip := fmt.Sprintf("hsl(%d %d%% %d%%)", hue, monogramSaturation, monogramLightness)
+	return fill, chip, monogramForeground(hue)
 }
 
 func monogramForeground(hue int) string {
-	if hslRelativeLuminance(hue, 0.62, 0.48) > 0.179 {
+	if hslRelativeLuminance(hue, monogramSaturation/100.0, monogramLightness/100.0) > 0.179 {
 		return monogramDark
 	}
 	return monogramLight

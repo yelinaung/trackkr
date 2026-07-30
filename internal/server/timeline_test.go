@@ -383,7 +383,12 @@ func TestMonogramForegroundMeetsContrastTarget(t *testing.T) {
 	t.Parallel()
 
 	for hue := range 360 {
-		background := hslRelativeLuminance(hue, 0.62, 0.48)
+		// The chip the monogram actually sits on, not the timeline bar.
+		background := hslRelativeLuminance(
+			hue,
+			monogramSaturation/100.0,
+			monogramLightness/100.0,
+		)
 		foreground := 1.0
 		if monogramForeground(hue) == monogramDark {
 			foreground = 0

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"regexp"
 	"strings"
@@ -143,6 +144,52 @@ func TestTotalsUseIconsWithoutRedundantSwatches(t *testing.T) {
 	}
 }
 
+func TestTotalsLoadMoreBoundary(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		count    int
+		wantMore bool
+	}{
+		{"ten rows", 10, false},
+		{"eleven rows", 11, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			data := sampleTimelineData()
+			data.Sites = nil
+			data.Totals = make([]TotalView, tt.count)
+			for index := range data.Totals {
+				data.Totals[index] = TotalView{
+					AppName:  fmt.Sprintf("App %02d", index+1),
+					Seconds:  int64(index + 1),
+					Monogram: "AP",
+				}
+			}
+
+			html := renderPartial(t, "timeline", data)
+			hasMore := strings.Contains(html, `<details class="totals__more">`)
+			if hasMore != tt.wantMore {
+				t.Errorf("load-more control = %v, want %v", hasMore, tt.wantMore)
+			}
+			if !strings.Contains(html, fmt.Sprintf("App %02d", tt.count)) {
+				t.Errorf("last item %d is missing", tt.count)
+			}
+			if tt.wantMore {
+				if !strings.Contains(html, "Load 1 more") {
+					t.Error("eleven rows do not offer the single remaining item")
+				}
+				detailsAt := strings.Index(html, `<details class="totals__more">`)
+				extraAt := strings.Index(html, "App 11")
+				if detailsAt < 0 || extraAt < detailsAt {
+					t.Error("the second batch is not nested inside the collapsed disclosure")
+				}
+			}
+		})
+	}
+}
+
 func TestTimelineRendersBarsAsSVGAttributes(t *testing.T) {
 	t.Parallel()
 	html := renderPartial(t, "timeline", sampleTimelineData())
@@ -150,7 +197,9 @@ func TestTimelineRendersBarsAsSVGAttributes(t *testing.T) {
 	if !strings.Contains(html, "<svg") {
 		t.Fatal("timeline has no svg element")
 	}
-	if !strings.Contains(html, `x="60"`) || !strings.Contains(html, `width="30"`) {
+	// The sample's only record sits in the 01:00 hour, and every other hour
+	// of that day is dropped, so it opens the compressed axis.
+	if !strings.Contains(html, `x="0"`) || !strings.Contains(html, `width="30"`) {
 		t.Errorf("bar geometry missing from output:\n%s", html)
 	}
 	if !strings.Contains(html, "<title>") {
@@ -361,7 +410,7 @@ func sampleTimelineData() *pageData {
 	}}
 	devices := []db.DeviceRow{{ID: 7, Name: testLaptop}}
 
-	fill, monogramFill := appPalette(testFirefoxLower)
+	fill, chip, monogramFill := appPalette(testFirefoxLower)
 	return &pageData{
 		User:      &db.UserRow{ID: 1, Username: "ye"},
 		CSRFToken: testCSRFValue,
@@ -374,7 +423,7 @@ func sampleTimelineData() *pageData {
 		Chart:     layout(records, devices, day),
 		Totals: []TotalView{{
 			AppName: testFirefoxLower, Seconds: 1800,
-			Fill: fill, Monogram: "FI", MonogramFill: monogramFill,
+			Fill: fill, Monogram: "FI", MonogramFill: monogramFill, MonogramBG: chip,
 		}},
 		Sites: []TotalView{
 			{AppName: "youtube.com", Seconds: 1200, Fill: appColor("youtube.com"), IconURL: "/site-icons/youtube.com?sig=test"},
