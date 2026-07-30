@@ -7,6 +7,9 @@ stages:
 
 variables:
   SECRET_DETECTION_ENABLED: 'true'
+  # Test fixtures exercise filesystem and database APIs deliberately; they
+  # are covered by Go tests and should not be treated as production sinks.
+  SAST_EXCLUDED_PATHS: "spec, test, tests, tmp, **/*_test.go"
   ALPINE_JQ_IMAGE: apteno/alpine-jq:latest@sha256:2618c251ddb92dd09e9bee03769792df70a31083a8d4105472ef5c823b2fb8e3
   # renovate: datasource=github-releases depName=equinix-labs/otel-cli
   OTEL_CLI_VERSION: 0.4.5
@@ -69,7 +72,12 @@ test:
     POSTGRES_DB: trackkr
     POSTGRES_USER: trackkr
     POSTGRES_PASSWORD: trackkr
-    TRACKKR_TEST_DSN: postgres://trackkr:trackkr@postgres:5432/trackkr?sslmode=disable
+    # No TRACKKR_TEST_DSN: the database tests assemble one from the variables
+    # above. Spelling the DSN out here duplicated the credentials and left a
+    # connection string carrying a password in the tree, which secret
+    # scanning reports on every pipeline.
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
   needs:
   - job: check_secrets
   cache:

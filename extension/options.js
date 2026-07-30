@@ -31,6 +31,10 @@ form.addEventListener("submit", async (event) => {
   const token = tokenEl.value.trim();
 
   let origin;
+  if (!isDaemonUrlAllowed(daemonUrl)) {
+    report("error", "The daemon URL must use HTTP(S) and point to localhost, 127.0.0.1, or ::1.");
+    return;
+  }
   try {
     origin = originFor(daemonUrl);
   } catch (err) {

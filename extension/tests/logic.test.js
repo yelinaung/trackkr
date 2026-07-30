@@ -13,6 +13,7 @@ const {
   idleEndedAt,
   trimQueue,
   normalizeDaemonUrl,
+  isDaemonUrlAllowed,
   originFor,
 } = require("../logic.js");
 
@@ -165,6 +166,24 @@ test("originFor drops the port", () => {
   assert.equal(originFor("http://[::1]:7600"), "http://[::1]/*");
 
   assert.throws(() => originFor("not a url"));
+});
+
+test("daemon URLs are restricted to local listeners", () => {
+  for (const url of [
+    "http://127.0.0.1:7600",
+    "https://localhost:7600",
+    "http://[::1]:7600",
+  ]) {
+    assert.equal(isDaemonUrlAllowed(url), true, url);
+  }
+  for (const url of [
+    "https://trackkr.example.com",
+    "http://127.0.0.1:7600/path",
+    "http://user:pass@127.0.0.1:7600",
+    "not a url",
+  ]) {
+    assert.equal(isDaemonUrlAllowed(url), false, url);
+  }
 });
 
 // Whatever originFor produces for a daemon address must be declared in

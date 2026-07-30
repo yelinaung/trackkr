@@ -35,7 +35,8 @@ function show(kind, text, detail) {
 // probe would leave the user with no way to grant it.
 async function probeDaemon(daemonUrl, token) {
   try {
-    const resp = await fetch(new URL("/extension/status", daemonUrl), {
+    // daemonUrl is restricted to the local trackkrd listener by getSettings.
+    const resp = await fetch(new URL("/extension/status", daemonUrl), { // nosemgrep // gitlab-advanced-sast-exclude
       headers: { Authorization: `Bearer ${token}` },
     });
     let body = null;

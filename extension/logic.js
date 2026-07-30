@@ -347,10 +347,34 @@
     return String(raw || DEFAULT_DAEMON_URL).trim().replace(/\/+$/, "");
   }
 
+  // The extension talks to the local trackkrd listener only. Keeping this
+  // invariant in the shared logic prevents a stored or manually entered URL
+  // from turning the bearer token into a request to an arbitrary host.
+  function isDaemonUrlAllowed(daemonUrl) {
+    try {
+      const url = new URL(normalizeDaemonUrl(daemonUrl));
+      const loopback = new Set(["127.0.0.1", "localhost", "[::1]"]);
+      return (
+        (url.protocol === "http:" || url.protocol === "https:") &&
+        loopback.has(url.hostname) &&
+        url.username === "" &&
+        url.password === "" &&
+        url.pathname === "/" &&
+        url.search === "" &&
+        url.hash === ""
+      );
+    } catch (err) {
+      return false;
+    }
+  }
+
   // originFor turns a daemon URL into the origin pattern a host
   // permission is granted against. The port is deliberately dropped:
   // permissions are granted per origin, and the port is configurable.
   function originFor(daemonUrl) {
+    if (!isDaemonUrlAllowed(daemonUrl)) {
+      throw new Error("daemon URL must point to a loopback address");
+    }
     const url = new URL(normalizeDaemonUrl(daemonUrl));
     return `${url.protocol}//${url.hostname}/*`;
   }
@@ -383,6 +407,7 @@
     isIgnored,
     filterIgnored,
     normalizeDaemonUrl,
+    isDaemonUrlAllowed,
     originFor,
   };
 

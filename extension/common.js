@@ -25,8 +25,9 @@ globalThis.ACTIVITY_PATH =
 // getSettings returns the configured daemon URL and token.
 globalThis.getSettings = async function getSettings() {
   const stored = await api.storage.local.get(["daemonUrl", "token", "ignored"]);
+  const daemonUrl = normalizeDaemonUrl(stored.daemonUrl);
   return {
-    daemonUrl: normalizeDaemonUrl(stored.daemonUrl),
+    daemonUrl: isDaemonUrlAllowed(daemonUrl) ? daemonUrl : DEFAULT_DAEMON_URL,
     token: stored.token || "",
     ignored: stored.ignored || [],
   };

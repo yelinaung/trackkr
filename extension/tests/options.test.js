@@ -211,6 +211,24 @@ test("an unparseable URL is rejected before storing anything", async () => {
   assert.match(page.nodes.status.textContent, /URL/);
 });
 
+test("a remote daemon URL is rejected before requesting permission", async () => {
+  const page = optionsPage({
+    elements: {
+      form: {},
+      daemonUrl: { value: "https://trackkr.example.com" },
+      token: { value: "a-token" },
+      ignored: { value: "" },
+      status: { className: "", textContent: "" },
+    },
+  });
+
+  await page.fire("form", "submit");
+
+  assert.equal(page.calls.includes("permissions.request"), false);
+  assert.equal(page.calls.includes("storage.set"), false);
+  assert.match(page.nodes.status.textContent, /localhost/);
+});
+
 function popupPage(options = {}) {
   return createPage("popup.js", {
     elements: {

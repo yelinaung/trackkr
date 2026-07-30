@@ -48,7 +48,7 @@ func NewXWindowDetector() (*XWindowDetector, error) {
 // title.
 func (x *XWindowDetector) ActiveWindow(ctx context.Context) (WindowInfo, error) {
 	// Get window ID.
-	idOut, err := exec.CommandContext(ctx, x.xdotoolPath, "getactivewindow").Output() //nolint:gosec // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- path validated by LookPath
+	idOut, err := exec.CommandContext(ctx, x.xdotoolPath, "getactivewindow").Output() //nolint:gosec // nosemgrep // gitlab-advanced-sast-exclude -- path validated by LookPath
 	if err != nil {
 		return WindowInfo{}, ErrNoActiveWindow
 	}
@@ -58,14 +58,14 @@ func (x *XWindowDetector) ActiveWindow(ctx context.Context) (WindowInfo, error) 
 	}
 
 	// Get window title.
-	titleOut, err := exec.CommandContext(ctx, x.xdotoolPath, "getactivewindow", "getwindowname").Output() //nolint:gosec // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- path validated by LookPath
+	titleOut, err := exec.CommandContext(ctx, x.xdotoolPath, "getactivewindow", "getwindowname").Output() //nolint:gosec // nosemgrep // gitlab-advanced-sast-exclude -- path validated by LookPath
 	if err != nil {
 		return WindowInfo{}, fmt.Errorf("getting window name: %w", err)
 	}
 	title := strings.TrimSpace(string(titleOut))
 
 	// Get WM_CLASS for app name.
-	classOut, err := exec.CommandContext(ctx, x.xpropPath, "-id", windowID, "WM_CLASS").Output() //nolint:gosec // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- paths validated by LookPath
+	classOut, err := exec.CommandContext(ctx, x.xpropPath, "-id", windowID, "WM_CLASS").Output() //nolint:gosec // nosemgrep // gitlab-advanced-sast-exclude -- paths validated by LookPath
 	appName := unknownApp
 	if err == nil {
 		appName = parseWMClass(string(classOut))

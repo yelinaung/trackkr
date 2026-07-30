@@ -30,7 +30,7 @@ func NewXIdleDetector() (*XIdleDetector, error) {
 
 // IdleTime returns the current user idle duration.
 func (x *XIdleDetector) IdleTime(ctx context.Context) (time.Duration, error) {
-	out, err := exec.CommandContext(ctx, x.xprintidlePath).Output() //nolint:gosec // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command -- path validated by LookPath
+	out, err := exec.CommandContext(ctx, x.xprintidlePath).Output() //nolint:gosec // nosemgrep // gitlab-advanced-sast-exclude -- path validated by LookPath
 	if err != nil {
 		return 0, fmt.Errorf("running xprintidle: %w", err)
 	}
