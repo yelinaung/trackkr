@@ -46,8 +46,11 @@ run = ["gofumpt -w ./cmd/ ./internal/"]
 
 [tasks.ext-lint]
 description = "Validate the browser extension with web-ext"
+# web-ext validates Firefox source. The Chrome source manifest and worker
+# entrypoint live in the same directory but are not Firefox input, and the task
+# treats warnings as errors, so they have to be excluded explicitly.
 run = [
-  "web-ext lint --source-dir extension --warnings-as-errors --ignore-files 'tests/**'",
+  "web-ext lint --source-dir extension --warnings-as-errors --ignore-files 'tests/**' 'manifest.chrome.json' 'background-cr.js'",
 ]
 
 [tasks.ext-test]

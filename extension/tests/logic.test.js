@@ -81,12 +81,15 @@ test("buildRecord enforces the minimum duration", () => {
 
 test("buildRecord emits the shape the daemon expects", () => {
   const startedAt = Date.UTC(2026, 4, 4, 10, 0, 0);
+  const recordId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
   const record = buildRecord(
-    { tabId: 1, url: "https://example.com/a", title: "Docs", startedAt },
+    { recordId, tabId: 1, url: "https://example.com/a", title: "Docs", startedAt },
     startedAt + 90_000,
   );
 
   assert.deepEqual(record, {
+    // Carried from the segment so a retry replays instead of inserting twice.
+    record_id: recordId,
     url: "https://example.com/a",
     title: "Docs",
     started_at: "2026-05-04T10:00:00.000Z",

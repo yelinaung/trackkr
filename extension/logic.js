@@ -61,11 +61,81 @@
       return null;
     }
     return {
+      // The daemon preserves a canonical ID so a retry from our durable
+      // queue conflicts as a replay instead of inserting twice.
+      record_id: validRecordId(current.recordId) ? current.recordId : "",
       url: current.url,
       title: current.title || "",
       started_at: new Date(current.startedAt).toISOString(),
       ended_at: new Date(endedAt).toISOString(),
     };
+  }
+
+  // validRecordId matches the daemon's rule exactly: canonical lowercase
+  // 36-character UUID text and nothing else. Accepting other spellings
+  // would let one segment insert twice.
+  const RECORD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  function validRecordId(id) {
+    return typeof id === "string" && RECORD_ID_PATTERN.test(id);
+  }
+
+  // usableSegment decides whether persisted session state may become
+  // activity. Session storage survives a service-worker restart, so on
+  // recovery it is untrusted input rather than something this code wrote:
+  // a partial write, a stale build, or an incognito tab must never be
+  // converted into a record.
+  //
+  // incognito must be exactly false. Absent means an older build wrote
+  // it and cannot prove the tab was not private, which the caller
+  // resolves by asking the live tab.
+  function usableSegment(current, now, ignored = []) {
+    if (!current || typeof current !== "object") {
+      return false;
+    }
+    if (!validRecordId(current.recordId)) {
+      return false;
+    }
+    if (current.incognito !== false) {
+      return false;
+    }
+    if (!positiveInteger(current.tabId) || !positiveInteger(current.windowId)) {
+      return false;
+    }
+    if (!Number.isFinite(current.startedAt) || current.startedAt > now) {
+      return false;
+    }
+    if (!isWebUrl(current.url)) {
+      return false;
+    }
+    return !isIgnored(current.url, ignored);
+  }
+
+  // legacySegment reports state written before record IDs and the
+  // explicit incognito flag existed. It is only upgradable, never
+  // directly usable.
+  function legacySegment(current) {
+    if (!current || typeof current !== "object") {
+      return false;
+    }
+    if (validRecordId(current.recordId) && current.incognito === false) {
+      return false;
+    }
+    return positiveInteger(current.tabId) && isWebUrl(current.url);
+  }
+
+  function positiveInteger(value) {
+    return Number.isInteger(value) && value > 0;
+  }
+
+  // queueHasRecord makes the queue append idempotent. Termination between
+  // the queue write and the session clear leaves both copies; recovery
+  // must recognize the queued identity rather than append it again.
+  function queueHasRecord(queue, recordId) {
+    if (!validRecordId(recordId)) {
+      return false;
+    }
+    return (queue || []).some((entry) => entry && entry.record_id === recordId);
   }
 
   // idleEndedAt is when the user actually stopped, which is one
@@ -224,6 +294,10 @@
     trackable,
     shouldSwitch,
     buildRecord,
+    validRecordId,
+    usableSegment,
+    legacySegment,
+    queueHasRecord,
     idleEndedAt,
     idleEndsAt,
     trimQueue,

@@ -29,7 +29,8 @@
     "scripts": [
       "logic.js",
       "common.js",
-      "background.js"
+      "background-core.js",
+      "background-fx.js"
     ]
   },
   "action": {

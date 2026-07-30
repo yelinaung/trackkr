@@ -39,6 +39,9 @@ function createHarness(options = {}) {
     token = "test-token",
     permitted = true,
     respond = () => ({ ok: true, status: 202 }),
+    // Which background entrypoint to load. Firefox is the default because it
+    // is the only build that registers runtime.onSuspend.
+    entrypoint = "background-fx.js",
   } = options;
 
   const state = {
@@ -47,6 +50,10 @@ function createHarness(options = {}) {
     tabs: { ...tabs },
     windows: { ...windows },
     focusedWindowId,
+    // reads counts storage reads so a test can prove registration finished
+    // before recovery began.
+    reads: 0,
+    failSessionRemove: false,
     idleState,
     permitted,
     requests: [],
@@ -75,17 +82,25 @@ function createHarness(options = {}) {
     storage: {
       session: {
         async get(key) {
+          state.reads += 1;
           return key in state.session ? { [key]: state.session[key] } : {};
         },
         async set(entries) {
           Object.assign(state.session, entries);
         },
         async remove(key) {
+          // A deterministic fault stands in for a worker killed after the
+          // durable queue write. It proves the write ordering without
+          // pretending the harness can force-kill real in-flight work.
+          if (state.failSessionRemove) {
+            throw new Error("session storage unavailable");
+          }
           delete state.session[key];
         },
       },
       local: {
         async get(keys) {
+          state.reads += 1;
           const wanted = Array.isArray(keys) ? keys : [keys];
           const out = {};
           for (const key of wanted) {
@@ -161,7 +176,10 @@ function createHarness(options = {}) {
     },
 
     runtime: {
-      onSuspend: event("runtime.onSuspend"),
+      // Chrome MV3 has no onSuspend. Omitting it is the whole point: the
+      // Chrome entrypoint must start without touching a property that does
+      // not exist, and a harness that provided one could not prove that.
+      ...(entrypoint === "background-cr.js" ? {} : { onSuspend: event("runtime.onSuspend") }),
       onStartup: event("runtime.onStartup"),
       onInstalled: event("runtime.onInstalled"),
     },
@@ -203,20 +221,46 @@ function createHarness(options = {}) {
     Boolean,
     setTimeout,
     clearTimeout,
-    browser: api,
+    ...(entrypoint === "background-cr.js" ? { chrome: api } : { browser: api }),
+    crypto: {
+      // Deterministic and canonical: recovery and queue idempotence are
+      // asserted by identity, so the tests need to be able to name one.
+      randomUUID: () => {
+        state.uuidCounter = (state.uuidCounter || 0) + 1;
+        const n = String(state.uuidCounter).padStart(12, "0");
+        return `00000000-0000-4000-8000-${n}`;
+      },
+    },
     fetch: fetchImpl,
   });
 
-  // Manifest order, so the same globals exist in the same sequence.
-  for (const file of ["logic.js", "common.js", "background.js"]) {
+  // Chrome's worker loads these through importScripts; Firefox loads them as
+  // ordered classic scripts. Same files, same order, so the shim is enough to
+  // run either entrypoint against one fake browser.
+  const load = (file) => {
     vm.runInContext(fs.readFileSync(path.join(EXTENSION_DIR, file), "utf8"), context, {
       filename: file,
     });
+  };
+  context.importScripts = (...files) => files.forEach(load);
+
+  // Each browser is loaded the way it really loads. Firefox's manifest lists
+  // four ordered classic scripts; Chrome's worker is one file that pulls in the
+  // rest through importScripts, so preloading them here would double-declare
+  // every const and is not what Chrome does.
+  if (entrypoint === "background-cr.js") {
+    load(entrypoint);
+  } else {
+    load("logic.js");
+    load("common.js");
+    load("background-core.js");
+    load(entrypoint);
   }
 
   return {
     state,
     context,
+    api,
 
     // fire invokes a listener the way the browser would, returning the
     // promise the handler chains onto so a test can await settlement.
@@ -234,12 +278,44 @@ function createHarness(options = {}) {
       while (pending.length > 0) {
         await pending.shift();
       }
-      await context.chain;
-      await context.chain;
+      // pendingWork reaches the real chain; `chain` itself is a lexical
+      // binding the context does not expose. Twice, because settling one
+      // link can enqueue the next.
+      await context.pendingWork();
+      await context.pendingWork();
     },
 
     current() {
       return state.session.current || null;
+    },
+
+    // registered reports whether a listener exists, without firing it.
+    registered(name) {
+      return listeners.has(name);
+    },
+
+    // age backdates the current segment so it clears the one-second floor
+    // without any test having to sleep.
+    age(ms) {
+      if (state.session.current) {
+        state.session.current.startedAt -= ms;
+      }
+    },
+
+    setCurrent(current) {
+      state.session.current = current;
+    },
+
+    setQueue(queue) {
+      state.local.queue = queue;
+    },
+
+    closeTab(tabId) {
+      delete state.tabs[tabId];
+    },
+
+    failSessionRemove() {
+      state.failSessionRemove = true;
     },
 
     queue() {

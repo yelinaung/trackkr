@@ -58,11 +58,17 @@ test("a background window cannot take over tracking", async () => {
 
 test("activation in an unfocused window is ignored", async () => {
   const h = twoWindows();
+  // Startup recovery seeds the focused window, as it does in a real worker.
+  await h.settled();
 
   await h.fire("tabs.onActivated", { tabId: 20, windowId: BACKGROUND });
   await h.settled();
 
-  assert.equal(h.current(), null);
+  assert.equal(
+    h.current().url,
+    "https://focused.example",
+    "activation in a background window must not take over tracking",
+  );
 });
 
 // Firefox unloads an idle event page and fires onSuspend; finalizing

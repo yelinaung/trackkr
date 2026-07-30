@@ -4,6 +4,20 @@
 // keeps the file usable if it is ever loaded under a chrome-only shim.
 globalThis.api = globalThis.browser ?? globalThis.chrome;
 
+// browserKind drives endpoint selection, nothing else. It is derived from which
+// namespace exists rather than from the user agent: the two builds are packaged
+// separately, and brand sniffing would invite non-Google Chromium browsers into
+// a path this phase does not support.
+globalThis.browserKind = globalThis.browser ? "firefox" : "chrome";
+
+// The daemon picks the canonical application name from the route, so the route
+// is how a build declares which browser it is. An old daemon 404s the Chrome
+// path instead of storing Chrome activity as Firefox.
+globalThis.ACTIVITY_PATH =
+  globalThis.browserKind === "chrome"
+    ? "/extension/activity/chrome"
+    : "/extension/activity";
+
 // The pure helpers -- DEFAULT_DAEMON_URL, normalizeDaemonUrl, originFor
 // -- live in logic.js, which loads first. What is left here needs the
 // browser.
