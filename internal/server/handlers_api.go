@@ -28,6 +28,40 @@ type ingestRecord struct {
 type ingestResponse struct {
 	Accepted int `json:"accepted"`
 	Rejected int `json:"rejected"`
+	// Clamped counts records whose interval was trimmed to the duration they
+	// reported. It is surfaced rather than corrected silently: a non-zero
+	// count means some client is measuring one of the two wrong.
+	Clamped int `json:"clamped"`
+}
+
+// ingestDurationSlack is how far an interval may exceed the duration a record
+// reports before the interval is treated as wrong. A client truncates its
+// duration to whole seconds while keeping sub-second timestamps, so just under
+// a second of excess is normal.
+const ingestDurationSlack = 2 * time.Second
+
+// clampSuspendedInterval trims a record whose interval outruns the time it
+// says it measured, and reports whether it did.
+//
+// A daemon that measures elapsed time with a monotonic clock but stamps wall
+// clock timestamps disagrees with itself across a suspend: the monotonic clock
+// stops while the machine sleeps, so an hour of lid-closed time lands in the
+// interval and not in the duration. Charting the interval turns that sleep
+// into an hour of use.
+//
+// The duration is the trustworthy half -- it is what the client actually
+// measured -- so the interval is brought back to it rather than the record
+// being dropped. A client that reports no duration is left alone; there is
+// nothing better to believe than its timestamps.
+func clampSuspendedInterval(startedAt, endedAt time.Time, durationS int) (time.Time, bool) {
+	if durationS <= 0 {
+		return endedAt, false
+	}
+	reported := time.Duration(durationS) * time.Second
+	if endedAt.Sub(startedAt) <= reported+ingestDurationSlack {
+		return endedAt, false
+	}
+	return startedAt.Add(reported), true
 }
 
 // deviceView is the API's device representation. It deliberately omits
@@ -98,6 +132,7 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 
 		rows := make([]db.ActivityRecordRow, 0, len(req.Records))
 		rejected := 0
+		clamped := 0
 		for i := range req.Records {
 			rec := &req.Records[i]
 			// The producer is trusted downstream to scope deduplication, so
@@ -121,6 +156,10 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 				rejected++
 				continue
 			}
+			endedAt, trimmed := clampSuspendedInterval(rec.StartedAt, rec.EndedAt, rec.DurationS)
+			if trimmed {
+				clamped++
+			}
 			var url *string
 			if rec.URL != "" {
 				url = &rec.URL
@@ -133,7 +172,7 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 				Title:     rec.Title,
 				URL:       url,
 				StartedAt: rec.StartedAt,
-				EndedAt:   rec.EndedAt,
+				EndedAt:   endedAt,
 				DurationS: rec.DurationS,
 			})
 		}
@@ -150,7 +189,11 @@ func HandleIngestActivity(queries APIQuerier) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(ingestResponse{Accepted: accepted, Rejected: rejected})
+		_ = json.NewEncoder(w).Encode(ingestResponse{
+			Accepted: accepted,
+			Rejected: rejected,
+			Clamped:  clamped,
+		})
 	}
 }
 

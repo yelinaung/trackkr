@@ -27,6 +27,12 @@ type Tracker struct {
 	state    state
 	current  *activeRecord
 	appIcons map[string]queuedAppIcon
+
+	// elapsed measures how long a segment ran. It is a field only so a test
+	// can reproduce a machine suspend: that state is a wall clock which has
+	// advanced while the monotonic clock has not, and the standard library
+	// offers no way to build a pair of times that disagree that way.
+	elapsed func(startedAt, endedAt time.Time) time.Duration
 }
 
 type activeRecord struct {
@@ -51,7 +57,15 @@ func NewTracker(
 		logger:   logger,
 		state:    stateTracking,
 		appIcons: make(map[string]queuedAppIcon),
+		elapsed:  monotonicElapsed,
 	}
+}
+
+// monotonicElapsed measures a segment by the monotonic reading both times
+// carry, which is what Sub already prefers. Naming it makes the choice
+// deliberate rather than incidental.
+func monotonicElapsed(startedAt, endedAt time.Time) time.Duration {
+	return endedAt.Sub(startedAt)
 }
 
 // Run starts the tracking loop. It blocks until ctx is cancelled,
@@ -133,16 +147,37 @@ func (t *Tracker) startNew(info WindowInfo, now time.Time) {
 		Msg("tracking new window")
 }
 
+// finalize closes the open segment. The end is derived from how long the
+// process was actually running rather than from the wall clock it was handed.
+//
+// time.Time carries a monotonic reading alongside the wall clock, and Sub
+// prefers the monotonic one -- which does not advance while the machine is
+// suspended. So on a lid close the two disagree: an hour of sleep moves the
+// wall clock an hour and the monotonic clock not at all. Taking the end as
+// start plus the monotonic elapsed time keeps EndedAt and DurationS describing
+// the same span, and leaves the sleep as a gap between records rather than
+// inside one.
+//
+// This is not covered by the idle backdating in poll. That only runs on the
+// transition into idle, and the first poll after a wake sees almost no idle
+// time, because the machine was woken by a keypress. The gap is invisible to a
+// loop whose own clock skipped it.
+//
+// Times built without a monotonic reading -- anything from time.Date, so every
+// test fixture -- subtract by wall clock, and this is then exactly the previous
+// behaviour.
 func (t *Tracker) finalize(endedAt time.Time) {
 	if t.current == nil {
 		return
 	}
 
-	dur := int(endedAt.Sub(t.current.StartedAt).Seconds())
+	elapsed := t.elapsed(t.current.StartedAt, endedAt)
+	dur := int(elapsed.Seconds())
 	if dur <= 0 {
 		t.current = nil
 		return
 	}
+	endedAt = t.current.StartedAt.Add(elapsed)
 
 	// A fresh identity per finalized segment. A generator failure is not
 	// worth dropping the record over: ensureIdentity derives a stable ID
