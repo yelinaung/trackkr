@@ -27,6 +27,7 @@ type Tracker struct {
 	state    state
 	current  *activeRecord
 	appIcons map[string]queuedAppIcon
+	lastPoll time.Time
 
 	// elapsed measures how long a segment ran. It is a field only so a test
 	// can reproduce a machine suspend: that state is a wall clock which has
@@ -68,6 +69,27 @@ func monotonicElapsed(startedAt, endedAt time.Time) time.Duration {
 	return endedAt.Sub(startedAt)
 }
 
+// suspendGapThreshold is how far the wall clock may run ahead of the time the
+// process itself experienced before the difference is read as a suspend rather
+// than clock noise.
+//
+// The two advance together while the machine is awake, whatever the load: a
+// late poll delays both equally. Only a suspend or a stepped wall clock
+// separates them, and NTP slews gradually enough to stay well under this.
+// Treating a large step as a suspend is the right call anyway -- the timeline
+// really did jump, so the segment should not span it.
+const suspendGapThreshold = 5 * time.Second
+
+// suspended reports whether wall-clock time passed that this process did not
+// experience, which is what a closed lid looks like from inside the poll loop.
+func (t *Tracker) suspended(now time.Time) bool {
+	if t.lastPoll.IsZero() {
+		return false
+	}
+	wall := now.Round(0).Sub(t.lastPoll.Round(0))
+	return wall-t.elapsed(t.lastPoll, now) >= suspendGapThreshold
+}
+
 // Run starts the tracking loop. It blocks until ctx is cancelled,
 // finalizing the in-flight record on the way out. Poll errors are
 // logged and retried on the next tick, so there is nothing for a
@@ -101,6 +123,20 @@ func (t *Tracker) poll(ctx context.Context) {
 	}
 
 	now := time.Now()
+	// A suspend closes the open segment at the last moment the machine was
+	// seen awake. Without this the halves either side of a sleep stay one
+	// segment until a title change, an idle transition or shutdown closes it,
+	// and the whole thing is then drawn ending one elapsed-time's worth after
+	// it started -- so work done after the resume appears before the sleep,
+	// and on the previous day if the sleep crossed midnight.
+	if t.suspended(now) {
+		t.logger.Debug().
+			Dur("gap", now.Round(0).Sub(t.lastPoll.Round(0))).
+			Msg("resumed from suspend, splitting segment")
+		t.finalizeIfActive(t.lastPoll)
+	}
+	t.lastPoll = now
+
 	if !noWindow {
 		t.maybeEnqueueAppIcon(info, now)
 	}
@@ -160,8 +196,12 @@ func (t *Tracker) startNew(info WindowInfo, now time.Time) {
 //
 // This is not covered by the idle backdating in poll. That only runs on the
 // transition into idle, and the first poll after a wake sees almost no idle
-// time, because the machine was woken by a keypress. The gap is invisible to a
-// loop whose own clock skipped it.
+// time, because the machine was woken by a keypress.
+//
+// poll splits the segment on resume, so in the normal case a segment reaching
+// here has not spanned a suspend at all. This remains the invariant for the
+// paths poll does not reach: shutdown finalizes whatever is open, and that can
+// still be the first thing to run after a wake.
 //
 // Times built without a monotonic reading -- anything from time.Date, so every
 // test fixture -- subtract by wall clock, and this is then exactly the previous
