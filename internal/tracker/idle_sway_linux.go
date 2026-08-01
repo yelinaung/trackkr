@@ -164,7 +164,8 @@ func effectiveTimeout(threshold time.Duration) (time.Duration, error) {
 func swayIdleCommand(ctx context.Context, binary string, timeout time.Duration) *exec.Cmd {
 	seconds := strconv.FormatInt(int64(timeout/time.Second), 10)
 
-	cmd := exec.CommandContext( //nolint:gosec // nosemgrep // gitlab-advanced-sast-exclude -- path validated by LookPath, arguments are constants and a digit string
+	//nolint:gosec // nosemgrep -- binary from LookPath, args are constants.
+	cmd := exec.CommandContext(
 		ctx, binary,
 		"-w",
 		"-C", os.DevNull,
