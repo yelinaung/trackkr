@@ -1,5 +1,12 @@
 [Unit]
 Description=trackkr activity tracking daemon
+Documentation=https://github.com/yelinaung/trackkr
+
+# Bound to the graphical session rather than to login. The daemon needs
+# socket paths that exist only once a compositor is up, and it should go
+# down with that session instead of outliving it holding a path that no
+# longer resolves.
+PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
@@ -7,7 +14,19 @@ Type=simple
 ExecStart=%h/.local/bin/trackkrd
 Restart=on-failure
 RestartSec=5
-Environment=DISPLAY=:0
+
+# DISPLAY, WAYLAND_DISPLAY and SWAYSOCK are deliberately not set here.
+# They differ per session and per compositor, so the session imports
+# them into the service manager instead -- see README-linux.md. The
+# hardcoded DISPLAY=:0 this unit used to carry would override a
+# correctly imported one.
+
+NoNewPrivileges=true
+
+# The daemon never looks for a compositor socket in /tmp, precisely
+# because it is world-writable and any local user could plant one there
+# for it to find. A private /tmp costs nothing and keeps that true.
+PrivateTmp=true
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
