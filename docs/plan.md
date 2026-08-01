@@ -270,7 +270,13 @@ queries, so no separate `(device_id, started_at)` index is needed.
 
 ### Active Window Detection
 
-- **Linux**: `xdotool` for window name, `xprop` for WM_CLASS (app name)
+- **Linux (X11)**: `xdotool` for window name, `xprop` for WM_CLASS (app name)
+- **Linux (sway)**: sway's own IPC socket at `$SWAYSOCK`, spoken directly.
+  `app_id` names native Wayland clients and `window_properties.class` names
+  XWayland ones, so an application reports the same name on either session.
+  A Wayland compositor that is not sway gets no window detection rather than
+  `xdotool`, which under Wayland answers about whichever X client XWayland
+  last saw focused
 - **macOS**: `CGWindowListCopyWindowInfo` supplies the owner and pid of the
   frontmost layer-zero window. Accessibility reads its focused title only
   when trusted. AppKit derives a 64×64 application icon from the same pid
@@ -279,9 +285,20 @@ queries, so no separate `(device_id, started_at)` index is needed.
 
 ### Idle Detection
 
-- **Linux**: `xprintidle` (returns idle ms)
+- **Linux (X11)**: `xprintidle` (returns idle ms)
+- **Linux (Wayland)**: a supervised `swayidle` child. Wayland has no
+  queryable idle time — a client can only ask to be told when a timeout it
+  picks elapses — so the daemon runs one at its own threshold and converts
+  the idle/resume pair back into a duration. Needs `swayidle` installed; a
+  Wayland session without it reports no idle rather than falling back to
+  `xprintidle`, which counts only the events XWayland itself sees
 - **macOS**: CoreGraphics
   `CGEventSourceSecondsSinceLastEventType` for HID-system idle time
+
+The daemon reads `SWAYSOCK` and `WAYLAND_DISPLAY` from its own environment,
+so a systemd user unit needs `systemctl --user import-environment` (a sway
+`exec` line inherits them). Both are recovered by scanning
+`$XDG_RUNTIME_DIR` when a restarted compositor moves them.
 
 ### Client Config (`os.UserConfigDir()/trackkr/config.toml`)
 

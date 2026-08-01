@@ -11,11 +11,33 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// NewWindowDetector returns the platform's window detector. On Linux
-// this is the X11 detector backed by xdotool and xprop.
-func NewWindowDetector(_ *Config, _ *zerolog.Logger) (WindowDetector, error) {
+// NewWindowDetector returns the platform's window detector: sway's IPC
+// on a sway session, xdotool and xprop on X11.
+//
+// A Wayland session that is not sway gets neither. xdotool does not
+// fail there -- it asks XWayland, which answers about whichever X
+// client it last saw focused, so a native Wayland window is reported as
+// something else entirely and reported with full confidence. A wrong
+// window recorded that way is worse than no window at all, so an
+// unsupported compositor says so instead.
+func NewWindowDetector(_ *Config, logger *zerolog.Logger) (WindowDetector, error) {
 	// Return an explicit nil interface on failure; returning the
 	// typed nil pointer directly would make the interface non-nil.
+	if swaySocketPath() != "" {
+		d, err := NewSwayWindowDetector(logger)
+		if err != nil {
+			return nil, err
+		}
+		return d, nil
+	}
+
+	if waylandSession() {
+		return nil, fmt.Errorf(
+			"%w: a Wayland session with no sway IPC socket (SWAYSOCK unset)",
+			ErrUnsupportedPlatform,
+		)
+	}
+
 	d, err := NewXWindowDetector()
 	if err != nil {
 		return nil, err

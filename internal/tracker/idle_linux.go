@@ -47,10 +47,28 @@ func parseIdleMs(output string) (time.Duration, error) {
 	return time.Duration(ms) * time.Millisecond, nil
 }
 
-// NewIdleDetectorOrNop tries to create an XIdleDetector. If
-// xprintidle is not found, it logs a warning and returns a
-// NopIdleDetector.
-func NewIdleDetectorOrNop(_ *Config, logger *zerolog.Logger) IdleDetector {
+// NewIdleDetectorOrNop returns the session's idle detector: swayidle
+// on Wayland, xprintidle on X11, and a NopIdleDetector when neither is
+// available.
+//
+// A Wayland session never falls back to xprintidle. It runs happily
+// under XWayland and returns a plausible number, but XWayland only
+// counts the events it receives itself, so the counter climbs while
+// the user types in a native Wayland application. The tracker would
+// cross its threshold and stop recording a session that is very much
+// active. Nop reports zero instead: over-recording an unattended
+// session is recoverable, silently dropping an active one is not.
+func NewIdleDetectorOrNop(cfg *Config, logger *zerolog.Logger) IdleDetector {
+	if waylandSession() {
+		d, err := NewSwayIdleDetector(cfg.IdleThreshold.Duration, logger)
+		if err != nil {
+			logger.Warn().Err(err).
+				Msg("idle detection disabled; install swayidle for Wayland idle detection")
+			return NopIdleDetector{}
+		}
+		return d
+	}
+
 	d, err := NewXIdleDetector()
 	if err != nil {
 		logger.Warn().Err(err).Msg("idle detection disabled")
