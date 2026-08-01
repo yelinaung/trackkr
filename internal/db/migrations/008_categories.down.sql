@@ -1,0 +1,5 @@
+DROP INDEX idx_activity_records_device_ended_app;
+DROP TABLE activity_record_category_overrides;
+DROP TABLE application_category_assignments;
+DROP INDEX categories_user_name_unique;
+DROP TABLE categories;

@@ -2,17 +2,22 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 const (
 	testFirefoxApp = "Firefox"
 	testPageTitle  = "Test Page"
+	testUnknownApp = "Whatever"
 )
 
 func TestCreateUser(t *testing.T) {
@@ -377,6 +382,9 @@ func TestGetActivitySummary(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("got %d records, want 2", len(got))
 	}
+	if summary.CategoryTotals != nil {
+		t.Errorf("category totals = %+v, want nil until a category participates", summary.CategoryTotals)
+	}
 
 	// With device filter
 	deviceID := device.ID
@@ -501,6 +509,265 @@ func TestGetActivitySummaryTotalsCountOnlyOverlap(t *testing.T) {
 	prev := summary.Totals
 	if len(prev) != 1 || prev[0].Seconds != 600 {
 		t.Errorf("previous day = %+v, want 600 seconds", prev)
+	}
+}
+
+func TestCategoryTotalsResolveDefaultsAndRecordOverrides(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	work, err := q.CreateCategory(ctx, user.ID, "Work", "sky")
+	if err != nil {
+		t.Fatalf("CreateCategory Work: %v", err)
+	}
+	life, err := q.CreateCategory(ctx, user.ID, "Life", "leaf")
+	if err != nil {
+		t.Fatalf("CreateCategory Life: %v", err)
+	}
+	if err := q.SetAppCategory(ctx, user.ID, CategoryAppKey("code"), &work.ID); err != nil {
+		t.Fatalf("SetAppCategory: %v", err)
+	}
+	insertRecord(t, q, device.ID, "code", day.Add(9*time.Hour), day.Add(9*time.Hour+time.Minute))
+	insertRecord(t, q, device.ID, "code", day.Add(10*time.Hour), day.Add(10*time.Hour+time.Minute))
+
+	summary, err := q.GetActivitySummary(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetActivitySummary: %v", err)
+	}
+	if len(summary.CategoryTotals) != 1 || summary.CategoryTotals[0].Name != "Work" || summary.CategoryTotals[0].Seconds != 120 {
+		t.Fatalf("default category totals = %+v, want Work 120", summary.CategoryTotals)
+	}
+	if len(summary.Records) != 2 {
+		t.Fatalf("records = %d, want 2", len(summary.Records))
+	}
+	if err := q.SetActivityRecordCategoryOverride(ctx, user.ID, summary.Records[1].ID, nil); err != nil {
+		t.Fatalf("SetActivityRecordCategoryOverride Uncategorized: %v", err)
+	}
+	if err := q.SetActivityRecordCategoryOverride(ctx, user.ID, summary.Records[0].ID, &life.ID); err != nil {
+		t.Fatalf("SetActivityRecordCategoryOverride Life: %v", err)
+	}
+
+	summary, err = q.GetActivitySummary(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetActivitySummary with overrides: %v", err)
+	}
+	if len(summary.Totals) != 1 || summary.Totals[0].Seconds != 120 {
+		t.Fatalf("application totals changed after category overrides: %+v", summary.Totals)
+	}
+	if len(summary.CategoryTotals) != 2 || summary.CategoryTotals[0].Name != "Life" || summary.CategoryTotals[0].Seconds != 60 || summary.CategoryTotals[1].Name != UncategorizedCategoryName || summary.CategoryTotals[1].Seconds != 60 {
+		t.Errorf("override category totals = %+v, want Life 60 and Uncategorized 60", summary.CategoryTotals)
+	}
+	if !summary.Records[0].CategoryOverridePresent || summary.Records[0].CategoryOverrideID == nil || *summary.Records[0].CategoryOverrideID != life.ID {
+		t.Errorf("assigned override state = %+v", summary.Records[0])
+	}
+	if !summary.Records[1].CategoryOverridePresent || summary.Records[1].CategoryOverrideID != nil {
+		t.Errorf("explicit Uncategorized override state = %+v", summary.Records[1])
+	}
+
+	if err := q.DeleteActivityRecordCategoryOverride(ctx, user.ID, summary.Records[0].ID); err != nil {
+		t.Fatalf("DeleteActivityRecordCategoryOverride: %v", err)
+	}
+	summary, err = q.GetActivitySummary(ctx, user.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetActivitySummary after clearing override: %v", err)
+	}
+	gotCategories := make(map[string]int64, len(summary.CategoryTotals))
+	for _, total := range summary.CategoryTotals {
+		gotCategories[total.Name] = total.Seconds
+	}
+	if gotCategories["Work"] != 60 || gotCategories[UncategorizedCategoryName] != 60 {
+		t.Errorf("cleared override did not inherit Work: %+v", summary.CategoryTotals)
+	}
+}
+
+func TestEditableActivityRecordsUseCanonicalSubjectAndWindowOverlap(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 6, 3, 0, 0, 0, 0, time.UTC)
+
+	rows := stampIdentity(t, []ActivityRecordRow{
+		{
+			DeviceID: device.ID, Producer: identity.ProducerChrome, AppName: testUnknownApp,
+			StartedAt: day.Add(9 * time.Hour), EndedAt: day.Add(10 * time.Hour),
+		},
+		{
+			DeviceID: device.ID, Producer: identity.ProducerDesktop, AppName: testUnknownApp,
+			StartedAt: day.Add(10 * time.Hour), EndedAt: day.Add(11 * time.Hour),
+		},
+		{
+			DeviceID: device.ID, Producer: identity.ProducerDesktop, AppName: chromeLinuxName,
+			StartedAt: day.Add(11 * time.Hour), EndedAt: day.Add(12 * time.Hour),
+		},
+	})
+	if _, err := q.InsertActivityRecords(ctx, rows); err != nil {
+		t.Fatalf("InsertActivityRecords: %v", err)
+	}
+
+	unknown, err := q.ListEditableActivityRecords(ctx, user.ID, &EditableActivityFilter{
+		CanonicalAppName: testUnknownApp, Start: day.Add(9*time.Hour + 30*time.Minute), End: day.Add(11*time.Hour + 30*time.Minute),
+		Limit: EditableActivityRecordLimit,
+	})
+	if err != nil {
+		t.Fatalf("ListEditableActivityRecords unknown: %v", err)
+	}
+	if len(unknown.Records) != 1 || unknown.Records[0].Producer != identity.ProducerDesktop || unknown.Records[0].AppName != testUnknownApp {
+		t.Errorf("unknown subject records = %+v, want only desktop Whatever", unknown.Records)
+	}
+
+	chrome, err := q.ListEditableActivityRecords(ctx, user.ID, &EditableActivityFilter{
+		CanonicalAppName: ChromeAppName, Start: day, End: day.AddDate(0, 0, 1), Limit: EditableActivityRecordLimit,
+	})
+	if err != nil {
+		t.Fatalf("ListEditableActivityRecords Chrome: %v", err)
+	}
+	if len(chrome.Records) != 2 || chrome.Records[0].AppName != chromeLinuxName || chrome.Records[1].Producer != identity.ProducerChrome {
+		t.Errorf("Chrome subject records = %+v, want desktop alias and trusted producer", chrome.Records)
+	}
+}
+
+func TestCategoryMutationsCannotCrossUserBoundary(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	userA, deviceA := seedUserAndDevice(t, pool, q)
+	userB, deviceB := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 6, 4, 0, 0, 0, 0, time.UTC)
+	insertRecord(t, q, deviceA.ID, "code", day.Add(9*time.Hour), day.Add(10*time.Hour))
+	insertRecord(t, q, deviceB.ID, "code", day.Add(9*time.Hour), day.Add(10*time.Hour))
+
+	categoryB, err := q.CreateCategory(ctx, userB.ID, "Private", "rose")
+	if err != nil {
+		t.Fatalf("CreateCategory: %v", err)
+	}
+	summaryA, err := q.GetActivitySummary(ctx, userA.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetActivitySummary user A: %v", err)
+	}
+	summaryB, err := q.GetActivitySummary(ctx, userB.ID, day, day.AddDate(0, 0, 1), nil)
+	if err != nil {
+		t.Fatalf("GetActivitySummary user B: %v", err)
+	}
+
+	if err := q.SetActivityRecordCategoryOverride(ctx, userA.ID, summaryB.Records[0].ID, nil); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("foreign record override error = %v, want pgx.ErrNoRows", err)
+	}
+	if err := q.SetActivityRecordCategoryOverride(ctx, userA.ID, summaryA.Records[0].ID, &categoryB.ID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("foreign category override error = %v, want pgx.ErrNoRows", err)
+	}
+	if err := q.SetAppCategory(ctx, userA.ID, CategoryAppKey("code"), &categoryB.ID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Errorf("foreign application category error = %v, want pgx.ErrNoRows", err)
+	}
+}
+
+func TestCreateCategorySerializesFinalSlot(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	user, _ := seedUserAndDevice(t, pool, q)
+	for i := range CategoryUserLimit - 1 {
+		if _, err := q.CreateCategory(ctx, user.ID, fmt.Sprintf("Category %d", i), "sky"); err != nil {
+			t.Fatalf("CreateCategory %d: %v", i, err)
+		}
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var group sync.WaitGroup
+	for _, name := range []string{"Final A", "Final B"} {
+		group.Go(func() {
+			<-start
+			_, err := q.CreateCategory(ctx, user.ID, name, "sky")
+			errs <- err
+		})
+	}
+	close(start)
+	group.Wait()
+	close(errs)
+
+	var successes, limits int
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrCategoryLimit):
+			limits++
+		default:
+			t.Errorf("concurrent CreateCategory error = %v", err)
+		}
+	}
+	if successes != 1 || limits != 1 {
+		t.Errorf("concurrent creation outcomes = %d success, %d limit errors; want one each", successes, limits)
+	}
+	categories, err := q.ListCategories(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListCategories: %v", err)
+	}
+	if len(categories) != CategoryUserLimit {
+		t.Errorf("categories = %d, want %d", len(categories), CategoryUserLimit)
+	}
+}
+
+func TestListKnownApplicationsHonorsCutoffAndLimit(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)
+	insertRecord(t, q, device.ID, "Old App", day, day.Add(time.Minute))
+	insertRecord(t, q, device.ID, "Firefox", day.Add(2*time.Hour), day.Add(2*time.Hour+time.Minute))
+	insertRecord(t, q, device.ID, "google-chrome", day.Add(3*time.Hour), day.Add(3*time.Hour+time.Minute))
+
+	applications, err := q.ListKnownApplications(ctx, user.ID, day.Add(time.Hour), 1)
+	if err != nil {
+		t.Fatalf("ListKnownApplications: %v", err)
+	}
+	if len(applications) != 1 || applications[0].AppName != ChromeAppName || applications[0].AppKey != CategoryAppKey(ChromeAppName) {
+		t.Errorf("known applications = %+v, want latest Chrome row only", applications)
+	}
+}
+
+func TestEditableActivityRecordsKeysetPagesAreStable(t *testing.T) {
+	pool := testPool(t)
+	q := NewQueries(pool)
+	ctx := t.Context()
+	user, device := seedUserAndDevice(t, pool, q)
+	day := time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC)
+	for i := range 3 {
+		end := day.Add(time.Duration(10+i) * time.Hour)
+		insertRecord(t, q, device.ID, "code", end.Add(-time.Minute), end)
+	}
+
+	filter := &EditableActivityFilter{
+		CanonicalAppName: "code", Start: day, End: day.AddDate(0, 0, 1), Limit: 1,
+	}
+	var ids []int64
+	for {
+		page, err := q.ListEditableActivityRecords(ctx, user.ID, filter)
+		if err != nil {
+			t.Fatalf("ListEditableActivityRecords: %v", err)
+		}
+		for _, record := range page.Records {
+			ids = append(ids, record.ID)
+		}
+		if page.Next == nil {
+			break
+		}
+		filter.Before = page.Next
+	}
+	if len(ids) != 3 {
+		t.Fatalf("record ids = %v, want three pages", ids)
+	}
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, duplicate := seen[id]; duplicate {
+			t.Errorf("keyset pages repeated record %d: %v", id, ids)
+		}
+		seen[id] = struct{}{}
 	}
 }
 

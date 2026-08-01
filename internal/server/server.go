@@ -157,6 +157,12 @@ func newRouter(s *Server) *chi.Mux {
 		priv.Get("/devices", h.handleDevices())
 		priv.Post("/devices", h.handleCreateDevice())
 		priv.Delete("/devices/{id}", h.handleDeleteDevice())
+		priv.Get("/categories", h.handleCategories())
+		priv.Post("/categories", h.handleCreateCategory())
+		priv.Post("/categories/{id}", h.handleUpdateCategory())
+		priv.Delete("/categories/{id}", h.handleDeleteCategory())
+		priv.Post("/categories/assignments", h.handleSetAppCategory())
+		priv.Post("/activity/records/{id}/category", h.handleSetRecordCategory())
 	})
 
 	return r

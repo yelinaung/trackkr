@@ -246,6 +246,7 @@ button:focus-visible,
 }
 
 .btn-primary,
+.btn-secondary,
 .btn-danger {
   font: inherit;
   font-weight: 600;
@@ -259,6 +260,17 @@ button:focus-visible,
   margin-top: 1rem;
   color: var(--paper-raised);
   background-color: var(--accent);
+}
+
+.btn-secondary {
+  padding: 0.35rem 0.7rem;
+  color: var(--ink);
+  background-color: var(--paper-raised);
+  border: 1px solid var(--edge);
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent);
 }
 
 .btn-danger {
@@ -673,6 +685,22 @@ button:focus-visible,
   font-size: 0.9rem;
 }
 
+.category-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 999px;
+  background-color: var(--ink-soft);
+}
+
+.category-swatch--coral { background-color: #dc5f57; }
+.category-swatch--amber { background-color: #bd7a18; }
+.category-swatch--leaf { background-color: #4f8a46; }
+.category-swatch--teal { background-color: #16837f; }
+.category-swatch--sky { background-color: #397eb9; }
+.category-swatch--indigo { background-color: #5d5cb8; }
+.category-swatch--rose { background-color: #ba5579; }
+.category-swatch--slate { background-color: #74808b; }
+
 @media (max-width: 48rem) {
   .totals-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -946,6 +974,60 @@ button:focus-visible,
 }
 
 /* ---------- devices ---------- */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.categories-list,
+.records {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.categories-list__item,
+.records__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  background-color: var(--paper-raised);
+}
+
+.categories-list__count,
+.records__category {
+  color: var(--ink-soft);
+  font-size: 0.85rem;
+}
+
+.categories-list__assignment,
+.records__form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.records__item > div {
+  display: grid;
+  gap: 0.2rem;
+  min-width: min(100%, 18rem);
+  margin-right: auto;
+}
 
 .device-form {
   display: flex;

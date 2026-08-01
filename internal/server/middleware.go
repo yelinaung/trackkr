@@ -14,6 +14,11 @@ import (
 
 const userContextKey contextKey = "user"
 
+const (
+	htmxRequestHeader = "HX-Request"
+	htmxRequestValue  = "true"
+)
+
 // csp is static because no page emits inline CSS. Bar geometry travels as
 // SVG presentation attributes, and htmx-config suppresses the indicator
 // style block htmx would otherwise inject, so no nonce is needed -- which
@@ -82,7 +87,7 @@ func RequireSession(codec *sessionCodec, queries SessionQuerier) func(http.Handl
 // redirectToLogin sends htmx an HX-Redirect header instead of a 302, so a
 // partial swap does not paint a login page inside a div.
 func redirectToLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("HX-Request") == "true" {
+	if r.Header.Get(htmxRequestHeader) == htmxRequestValue {
 		w.Header().Set("HX-Redirect", "/login")
 		w.WriteHeader(http.StatusUnauthorized)
 		return

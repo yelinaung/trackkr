@@ -36,6 +36,13 @@ type pageData struct {
 	SourceTruncated bool
 	RecordLimit     int
 	SourceLimit     int
+	CategoryTotals  []db.CategoryTotalRow
+
+	// Category management.
+	Categories        []db.CategorySummaryRow
+	KnownApplications []CategoryApplicationView
+	CategoryFormName  string
+	CategoryFormColor string
 
 	// Detail is set only on the single-application or single-site page.
 	Detail *DetailView
@@ -57,6 +64,19 @@ type TotalView struct {
 	// DetailURL opens this row on its own page, carrying the date, period
 	// and device the reader was already looking at.
 	DetailURL string
+}
+
+// CategoryApplicationView is one recently observed application and its
+// current default. Assignment is nil when the application is uncategorized.
+type CategoryApplicationView struct {
+	AppKey       string
+	AppName      string
+	LastSeen     time.Time
+	Assignment   *db.CategoryRow
+	IconURL      string
+	Monogram     string
+	MonogramFill string
+	MonogramBG   string
 }
 
 // DetailView is one application or website examined on its own: the same
@@ -85,7 +105,24 @@ type DetailView struct {
 	// Days is the per-day split, filled in for the week view only.
 	Days []BreakdownView
 	// BackURL returns to the dashboard with the same filters.
-	BackURL string
+	BackURL         string
+	Categories      []db.CategorySummaryRow
+	EditableRecords []EditableRecordView
+	RecordsNextURL  string
+	RecordReturnURL string
+}
+
+// EditableRecordView presents one raw activity row. The editor does not use
+// merged sessions, because mutations must identify the stored record exactly.
+type EditableRecordView struct {
+	ID           int64
+	DeviceName   string
+	Start        string
+	End          string
+	Title        string
+	CategoryName string
+	HasOverride  bool
+	CategoryID   *int64
 }
 
 // SessionView is one uninterrupted stretch of use.
@@ -118,11 +155,12 @@ type templates struct {
 }
 
 const (
-	pageLogin     = "login"
-	pageRegister  = "register"
-	pageDashboard = "dashboard"
-	pageDevices   = "devices"
-	pageActivity  = "activity"
+	pageLogin      = "login"
+	pageRegister   = "register"
+	pageDashboard  = "dashboard"
+	pageDevices    = "devices"
+	pageActivity   = "activity"
+	pageCategories = "categories"
 )
 
 const (
@@ -136,6 +174,12 @@ var templateFuncs = template.FuncMap{
 	"date":           func(t time.Time) string { return t.Format("2 Jan 2006") },
 	"nextTotalCount": nextTotalCount,
 	"sub":            func(a, b int) int { return a - b },
+	"categoryColors": categoryColorOptions,
+	"sameCategory":   sameCategory,
+}
+
+func sameCategory(id *int64, candidate int64) bool {
+	return id != nil && *id == candidate
 }
 
 func nextTotalCount(total int) int {
@@ -162,11 +206,12 @@ func parseTemplates() (*templates, error) {
 	}
 
 	pageFiles := map[string][]string{
-		pageLogin:     {"templates/login.html"},
-		pageRegister:  {"templates/register.html"},
-		pageDashboard: {"templates/dashboard.html", timelineFile, periodFile},
-		pageDevices:   {"templates/devices.html", devicesFile},
-		pageActivity:  {"templates/activity.html", detailFile, periodFile},
+		pageLogin:      {"templates/login.html"},
+		pageRegister:   {"templates/register.html"},
+		pageDashboard:  {"templates/dashboard.html", timelineFile, periodFile},
+		pageDevices:    {"templates/devices.html", devicesFile},
+		pageActivity:   {"templates/activity.html", detailFile, periodFile},
+		pageCategories: {"templates/categories.html"},
 	}
 
 	t := &templates{
