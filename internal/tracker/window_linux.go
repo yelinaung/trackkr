@@ -23,19 +23,19 @@ import (
 func NewWindowDetector(_ *Config, logger *zerolog.Logger) (WindowDetector, error) {
 	// Return an explicit nil interface on failure; returning the
 	// typed nil pointer directly would make the interface non-nil.
-	if swaySocketPath() != "" {
+	// Any Wayland session gets the sway detector tried, not just one
+	// advertising SWAYSOCK. sway does not export that variable to the
+	// systemd user manager itself, so requiring it would refuse to
+	// start on the ordinary case -- a sway session whose daemon runs
+	// as a user unit -- with a live socket sitting in the runtime
+	// directory. A compositor that is not sway has no such socket to
+	// find, so it still ends up at the error below.
+	if waylandSession() {
 		d, err := NewSwayWindowDetector(logger)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", ErrUnsupportedPlatform, err)
 		}
 		return d, nil
-	}
-
-	if waylandSession() {
-		return nil, fmt.Errorf(
-			"%w: a Wayland session with no sway IPC socket (SWAYSOCK unset)",
-			ErrUnsupportedPlatform,
-		)
 	}
 
 	d, err := NewXWindowDetector()

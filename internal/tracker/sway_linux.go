@@ -89,44 +89,53 @@ type SwayWindowDetector struct {
 // NewSwayWindowDetector connects to the compositor, so a session that
 // is not sway fails here rather than on the first poll.
 //
-// SWAYSOCK can be stale before the daemon has polled even once. A
-// systemd user unit inherits the environment saved when the previous
-// session started, so a compositor restart that takes the daemon down
-// with it hands the replacement a path to something already gone. The
-// runtime rediscovery in request cannot help there: it only runs on a
-// detector that constructed at least once. So the same scan runs here.
+// SWAYSOCK is treated as a hint rather than a requirement, because it
+// is so often absent or wrong by the time the daemon reads it. sway
+// does not put it into the systemd user manager on its own, so a user
+// unit typically starts with no SWAYSOCK at all; and a unit that does
+// inherit one inherits the value saved when the previous session
+// started, which a compositor restart turns into a path to something
+// gone. Runtime rediscovery cannot rescue either case -- it only runs
+// on a detector that constructed at least once -- so the scan runs
+// here too, under the same ownership and handshake checks.
 func NewSwayWindowDetector(logger *zerolog.Logger) (*SwayWindowDetector, error) {
-	path := swaySocketPath()
-	if path == "" {
-		return nil, ErrNoSwaySocket
-	}
-
 	// Each dial and probe bounds itself, so the constructor does not
 	// impose a deadline across a scan of the whole runtime directory.
 	ctx := context.Background()
 
-	conn, err := swayDial(ctx, path)
-	if err == nil {
-		return &SwayWindowDetector{logger: logger, socketPath: path, conn: conn}, nil
+	path := swaySocketPath()
+	var envErr error
+	if path != "" {
+		conn, err := swayDial(ctx, path)
+		if err == nil {
+			return &SwayWindowDetector{logger: logger, socketPath: path, conn: conn}, nil
+		}
+		envErr = err
 	}
 
 	live, discoverErr := discoverSwaySocket(ctx)
 	if discoverErr != nil {
-		// Report why SWAYSOCK failed, not why the scan did: the
-		// environment is what the user set, and the scan is a fallback
-		// that found nothing to offer.
-		return nil, err
+		// Prefer the environment's error when there was one: the path
+		// came from the user's session, and the scan is a fallback that
+		// simply found nothing to offer.
+		if envErr != nil {
+			return nil, envErr
+		}
+		return nil, fmt.Errorf("%w: %w", ErrNoSwaySocket, discoverErr)
 	}
 
 	conn, dialErr := swayDial(ctx, live)
 	if dialErr != nil {
-		return nil, err
+		if envErr != nil {
+			return nil, envErr
+		}
+		return nil, dialErr
 	}
 
 	logger.Info().
-		Str("stale", path).
+		Str("swaysock", path).
 		Str("adopted", live).
-		Msg("SWAYSOCK named a socket that is gone, adopting the live one")
+		Msg("SWAYSOCK missing or stale, adopting the live sway IPC socket")
 	return &SwayWindowDetector{logger: logger, socketPath: live, conn: conn}, nil
 }
 
