@@ -113,6 +113,10 @@ func run(
 		logger.Warn().Err(err).
 			Msg("window detection unavailable; reporting browser activity only")
 	}
+	// Closed twice on purpose, and closerFor makes the second call a
+	// no-op. The explicit call below sequences the detector's shutdown
+	// before the final flush; the defer is what covers the error paths
+	// that return before ever reaching it.
 	closeWindow := closerFor(window)
 	defer closeWindow()
 

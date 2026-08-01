@@ -88,20 +88,46 @@ type SwayWindowDetector struct {
 
 // NewSwayWindowDetector connects to the compositor, so a session that
 // is not sway fails here rather than on the first poll.
+//
+// SWAYSOCK can be stale before the daemon has polled even once. A
+// systemd user unit inherits the environment saved when the previous
+// session started, so a compositor restart that takes the daemon down
+// with it hands the replacement a path to something already gone. The
+// runtime rediscovery in request cannot help there: it only runs on a
+// detector that constructed at least once. So the same scan runs here.
 func NewSwayWindowDetector(logger *zerolog.Logger) (*SwayWindowDetector, error) {
 	path := swaySocketPath()
 	if path == "" {
 		return nil, ErrNoSwaySocket
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), swayDialTimeout)
-	defer cancel()
+	// Each dial and probe bounds itself, so the constructor does not
+	// impose a deadline across a scan of the whole runtime directory.
+	ctx := context.Background()
 
 	conn, err := swayDial(ctx, path)
-	if err != nil {
+	if err == nil {
+		return &SwayWindowDetector{logger: logger, socketPath: path, conn: conn}, nil
+	}
+
+	live, discoverErr := discoverSwaySocket(ctx)
+	if discoverErr != nil {
+		// Report why SWAYSOCK failed, not why the scan did: the
+		// environment is what the user set, and the scan is a fallback
+		// that found nothing to offer.
 		return nil, err
 	}
-	return &SwayWindowDetector{logger: logger, socketPath: path, conn: conn}, nil
+
+	conn, dialErr := swayDial(ctx, live)
+	if dialErr != nil {
+		return nil, err
+	}
+
+	logger.Info().
+		Str("stale", path).
+		Str("adopted", live).
+		Msg("SWAYSOCK named a socket that is gone, adopting the live one")
+	return &SwayWindowDetector{logger: logger, socketPath: live, conn: conn}, nil
 }
 
 // ActiveWindow returns the focused window's app name and title.
@@ -272,14 +298,24 @@ func swayRoundTrip(ctx context.Context, conn net.Conn, msgType uint32) ([]byte, 
 
 // swayWriteMessage writes a payload-less request in one call, so a
 // short write cannot leave a header on the wire with no body behind it.
+//
+// io.Writer promises a non-nil error whenever it writes less than it
+// was given, so the length check below should never fire. It is here
+// because the sentence above is the whole point of building the frame
+// in one buffer, and a half-written header desyncs every read after
+// it -- worth one comparison to not take that on trust.
 func swayWriteMessage(w io.Writer, msgType uint32) error {
 	buf := make([]byte, swayHeaderLen)
 	copy(buf, swayMagic)
 	binary.NativeEndian.PutUint32(buf[len(swayMagic):], 0)
 	binary.NativeEndian.PutUint32(buf[len(swayMagic)+4:], msgType)
 
-	if _, err := w.Write(buf); err != nil {
+	written, err := w.Write(buf)
+	if err != nil {
 		return fmt.Errorf("writing sway IPC message: %w", err)
+	}
+	if written != len(buf) {
+		return fmt.Errorf("writing sway IPC message: %w", io.ErrShortWrite)
 	}
 	return nil
 }

@@ -250,6 +250,48 @@ func TestSwayRediscoversMovedSocket(t *testing.T) {
 	}
 }
 
+func TestSwayConstructsWithStaleSwaysock(t *testing.T) {
+	clearSessionEnv(t)
+
+	// A systemd user unit restarted after the compositor moved is
+	// handed the old path in its inherited environment. Runtime
+	// rediscovery cannot save that daemon, because it never gets a
+	// detector to run on -- so the constructor scans too.
+	dir := t.TempDir()
+	t.Setenv(envRuntimeDir, dir)
+	t.Setenv(envSwaySock, swaySocketName(dir, 111))
+	serveSway(t, swaySocketName(dir, 222), swayHandler(treeOneWindow))
+
+	detector, err := NewSwayWindowDetector(testLogger())
+	if err != nil {
+		t.Fatalf("NewSwayWindowDetector with a stale SWAYSOCK: %v", err)
+	}
+	t.Cleanup(detector.Close)
+
+	info, err := detector.ActiveWindow(context.Background())
+	if err != nil {
+		t.Fatalf("ActiveWindow: %v", err)
+	}
+	if info.AppName != appFoot {
+		t.Errorf("AppName = %q, want %s", info.AppName, appFoot)
+	}
+}
+
+func TestSwayFailsWhenNothingIsLive(t *testing.T) {
+	clearSessionEnv(t)
+
+	// Nothing to adopt, so the stale path's own error stands. A
+	// Wayland session with no working sway IPC has to fail rather than
+	// fall through to xdotool.
+	dir := t.TempDir()
+	t.Setenv(envRuntimeDir, dir)
+	t.Setenv(envSwaySock, swaySocketName(dir, 111))
+
+	if _, err := NewSwayWindowDetector(testLogger()); err == nil {
+		t.Fatal("want an error when neither SWAYSOCK nor discovery finds a socket")
+	}
+}
+
 func TestSwayRefusesAmbiguousSockets(t *testing.T) {
 	clearSessionEnv(t)
 
