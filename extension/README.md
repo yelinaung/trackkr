@@ -23,39 +23,39 @@ mise ext-test                 # logic and background tests, no browser
 
 ## Chrome
 
-The Chrome build is packaged rather than loaded from source, because its
+Chrome installs from a package, not from the source tree, because its
 manifest and entrypoint differ:
 
 ```sh
 mise ext-build-chrome
 ```
 
-That stages `dist/chrome/` from an explicit allowlist and writes
+The command stages `dist/chrome/` from an explicit allowlist and writes
 `dist/trackkr-chrome-<version>.zip`. Open `chrome://extensions`, enable
 Developer mode, choose Load unpacked, and select `dist/chrome/`. Then paste the
 daemon token in Settings and grant loopback access.
 
 Upgrade the daemon first. Chrome records go to `/extension/activity/chrome`, and
-a daemon without that route answers 404 -- which the extension retries rather
-than misfiling. The popup says `Daemon upgrade required` when the daemon does
+a daemon without that route answers 404, which the extension retries instead of
+misfiling. The popup says `Daemon upgrade required` when the daemon does
 not advertise `chrome`, so the failure is visible instead of silently storing
 Chrome activity as Firefox.
 
 Chrome 142 and newer gate loopback requests with Local Network Access on top of
-the host permission. The prompt is raised by a foreground extension page, never
-by the service worker, so the popup issues its status request immediately after
-you grant the host permission. If that request fails before any HTTP response,
-JavaScript cannot tell an LNA denial from a stopped daemon -- so the popup names
-both and offers Retry.
+the host permission. Only a foreground extension page can raise that prompt,
+never the service worker, so the popup issues its status request immediately
+after you grant the host permission. If that request fails before any HTTP
+response, JavaScript cannot tell an LNA denial from a stopped daemon -- so the
+popup names both and offers Retry.
 
-`mise ext-lint` still validates the Firefox manifest only. `manifest.chrome.json`
-and `background-cr.js` are excluded from it, and the Chrome package has its own
+`mise ext-lint` still validates the Firefox manifest only. It skips
+`manifest.chrome.json` and `background-cr.js`. The Chrome package has its own
 check, `mise ext-validate-chrome`, which runs against the staged directory.
 
 ## Ignoring sites
 
-The options page takes one host per line, and those hosts are never
-recorded. A host covers its subdomains: `gov.sg` ignores
+The options page takes one host per line, and the extension records nothing
+from them. A host covers its subdomains: `gov.sg` ignores
 `login.id.singpass.gov.sg`, because listing every host a bank redirects
 through defeats the purpose. Blank lines and `#` comments disappear, a
 leading `*.` or `www.` falls away, and case never matters.
@@ -69,8 +69,8 @@ punycode. Pasted URLs work too, and `https://bank.example`,
 error, so no dead rule sits in storage matching nothing.
 
 The check runs in the browser, before anything reaches storage or the
-queue. An ignored page therefore never leaves Firefox, and cannot
-surface in the daemon's logs, the database, or the dashboard. A
+queue. An ignored page never leaves Firefox, and cannot surface
+in the daemon's logs, the database, or the dashboard. A
 daemon-side filter would receive the URL first and delete it afterwards.
 
 Adding a rule reaches backwards as well as forwards: it discards the
@@ -87,9 +87,9 @@ recognise, so the reasoning sits here.
 
 **`strict_min_version: "142.0"`** follows what the manifest keys
 require. `optional_host_permissions` arrived in Firefox 128 and
-`data_collection_permissions` in 142. A lower floor lets the extension
-install on a browser where the runtime permission request cannot work,
-and that failure looks exactly like an unreachable daemon. `web-ext
+`data_collection_permissions` in 142. With a lower floor the extension installs
+on a browser that cannot run the runtime permission request, and that
+failure looks exactly like an unreachable daemon. `web-ext
 lint` caught the original `115.0`.
 
 **`data_collection_permissions`** marks `browsingActivity` and
@@ -98,9 +98,9 @@ and for how long is the whole point of the extension, and a page title
 is content read off the page.
 
 **`optional_host_permissions`** covers `127.0.0.1`, `localhost`, and
-`[::1]`, because the daemon accepts any loopback bind. Declare one
-address and a config the daemon considers valid leaves the extension
-unable to ask for access. A test checks that the manifest declares
+`[::1]`, because the daemon accepts any loopback bind. Declare only one, and a
+config the daemon accepts can leave the extension with no way to ask
+for access. A test checks that the manifest declares
 whatever `originFor` derives for each of those addresses.
 
 The origin stays optional instead of a fixed `host_permissions` entry
@@ -114,9 +114,9 @@ port -- silently, because a blocked request looks like a dead daemon.
 `background-core.js` holds the shared tracking runtime; `background-fx.js` and
 `background-cr.js` are thin entrypoints that add only what their browser
 provides. Firefox registers `runtime.onSuspend`, which Chrome has no equivalent
-for; Chrome loads the shared files through `importScripts`. Listener
-registration is synchronous in both, because Chrome delivers the event that woke
-a worker only if the listener already exists when evaluation finishes.
+for; Chrome loads the shared files through `importScripts`. Both register their
+listeners synchronously, because Chrome delivers the event that woke a worker
+only if the listener already exists when evaluation finishes.
 
 `logic.js` holds the decision rules: which tabs count, when a segment
 ends, what gets sent. It touches no browser API, so `node:test` covers
@@ -144,7 +144,7 @@ with a fake browser (`tests/harness.js`), then drives real events,
 including a delivery held open mid-request to force two handlers to
 overlap.
 
-Playwright cannot load Firefox extensions; extension loading is
-Chromium-only. A fake browser is the ceiling for automated coverage
+Playwright loads extensions only in Chromium, so it cannot
+drive this one. A fake browser is the ceiling for automated coverage
 here, and anything past it needs Selenium's `install_addon` or a person
 with `about:debugging` open.

@@ -11,8 +11,8 @@ From the repository root:
 mise bundle-macos
 ```
 
-This builds and installs `~/Applications/trackkr.app`, creates the config and
-log directories, and writes
+The command builds and installs `~/Applications/trackkr.app`, creates the
+config and log directories, and writes
 `~/Library/LaunchAgents/com.trackkr.daemon.plist`. It does not create or
 overwrite the config file.
 
@@ -38,17 +38,17 @@ the frontmost layer-zero window. AppKit access needs neither Accessibility nor
 Screen Recording permission, so icons continue working when title reads are
 disabled or denied.
 
-Icons are rendered locally as bounded 64×64 PNGs and uploaded through the
-existing reporter loop after activity records. They are presentation metadata:
-the daemon keeps pending icons in memory rather than writing a second durable
-queue. If the daemon exits before an upload, observing the application after
-restart derives it again. The dashboard uses a colour-matched monogram until
+The daemon renders icons locally as bounded 64×64 PNGs and uploads them through
+the existing reporter loop, after the activity records. They are presentation
+metadata: the daemon keeps pending icons in memory instead of writing a second
+durable queue. If the daemon exits before an upload, it derives the icon again
+the next time it sees the application. The dashboard uses a colour-matched monogram until
 an icon arrives, selecting black or white text from the generated background
 colour so the fallback remains legible.
 
-Application icons are never fetched from the network. Site favicons are a
-separate server feature: when the dashboard first displays a public site, the
-server may fetch and cache its favicon for one year. The Firefox extension
+The daemon never fetches an application icon from the network. Site favicons
+are a separate server feature: when the dashboard first displays a public site,
+the server may fetch and cache its favicon for one year. The Firefox extension
 receives no additional host permissions.
 
 ## Accessibility
@@ -58,8 +58,8 @@ Accessibility access.
 
 For a manual grant, open System Settings, go to Privacy & Security,
 Accessibility, select the `+` button, and choose
-`~/Applications/trackkr.app`. The app does not appear in this list on its own
-unless it has requested access, so use the `+` button when prompting is off.
+`~/Applications/trackkr.app`. The app appears in that list only after it has
+requested access, so use the `+` button when prompting is off.
 
 Then restart the daemon:
 
@@ -88,9 +88,9 @@ a shell inherits the terminal's Accessibility grant and reports success no
 matter what trackkr itself was given. Read `~/Library/Logs/trackkr/daemon.log`
 instead.
 
-Ad-hoc signing loses the grant on every rebuild. This is measured, not
-cautionary: `mise bundle-macos` computes an ad-hoc identity from the binary,
-so any code change produces a new one, and a daemon that reported
+Ad-hoc signing loses the grant on every rebuild. `mise bundle-macos` computes
+an ad-hoc identity from the binary, so any code change produces a new one, and
+a daemon that reported
 `Accessibility permission granted` before the rebuild reports
 `not granted` after it. macOS may still show trackkr as ticked, because the
 list shows the path while the check matches the signature. Untick and re-tick
@@ -120,14 +120,19 @@ Unload it before reinstalling or changing its launch configuration:
 launchctl bootout gui/$UID/com.trackkr.daemon
 ```
 
-Standard output is written to `~/Library/Logs/trackkr/daemon.log`; errors are
-written to `~/Library/Logs/trackkr/daemon.err.log`.
+The agent writes standard output to `~/Library/Logs/trackkr/daemon.log` and
+errors to `~/Library/Logs/trackkr/daemon.err.log`.
 
 ## Detection Behavior
 
 The daemon records the owner of the frontmost visible layer-zero window, not
 necessarily the application that currently owns the menu bar. If the focused
-application has no open windows, activity is attributed to the visible window
-behind it. Lock-screen and screensaver overlays are also above layer zero, so
-the daemon relies on the idle threshold to end activity while the screen is
-locked rather than claiming a separate lock-state signal.
+application has no open windows, the daemon attributes the activity to the
+visible window behind it. Lock-screen and screensaver overlays sit above layer
+zero too, so the daemon ends activity by the idle threshold while the screen is
+locked instead of claiming a separate lock-state signal.
+
+Sleep is a separate case, because a suspended machine runs no polls at all. The
+daemon compares the wall clock against the time it has itself experienced, and
+on a gap it closes the open segment at the last moment the machine was awake.
+Work done after the lid opens starts a new segment at the time it happened.

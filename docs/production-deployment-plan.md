@@ -23,7 +23,7 @@ Dokku
 Dokku runs only the stateless server. `trackkrd` remains installed on every
 tracked workstation because it needs access to the local desktop, idle state,
 and browser extensions. The extensions continue to report to the daemon over
-loopback rather than directly to Dokku.
+loopback, never directly to Dokku.
 
 ## Production Principles
 
@@ -31,7 +31,7 @@ loopback rather than directly to Dokku.
 - Keep runtime configuration and secrets outside the image.
 - Run database migrations once per release, before routing traffic to the new
   server.
-- Keep migrations compatible with both the previous and next server so a
+- Keep migrations compatible with the previous server and the next, so a
   zero-downtime strategy remains possible later.
 - Fail a release migration before stopping the old container; after a new
   container starts, treat readiness failure as a rollback event.
@@ -62,9 +62,9 @@ The following are deferred until the first manual deployment is stable:
 
 ## Phase 1: Runtime Contract
 
-Make the server runnable without a checked-in or mounted `config.toml`. Retain
-TOML configuration for local development, but allow production to be configured
-entirely through the environment.
+Make the server runnable without a checked-in or mounted `config.toml`. Keep
+TOML configuration for local development, and configure production entirely
+through the environment.
 
 Add or standardize these variables:
 
@@ -93,7 +93,7 @@ run after all overrides have been applied.
 The chosen ingress disables Dokku's proxy, so Tailscale Serve is the only hop
 before the application. Do not blindly trust `X-Forwarded-For`: configure one
 trusted proxy address for the observed `tailscaled` peer, and derive the client
-address from the rightmost forwarded hop rather than the first value. Before
+address from the rightmost forwarded hop, never the first value. Before
 production, verify the installed Tailscale version's Serve behavior with a
 spoofed inbound `X-Forwarded-For`: it must append or replace the value, never
 pass through a client-supplied value. Keep the app's fixed host port bound to
@@ -111,7 +111,7 @@ Acceptance criteria:
 - the server starts with environment variables and no `config.toml`;
 - the existing local TOML workflow still works;
 - an invalid port, DSN, timezone, or short session secret fails startup;
-- a private Dokku DSN without `sslmode` is normalized to `disable` for both pgx
+- a private Dokku DSN without `sslmode` is normalized to `disable` for pgx
   and golang-migrate, while an off-network DSN without `sslmode` is rejected;
 - configuration precedence has unit-test coverage;
 - trusted and untrusted proxy peers have separate client-address tests;
@@ -154,8 +154,8 @@ make the transition explicit in the release notes while using `serve` in the
 Procfile.
 
 The image must be buildable locally and in CI. Record the source revision and
-application version in the binary or image metadata so the running release can
-be identified without relying on a mutable tag.
+application version in the binary or image metadata, so you can identify the
+running release without trusting a mutable tag.
 
 Acceptance criteria:
 
@@ -207,8 +207,8 @@ the next deployment pass.
 
 Acceptance criteria:
 
-- the web path never calls `RunMigrations`; migration serialization is owned by
-  the PostgreSQL migration driver's advisory lock;
+- the web path never calls `RunMigrations`, and the migration driver's own
+  advisory lock serializes whatever does;
 - a release migration failure prevents the new release from becoming active;
 - rerunning `migrate` after success is a no-op;
 - a dirty migration can be inspected and recovered using the documented
@@ -305,8 +305,8 @@ For a personal homelab, prefer Tailscale-only ingress first:
 workstation tailnet -> Tailscale Serve HTTPS -> fixed loopback host port -> app
 ```
 
-Tailscale Serve provides a private tailnet DNS name and HTTPS while keeping the
-service inaccessible to non-tailnet clients. Every reporting workstation must
+Tailscale Serve gives the app a private tailnet DNS name and HTTPS, and keeps
+it unreachable from outside the tailnet. Every reporting workstation must
 be enrolled in the tailnet and permitted by ACLs. Tailscale documents Serve as
 a private HTTPS proxy for local services. [Tailscale Serve](https://tailscale.com/docs/reference/examples/serve)
 
@@ -315,16 +315,16 @@ container's Docker-network IP: Dokku replaces that IP on every deploy. Publish
 the server on a fixed host port bound to loopback (for example `127.0.0.1:18080`)
 through Dokku's Docker options, and point Serve at that address. Because two
 containers cannot bind the same host port, choose deliberate stop-then-start
-deployments for the homelab rather than pretending this topology provides
-zero-downtime switching. Dokku's checks still gate whether the new container
+deployments for the homelab instead of pretending this topology switches
+without downtime. Dokku's checks still gate whether the new container
 is healthy, but a failed readiness check after the old container stopped
 requires redeploying the previous image.
 
 Run the release migration while the old container is still serving. Then stop
 the old container, start the new one on the fixed port, wait for `/readyz`, and
 run a tailnet smoke check. If startup or readiness fails, roll back the image
-and restart it on the same port. This makes the brief outage explicit and
-keeps Serve's target stable across releases. A future Caddy or CDN layer would
+and restart it on the same port. The sequence makes the brief outage explicit
+and keeps Serve's target stable across releases. A future Caddy or CDN layer would
 require a new trusted-proxy chain policy before it is introduced; do not
 blindly add the whole LAN or tailnet to the trusted list.
 
@@ -358,8 +358,8 @@ PostgreSQL is the only durable application state. Embedded assets and server
 images are reproducible from source and release artifacts.
 
 The `app_icons` and `site_icons` tables contain bounded `BYTEA` cache blobs.
-They are regenerable and should be excluded from routine logical data dumps to
-keep backup and restore time predictable. Each user is capped at 512 app icons
+They are regenerable, so exclude them from routine logical data dumps and keep
+backup and restore time predictable. Each user is capped at 512 app icons
 and 2,048 site icons, with each blob capped at 64 KiB, so the worst-case
 regenerable cache is roughly 160 MiB per user. Use
 `pg_dump --exclude-table-data=app_icons --exclude-table-data=site_icons`: keep
@@ -426,7 +426,7 @@ promotion is enabled. Release tags may provide human-friendly names, but the
 deployment record should retain the immutable digest and Git commit.
 
 This topology intentionally accepts a brief outage during the stop/start
-window. It has no upstream switch and therefore no zero-downtime retirement
+window. It has no upstream switch, so it has no zero-downtime retirement
 phase; the rollback procedure must be fast and rehearsed instead.
 
 ## Phase 8: Client Releases
@@ -458,7 +458,7 @@ small compatibility contract before automating their distribution.
 For a backward-compatible server change, deploy the server first and release
 clients afterward. For a protocol-breaking change, use a staged rollout:
 
-1. Deploy a server that accepts both old and new clients.
+1. Deploy a server that accepts old and new clients.
 2. Upgrade daemons and extensions.
 3. Confirm old-client traffic has stopped.
 4. Remove the compatibility path in a later server release.
@@ -476,7 +476,7 @@ Minimum production monitoring should cover:
 - Tailscale node health and Serve certificate renewal status;
 - backup age and restore-drill status.
 
-Application logs should be retained outside ephemeral containers and include a
+Retain application logs outside ephemeral containers, and stamp each with a
 release identifier. Logs must not contain passwords, session secrets, device
 API keys, cookies, or full database URLs.
 
@@ -486,8 +486,8 @@ the first deployment, but health alerts, backup alerts, and searchable logs are.
 ## Rollback Strategy
 
 Application rollback means redeploying the previous immutable image while
-leaving the database at its current schema version. This is why every migration
-must remain compatible with the previous application release.
+leaving the database at its current schema version. Every migration must
+survive contact with the application release before it.
 
 For a failed release:
 
@@ -495,8 +495,8 @@ For a failed release:
    inspect migration and application logs.
 2. If the migration is dirty, inspect the recorded version and failed statement,
    repair or restore the database as needed, then run the documented force
-   command for that exact version before retrying the release. This is required
-   even when rolling back to the previous application image.
+   command for that exact version before retrying the release. The force step is
+   required even when rolling back to the previous application image.
 3. If the new fixed-port container is faulty, stop it and restore the previous
    image immediately.
 4. Do not run down migrations as a routine rollback mechanism.
