@@ -161,8 +161,11 @@ coverage at or above 50% — CI fails below that.
   panics on non-positive intervals.
 - Empty and whitespace-only inputs; nil/empty slices and maps.
 - URLs with and without trailing slashes (the reporter concatenates paths).
-- Missing external binaries (`xdotool`, `xprintidle`) and unsupported
-  platforms.
+- Missing external binaries (`xdotool`, `xprintidle`, `swayidle`) and
+  unsupported platforms.
+- Session-classifying environment variables (`SWAYSOCK`, `WAYLAND_DISPLAY`,
+  `XDG_SESSION_TYPE`, `XDG_RUNTIME_DIR`). Clear them with `clearSessionEnv`
+  first, or the detector a test gets depends on the shell that ran it.
 
 ### Formatting
 

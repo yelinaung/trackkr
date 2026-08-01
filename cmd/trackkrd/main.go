@@ -26,6 +26,19 @@ type detectors struct {
 	newIdle   func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector
 }
 
+// closerFor returns a function that closes v at most once, or a no-op
+// when v does not close at all. Detectors that hold a socket or a
+// child process implement Close; the rest do not, and neither does a
+// nil interface.
+func closerFor(v any) func() {
+	closer, ok := v.(interface{ Close() })
+	if !ok {
+		return func() {}
+	}
+	var once sync.Once
+	return func() { once.Do(closer.Close) }
+}
+
 func platformDetectors() detectors {
 	return detectors{
 		newWindow: tracker.NewWindowDetector,
@@ -100,12 +113,8 @@ func run(
 		logger.Warn().Err(err).
 			Msg("window detection unavailable; reporting browser activity only")
 	}
-	closeWindow := func() {}
-	if closer, ok := window.(interface{ Close() }); ok {
-		var closeOnce sync.Once
-		closeWindow = func() { closeOnce.Do(closer.Close) }
-		defer closeWindow()
-	}
+	closeWindow := closerFor(window)
+	defer closeWindow()
 
 	// Bind before constructing the reporter, not after. A squatted port
 	// must fail startup the way invalid config does, and NewReporter
@@ -123,9 +132,18 @@ func run(
 	client := &http.Client{Timeout: httpTimeout}
 	reporter := tracker.NewReporter(cfg, client, logger)
 
+	// The idle detector can own a child process -- swayidle, on
+	// Wayland -- so it needs closing as deliberately as the window
+	// detector does. Building it only alongside a tracker keeps a
+	// daemon with no window detection from starting one it would never
+	// read.
 	var trk *tracker.Tracker
+	closeIdle := func() {}
 	if window != nil {
-		trk = tracker.NewTracker(cfg, window, d.newIdle(cfg, logger), reporter, logger)
+		idle := d.newIdle(cfg, logger)
+		closeIdle = closerFor(idle)
+		defer closeIdle()
+		trk = tracker.NewTracker(cfg, window, idle, reporter, logger)
 	}
 
 	// Own a child context so the reporter goroutine can be released
@@ -165,6 +183,7 @@ func run(
 		<-ctx.Done()
 	}
 	closeWindow()
+	closeIdle()
 	cancel()
 
 	// Wait for the reporter goroutine before the final flush so both
