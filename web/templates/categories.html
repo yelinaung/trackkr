@@ -1,0 +1,102 @@
+{{define "title"}}Categories &middot; trackkr{{end}}
+
+{{define "content"}}
+<h1 class="page-title">Categories</h1>
+<p class="page-lede">Group applications by the work they support. A default applies to past and future activity until a record overrides it.</p>
+
+<section class="detail-section" aria-labelledby="new-category">
+  <h2 class="totals__title" id="new-category">New category</h2>
+  <form method="post" action="/categories" class="device-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <div class="device-form__field">
+      <label for="category-name">Name</label>
+      <input id="category-name" name="name" value="{{.CategoryFormName}}" maxlength="64" required>
+    </div>
+    <div class="device-form__field">
+      <label for="category-color">Color</label>
+      <select id="category-color" name="color_key">
+        {{range $color := categoryColors}}
+        <option value="{{$color}}"{{if eq $.CategoryFormColor $color}} selected{{end}}>{{$color}}</option>
+        {{end}}
+      </select>
+    </div>
+    <button type="submit" class="btn-primary">Create category</button>
+  </form>
+</section>
+
+<section class="detail-section" aria-labelledby="your-categories">
+  <h2 class="totals__title" id="your-categories">Your categories</h2>
+  {{if .Categories}}
+  <ol class="categories-list">
+    {{range .Categories}}
+    <li class="categories-list__item">
+      {{$selected := .ColorKey}}
+      <form method="post" action="/categories/{{.ID}}" class="device-form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <div class="device-form__field">
+          <label for="category-name-{{.ID}}">Name</label>
+          <input id="category-name-{{.ID}}" name="name" value="{{.Name}}" maxlength="64" required>
+        </div>
+        <div class="device-form__field">
+          <label for="category-color-{{.ID}}">Color</label>
+          <select id="category-color-{{.ID}}" name="color_key">
+            {{range $color := categoryColors}}
+            <option value="{{$color}}"{{if eq $selected $color}} selected{{end}}>{{$color}}</option>
+            {{end}}
+          </select>
+        </div>
+        <span class="categories-list__count">{{.AssignedAppCount}} app{{if ne .AssignedAppCount 1}}s{{end}}</span>
+        <button type="submit" class="btn-secondary">Save</button>
+      </form>
+      <button class="btn-danger"
+              hx-delete="/categories/{{.ID}}"
+              hx-headers='{"X-CSRF-Token": "{{$.CSRFToken}}"}'
+              hx-confirm="Delete {{.Name}}? Activity will fall back to another default or Uncategorized.">
+        Delete {{.Name}}
+      </button>
+    </li>
+    {{end}}
+  </ol>
+  {{else}}
+  <p class="empty">No categories yet. Create one, then assign an application below.</p>
+  {{end}}
+</section>
+
+<section class="detail-section" aria-labelledby="applications">
+  <h2 class="totals__title" id="applications">Applications</h2>
+  <p class="detail__note">Applications seen in the last 180 days appear here.</p>
+  {{if .KnownApplications}}
+  <ol class="categories-list">
+    {{range .KnownApplications}}
+    <li class="categories-list__item">
+      {{$application := .}}
+      {{if .IconURL}}
+      <img class="totals__icon" src="{{.IconURL}}" width="22" height="22" alt="" loading="lazy" decoding="async">
+      {{else}}
+      <svg class="totals__icon totals__monogram" viewBox="0 0 22 22" width="22" height="22" aria-hidden="true">
+        <rect width="22" height="22" rx="6" fill="{{.MonogramBG}}"></rect>
+        <text x="11" y="14.5" text-anchor="middle" fill="{{.MonogramFill}}">{{.Monogram}}</text>
+      </svg>
+      {{end}}
+      <span class="totals__app">{{.AppName}}</span>
+      <span class="categories-list__count">Seen {{date .LastSeen}}</span>
+      <form method="post" action="/categories/assignments" class="categories-list__assignment">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="app_key" value="{{.AppKey}}">
+        <label class="visually-hidden" for="application-category-{{.AppKey}}">Category for {{.AppName}}</label>
+        <select id="application-category-{{.AppKey}}" name="category_id">
+          <option value="">Uncategorized</option>
+          {{range $category := $.Categories}}
+          <option value="{{$category.ID}}"{{if and $application.Assignment (eq $application.Assignment.ID $category.ID)}} selected{{end}}>{{$category.Name}}</option>
+          {{end}}
+        </select>
+        <button type="submit" class="btn-secondary">Save</button>
+      </form>
+    </li>
+    {{end}}
+  </ol>
+  {{else}}
+  <p class="empty">No recent application activity yet.</p>
+  {{end}}
+</section>
+{{end}}

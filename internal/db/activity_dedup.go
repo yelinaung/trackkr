@@ -123,6 +123,36 @@ func (d *activityDeduplicator) timeline(recordLimit, workLimit int) ([]ActivityR
 // not materialize every desktop slice merely to sum it.
 func (d *activityDeduplicator) totals(start, end time.Time) []AppTotalRow {
 	durations := make(map[string]time.Duration)
+	d.visitEffectiveDurations(start, end, func(record *ActivityRecordRow, duration time.Duration) {
+		// Fold aliases together: a Chrome extension observation and a
+		// residual "google-chrome" desktop slice are one application to
+		// a reader, so they must be one row.
+		durations[CanonicalAppName(record)] += duration
+	})
+
+	totals := make([]AppTotalRow, 0, len(durations))
+	for appName, duration := range durations {
+		totals = append(totals, AppTotalRow{
+			AppName: appName,
+			Seconds: int64(math.Round(duration.Seconds())),
+		})
+	}
+	slices.SortFunc(totals, func(a, b AppTotalRow) int {
+		if order := cmp.Compare(b.Seconds, a.Seconds); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.AppName, b.AppName)
+	})
+	return totals
+}
+
+// visitEffectiveDurations is the one aggregation traversal. It clips to the
+// requested window and removes desktop/browser overlap before exposing a
+// source record's remaining duration to application and category consumers.
+func (d *activityDeduplicator) visitEffectiveDurations(
+	start, end time.Time,
+	visit func(record *ActivityRecordRow, duration time.Duration),
+) {
 	for i := range d.records {
 		record := &d.records[i]
 		if !isValidActivityRecord(record) {
@@ -144,25 +174,95 @@ func (d *activityDeduplicator) totals(start, end time.Time) []AppTotalRow {
 			)
 		}
 		if duration > 0 {
-			// Fold aliases together: a Chrome extension observation and a
-			// residual "google-chrome" desktop slice are one application to
-			// a reader, so they must be one row.
-			durations[CanonicalAppName(record)] += duration
+			visit(record, duration)
+		}
+	}
+}
+
+type categoryDurationDestination struct {
+	id int64
+}
+
+// categoryTotals allocates each rounded application total across its category
+// destinations. Largest remainder makes the published category seconds exactly
+// partition the existing rounded application seconds.
+func (d *activityDeduplicator) categoryTotals(
+	start, end time.Time,
+	assignments map[string]CategoryRow,
+	categories map[int64]CategoryRow,
+) []CategoryTotalRow {
+	byApplication := make(map[string]map[categoryDurationDestination]time.Duration)
+	d.visitEffectiveDurations(start, end, func(record *ActivityRecordRow, duration time.Duration) {
+		appName := CanonicalAppName(record)
+		destination := categoryDurationDestination{}
+		if record.CategoryOverridePresent && record.CategoryOverrideID != nil {
+			if _, ok := categories[*record.CategoryOverrideID]; ok {
+				destination = categoryDurationDestination{id: *record.CategoryOverrideID}
+			}
+		} else if !record.CategoryOverridePresent {
+			if category, ok := assignments[CategoryAppKey(appName)]; ok {
+				destination = categoryDurationDestination{id: category.ID}
+			}
+		}
+		if byApplication[appName] == nil {
+			byApplication[appName] = make(map[categoryDurationDestination]time.Duration)
+		}
+		byApplication[appName][destination] += duration
+	})
+
+	secondsByDestination := make(map[categoryDurationDestination]int64)
+	for _, durations := range byApplication {
+		var applicationDuration time.Duration
+		var allocatedSeconds int64
+		type remainder struct {
+			destination categoryDurationDestination
+			fraction    time.Duration
+		}
+		remainders := make([]remainder, 0, len(durations))
+		for destination, duration := range durations {
+			applicationDuration += duration
+			whole := int64(duration / time.Second)
+			allocatedSeconds += whole
+			secondsByDestination[destination] += whole
+			remainders = append(remainders, remainder{
+				destination: destination,
+				fraction:    duration % time.Second,
+			})
+		}
+		remaining := int64(math.Round(applicationDuration.Seconds())) - allocatedSeconds
+		slices.SortFunc(remainders, func(a, b remainder) int {
+			if order := cmp.Compare(b.fraction, a.fraction); order != 0 {
+				return order
+			}
+			return cmp.Compare(a.destination.id, b.destination.id)
+		})
+		for i := range remaining {
+			secondsByDestination[remainders[i].destination]++
 		}
 	}
 
-	totals := make([]AppTotalRow, 0, len(durations))
-	for appName, duration := range durations {
-		totals = append(totals, AppTotalRow{
-			AppName: appName,
-			Seconds: int64(math.Round(duration.Seconds())),
-		})
+	totals := make([]CategoryTotalRow, 0, len(secondsByDestination))
+	for destination, seconds := range secondsByDestination {
+		if seconds == 0 {
+			continue
+		}
+		total := CategoryTotalRow{Seconds: seconds}
+		if destination.id == 0 {
+			total.Name = UncategorizedCategoryName
+			total.ColorKey = "slate"
+		} else {
+			category := categories[destination.id]
+			total.CategoryID = &destination.id
+			total.Name = category.Name
+			total.ColorKey = category.ColorKey
+		}
+		totals = append(totals, total)
 	}
-	slices.SortFunc(totals, func(a, b AppTotalRow) int {
+	slices.SortFunc(totals, func(a, b CategoryTotalRow) int {
 		if order := cmp.Compare(b.Seconds, a.Seconds); order != 0 {
 			return order
 		}
-		return cmp.Compare(a.AppName, b.AppName)
+		return cmp.Compare(a.Name, b.Name)
 	})
 	return totals
 }

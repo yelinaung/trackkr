@@ -19,6 +19,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const testRecordActivityURL = "/activity?kind=app&name=code"
+
 // fakeWeb implements WebQuerier and nothing else, which is the point of
 // splitting the interfaces.
 type fakeWeb struct {
@@ -33,6 +35,13 @@ type fakeWeb struct {
 	icons    []db.AppIconRow
 	iconErr  error
 	iconKeys []string
+
+	categories        []db.CategorySummaryRow
+	knownApplications []db.KnownApplicationRow
+	assignments       map[string]db.CategoryRow
+	editablePage      db.EditableActivityPage
+	overrideRecordID  int64
+	overrideCategory  *int64
 
 	activityStart time.Time
 	activityEnd   time.Time
@@ -163,6 +172,82 @@ func (f *fakeWeb) GetSiteTotals(
 	return f.sites, nil
 }
 
+func (f *fakeWeb) ListCategories(context.Context, int64) ([]db.CategorySummaryRow, error) {
+	return f.categories, nil
+}
+
+func (f *fakeWeb) CreateCategory(_ context.Context, userID int64, name, colorKey string) (*db.CategoryRow, error) {
+	f.nextID++
+	category := db.CategoryRow{ID: f.nextID, UserID: userID, Name: name, ColorKey: colorKey}
+	f.categories = append(f.categories, db.CategorySummaryRow{CategoryRow: category})
+	return &category, nil
+}
+
+func (f *fakeWeb) UpdateCategory(_ context.Context, userID, categoryID int64, name, colorKey string) (*db.CategoryRow, error) {
+	for i := range f.categories {
+		category := &f.categories[i]
+		if category.ID == categoryID && category.UserID == userID {
+			category.Name = name
+			category.ColorKey = colorKey
+			return &category.CategoryRow, nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
+func (f *fakeWeb) DeleteCategory(_ context.Context, userID, categoryID int64) error {
+	for i := range f.categories {
+		if f.categories[i].ID == categoryID && f.categories[i].UserID == userID {
+			f.categories = append(f.categories[:i], f.categories[i+1:]...)
+			return nil
+		}
+	}
+	return pgx.ErrNoRows
+}
+
+func (f *fakeWeb) ListKnownApplications(context.Context, int64, time.Time, int) ([]db.KnownApplicationRow, error) {
+	return f.knownApplications, nil
+}
+
+func (f *fakeWeb) ListAppCategoryAssignments(context.Context, int64, []string) (map[string]db.CategoryRow, error) {
+	return f.assignments, nil
+}
+
+func (f *fakeWeb) SetAppCategory(_ context.Context, _ int64, appKey string, categoryID *int64) error {
+	if f.assignments == nil {
+		f.assignments = make(map[string]db.CategoryRow)
+	}
+	if categoryID == nil {
+		delete(f.assignments, appKey)
+		return nil
+	}
+	for _, category := range f.categories {
+		if category.ID == *categoryID {
+			f.assignments[appKey] = category.CategoryRow
+			return nil
+		}
+	}
+	return pgx.ErrNoRows
+}
+
+func (f *fakeWeb) ListEditableActivityRecords(context.Context, int64, *db.EditableActivityFilter) (*db.EditableActivityPage, error) {
+	return &f.editablePage, nil
+}
+
+func (f *fakeWeb) SetActivityRecordCategoryOverride(_ context.Context, _ int64, recordID int64, categoryID *int64) error {
+	f.overrideRecordID = recordID
+	f.overrideCategory = categoryID
+	return nil
+}
+
+func (f *fakeWeb) DeleteActivityRecordCategoryOverride(context.Context, int64, int64) error {
+	return nil
+}
+
+func (f *fakeWeb) SetActivityRecordApplicationCategory(context.Context, int64, int64, *int64) error {
+	return nil
+}
+
 func (f *fakeWeb) AppIconMetadata(_ context.Context, userID int64, keys []string) ([]db.AppIconRow, error) {
 	if f.iconErr != nil {
 		return nil, f.iconErr
@@ -195,6 +280,129 @@ func (f *fakeWeb) AppIcon(_ context.Context, userID, id int64) (*db.AppIconRow, 
 		}
 	}
 	return nil, pgx.ErrNoRows
+}
+
+func TestCategoriesPageAndApplicationDefault(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "categories", testPassword)
+	category := db.CategoryRow{ID: 7, UserID: user.ID, Name: "Work", ColorKey: "sky"}
+	fake.categories = []db.CategorySummaryRow{{CategoryRow: category, AssignedAppCount: 1}}
+	fake.knownApplications = []db.KnownApplicationRow{{
+		AppKey: testAppCode, AppName: testAppCode, LastSeen: time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC),
+	}}
+	fake.assignments = map[string]db.CategoryRow{testAppCode: category}
+	srv := webServer(t, fake, false)
+	session, csrf := signIn(t, srv, user.ID)
+
+	page := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/categories", nil)
+	page.AddCookie(session)
+	page.AddCookie(csrf)
+	pageRec := httptest.NewRecorder()
+	srv.ServeHTTP(pageRec, page)
+	if pageRec.Code != http.StatusOK {
+		t.Fatalf("GET /categories = %d, want 200: %s", pageRec.Code, pageRec.Body.String())
+	}
+	for _, want := range []string{"New category", "Work", testAppCode, db.UncategorizedCategoryName} {
+		if !strings.Contains(pageRec.Body.String(), want) {
+			t.Errorf("category page missing %q", want)
+		}
+	}
+
+	form := url.Values{"app_key": {testAppCode}, "category_id": {""}, csrfFieldName: {csrf.Value}}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/categories/assignments", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(session)
+	request.AddCookie(csrf)
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("POST /categories/assignments = %d, want 303: %s", response.Code, response.Body.String())
+	}
+	if _, ok := fake.assignments[testAppCode]; ok {
+		t.Error("clearing an application category did not remove the assignment")
+	}
+}
+
+func TestRecordCategoryRejectsInvalidScopeAction(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "record-category", testPassword)
+	srv := webServer(t, fake, false)
+	session, csrf := signIn(t, srv, user.ID)
+
+	form := url.Values{
+		categoryScopeField:  {categoryScopeApplication},
+		categoryActionField: {categoryActionInherit},
+		csrfFieldName:       {csrf.Value},
+	}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/activity/records/3/category", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(session)
+	request.AddCookie(csrf)
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Errorf("invalid application inherit action = %d, want 400", response.Code)
+	}
+}
+
+func TestRecordCategoryStoresExplicitUncategorized(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "record-uncategorized", testPassword)
+	srv := webServer(t, fake, false)
+	session, csrf := signIn(t, srv, user.ID)
+
+	form := url.Values{
+		categoryScopeField:  {categoryScopeRecord},
+		categoryActionField: {categoryActionNone},
+		csrfFieldName:       {csrf.Value},
+		"return_to":         {testRecordActivityURL},
+	}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/activity/records/3/category", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(session)
+	request.AddCookie(csrf)
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("record Uncategorized = %d, want 303: %s", response.Code, response.Body.String())
+	}
+	if fake.overrideRecordID != 3 || fake.overrideCategory != nil {
+		t.Errorf("override call = record %d category %v, want record 3 explicit nil", fake.overrideRecordID, fake.overrideCategory)
+	}
+	if got := response.Header().Get("Location"); got != testRecordActivityURL {
+		t.Errorf("redirect = %q, want original detail URL", got)
+	}
+}
+
+func TestRecordCategoryHTMXRedirectsTheWholePage(t *testing.T) {
+	t.Parallel()
+	fake := newFakeWeb()
+	user := fake.addUser(t, "record-htmx", testPassword)
+	srv := webServer(t, fake, false)
+	session, csrf := signIn(t, srv, user.ID)
+
+	form := url.Values{
+		categoryScopeField:  {categoryScopeRecord},
+		categoryActionField: {categoryActionNone},
+		csrfFieldName:       {csrf.Value},
+		"return_to":         {"/activity?name=code&kind=app"},
+	}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/activity/records/3/category", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set(htmxRequestHeader, htmxRequestValue)
+	request.AddCookie(session)
+	request.AddCookie(csrf)
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("HTMX record category = %d, want 204: %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("HX-Redirect"); got != testRecordActivityURL {
+		t.Errorf("HX-Redirect = %q, want re-encoded detail URL", got)
+	}
 }
 
 // webServer builds a Server with only the session and web dependencies

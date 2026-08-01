@@ -6,6 +6,10 @@ import (
 	"github.com/yelinaung/trackkr/internal/identity"
 )
 
+// UncategorizedCategoryName names the virtual category used when activity has
+// no stored application default or record override.
+const UncategorizedCategoryName = "Uncategorized"
+
 type ActivityRecordRow struct {
 	ID        int64
 	DeviceID  int64
@@ -18,14 +22,80 @@ type ActivityRecordRow struct {
 	EndedAt   time.Time
 	DurationS int
 	CreatedAt time.Time
+
+	CategoryOverridePresent bool
+	CategoryOverrideID      *int64
 }
 
 // ActivitySummary is the bounded activity view used by one dashboard render.
 type ActivitySummary struct {
 	Records           []ActivityRecordRow
 	Totals            []AppTotalRow
+	CategoryTotals    []CategoryTotalRow
 	TimelineTruncated bool
 	SourceTruncated   bool
+}
+
+type CategoryRow struct {
+	ID        int64
+	UserID    int64
+	Name      string
+	ColorKey  string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type CategorySummaryRow struct {
+	CategoryRow
+	AssignedAppCount int
+}
+
+type AppCategoryAssignmentRow struct {
+	UserID     int64
+	AppKey     string
+	CategoryID int64
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type ActivityRecordCategoryOverrideRow struct {
+	ActivityRecordID int64
+	UserID           int64
+	CategoryID       *int64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type CategoryTotalRow struct {
+	CategoryID *int64
+	Name       string
+	ColorKey   string
+	Seconds    int64
+}
+
+type KnownApplicationRow struct {
+	AppKey   string
+	AppName  string
+	LastSeen time.Time
+}
+
+type EditableActivityCursor struct {
+	EndedAt time.Time
+	ID      int64
+}
+
+type EditableActivityFilter struct {
+	CanonicalAppName string
+	Start            time.Time
+	End              time.Time
+	DeviceID         *int64
+	Before           *EditableActivityCursor
+	Limit            int
+}
+
+type EditableActivityPage struct {
+	Records []ActivityRecordRow
+	Next    *EditableActivityCursor
 }
 
 type DeviceRow struct {

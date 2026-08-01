@@ -19,6 +19,7 @@
     {{if .User}}
     <nav class="site-nav">
       <a href="/">Timeline</a>
+      <a href="/categories">Categories</a>
       <a href="/devices">Devices</a>
       <form method="post" action="/logout">
         <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">

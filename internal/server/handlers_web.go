@@ -70,6 +70,17 @@ type WebQuerier interface {
 	DeleteDevice(ctx context.Context, id, userID int64) error
 	GetActivitySummary(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) (*db.ActivitySummary, error)
 	GetSiteTotals(ctx context.Context, userID int64, start, end time.Time, deviceID *int64) ([]db.SiteTotalRow, error)
+	ListCategories(ctx context.Context, userID int64) ([]db.CategorySummaryRow, error)
+	CreateCategory(ctx context.Context, userID int64, name, colorKey string) (*db.CategoryRow, error)
+	UpdateCategory(ctx context.Context, userID, categoryID int64, name, colorKey string) (*db.CategoryRow, error)
+	DeleteCategory(ctx context.Context, userID, categoryID int64) error
+	ListKnownApplications(ctx context.Context, userID int64, since time.Time, limit int) ([]db.KnownApplicationRow, error)
+	ListAppCategoryAssignments(ctx context.Context, userID int64, appKeys []string) (map[string]db.CategoryRow, error)
+	SetAppCategory(ctx context.Context, userID int64, appKey string, categoryID *int64) error
+	ListEditableActivityRecords(ctx context.Context, userID int64, filter *db.EditableActivityFilter) (*db.EditableActivityPage, error)
+	SetActivityRecordCategoryOverride(ctx context.Context, userID, recordID int64, categoryID *int64) error
+	DeleteActivityRecordCategoryOverride(ctx context.Context, userID, recordID int64) error
+	SetActivityRecordApplicationCategory(ctx context.Context, userID, recordID int64, categoryID *int64) error
 }
 
 // webHandlers carries what every dashboard handler needs.
@@ -432,6 +443,7 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	data.Devices = devices
 	data.Totals = views
 	data.Sites = siteViews
+	data.CategoryTotals = activity.CategoryTotals
 	if win.view == dashboardViewWeek {
 		data.Chart = layoutWeek(records, devices, win.start, win.end)
 	} else {

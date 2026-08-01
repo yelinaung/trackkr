@@ -140,6 +140,31 @@ func TestAppTotalsUsesEffectiveSlices(t *testing.T) {
 	}
 }
 
+func TestCategoryTotalsUseLargestRemainderWithUncategorizedTieBreak(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	workID := int64(5)
+	records := []ActivityRecordRow{
+		activityRecord(1, 1, "Code", nil, start, start.Add(600*time.Millisecond)),
+		activityRecord(2, 1, "Code", nil, start.Add(time.Second), start.Add(1600*time.Millisecond)),
+	}
+	records[0].CategoryOverridePresent = true
+	records[0].CategoryOverrideID = &workID
+
+	deduplicator := newActivityDeduplicator(records)
+	apps := deduplicator.totals(start, start.Add(2*time.Second))
+	categories := deduplicator.categoryTotals(start, start.Add(2*time.Second), nil, map[int64]CategoryRow{
+		workID: {ID: workID, Name: "Work", ColorKey: "sky"},
+	})
+	if len(apps) != 1 || apps[0].Seconds != 1 {
+		t.Fatalf("application totals = %+v, want Code 1", apps)
+	}
+	if len(categories) != 1 || categories[0].Name != UncategorizedCategoryName || categories[0].Seconds != apps[0].Seconds {
+		t.Errorf("category totals = %+v, want Uncategorized to receive the tied remainder", categories)
+	}
+}
+
 func TestActivityDeduplicationBoundsExpansionWork(t *testing.T) {
 	t.Parallel()
 

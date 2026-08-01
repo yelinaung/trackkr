@@ -64,7 +64,7 @@
     {{end}}
   </section>
 
-  {{if .Sites}}
+{{if .Sites}}
   <section class="totals" aria-label="Time per website">
     <h2 class="totals__title">Websites</h2>
     <p class="totals__sum">Browser activity</p>
@@ -86,6 +86,24 @@
       </ol>
     </details>
     {{end}}
+  </section>
+  {{end}}
+
+  {{if .CategoryTotals}}
+  <section class="totals" aria-label="Time per category">
+    <h2 class="totals__title">Categories</h2>
+    <p class="totals__sum">All tracked activity</p>
+    <ol class="totals__list">
+      {{range .CategoryTotals}}
+      <li class="totals__item">
+        <span class="totals__link">
+          <span class="category-swatch category-swatch--{{.ColorKey}}" aria-hidden="true"></span>
+          <span class="totals__app">{{.Name}}</span>
+          <span class="totals__time">{{duration .Seconds}}</span>
+        </span>
+      </li>
+      {{end}}
+    </ol>
   </section>
   {{end}}
 </div>

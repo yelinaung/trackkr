@@ -132,4 +132,76 @@
   {{end}}
 </section>
 {{end}}
+
+{{if eq $detail.Kind "app"}}
+<section class="detail-section" aria-labelledby="records">
+  <h2 class="totals__title" id="records">Records</h2>
+  <p class="detail__note">Record changes override the application default. Times are clipped to this period.</p>
+  {{if $detail.EditableRecords}}
+  <ol class="records">
+    {{range $record := $detail.EditableRecords}}
+    <li class="records__item">
+      <div>
+        <strong>{{$record.Start}} &ndash; {{$record.End}}</strong>
+        <span class="session__device">{{$record.DeviceName}}</span>
+        <span class="session__where">{{if $record.Title}}{{$record.Title}}{{else}}&mdash;{{end}}</span>
+        <span class="records__category">{{$record.CategoryName}}{{if $record.HasOverride}} (record override){{else}} (application default){{end}}</span>
+      </div>
+      <form method="post" action="/activity/records/{{$record.ID}}/category" class="records__form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="return_to" value="{{$detail.RecordReturnURL}}">
+        <label class="visually-hidden" for="record-category-{{$record.ID}}">Category for this record</label>
+        <select id="record-category-{{$record.ID}}" name="category_id">
+          {{range $category := $detail.Categories}}
+          <option value="{{$category.ID}}"{{if sameCategory $record.CategoryID $category.ID}} selected{{end}}>{{$category.Name}}</option>
+          {{end}}
+        </select>
+        <button type="submit" name="scope" value="record" class="btn-secondary">
+          Apply to this record
+        </button>
+        <input type="hidden" name="action" value="set">
+      </form>
+      <form method="post" action="/activity/records/{{$record.ID}}/category" class="records__form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="return_to" value="{{$detail.RecordReturnURL}}">
+        <input type="hidden" name="scope" value="application">
+        <input type="hidden" name="action" value="set">
+        <label class="visually-hidden" for="application-category-{{$record.ID}}">Default category for {{$detail.Entry.AppName}}</label>
+        <select id="application-category-{{$record.ID}}" name="category_id">
+          {{range $category := $detail.Categories}}
+          <option value="{{$category.ID}}"{{if sameCategory $record.CategoryID $category.ID}} selected{{end}}>{{$category.Name}}</option>
+          {{end}}
+        </select>
+        <button type="submit" class="btn-secondary">Make application default</button>
+      </form>
+      <form method="post" action="/activity/records/{{$record.ID}}/category" class="records__form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="return_to" value="{{$detail.RecordReturnURL}}">
+        <input type="hidden" name="scope" value="application">
+        <input type="hidden" name="action" value="uncategorized">
+        <button type="submit" class="linkish">Clear application default</button>
+      </form>
+      <form method="post" action="/activity/records/{{$record.ID}}/category" class="records__form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="return_to" value="{{$detail.RecordReturnURL}}">
+        <input type="hidden" name="scope" value="record">
+        <input type="hidden" name="action" value="inherit">
+        <button type="submit" class="linkish">Follow application default</button>
+      </form>
+      <form method="post" action="/activity/records/{{$record.ID}}/category" class="records__form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="return_to" value="{{$detail.RecordReturnURL}}">
+        <input type="hidden" name="scope" value="record">
+        <input type="hidden" name="action" value="uncategorized">
+        <button type="submit" class="linkish">Uncategorize this record</button>
+      </form>
+    </li>
+    {{end}}
+  </ol>
+  {{if $detail.RecordsNextURL}}<p><a class="btn-secondary" href="{{$detail.RecordsNextURL}}">Load older records</a></p>{{end}}
+  {{else}}
+  <p class="empty">No raw records match this application in this period.</p>
+  {{end}}
+</section>
+{{end}}
 {{end}}

@@ -78,13 +78,52 @@ func familyForDesktopName(appName string) (browserFamily, bool) {
 // has to fold aliases exactly the way the totals did, or the detail view of
 // "Google Chrome" would miss every record stored as "google-chrome".
 func CanonicalAppName(record *ActivityRecordRow) string {
-	if family, ok := familyForProducer(record.Producer); ok {
+	return canonicalAppName(record.Producer, record.AppName)
+}
+
+func canonicalAppName(producer identity.Producer, appName string) string {
+	if family, ok := familyForProducer(producer); ok {
 		return family.canonical
 	}
-	if family, ok := familyForDesktopName(record.AppName); ok {
+	if family, ok := familyForDesktopName(appName); ok {
 		return family.canonical
 	}
-	return record.AppName
+	return appName
+}
+
+type editableActivitySubjectMatch struct {
+	producer         identity.Producer
+	desktopKeys      []string
+	browserProducers []string
+	exactName        string
+}
+
+// editableActivitySubject derives record-editor matching parameters from the
+// one browser-family definition. Known browser producers take precedence over
+// their stored app name, just as canonicalAppName does.
+func editableActivitySubject(appName string) (editableActivitySubjectMatch, bool) {
+	browserProducers := make([]string, 0, len(browserFamilies))
+	for _, candidate := range browserFamilies {
+		browserProducers = append(browserProducers, string(candidate.producer))
+	}
+	for _, family := range browserFamilies {
+		if family.canonical == appName {
+			return editableActivitySubjectMatch{
+				producer:         family.producer,
+				desktopKeys:      family.desktopKeys,
+				browserProducers: browserProducers,
+			}, true
+		}
+	}
+	return editableActivitySubjectMatch{
+		browserProducers: browserProducers,
+		exactName:        appName,
+	}, false
+}
+
+// CategoryAppKey returns the normalized key used for one canonical application.
+func CategoryAppKey(appName string) string {
+	return icon.AppKey(appName)
 }
 
 // coverageKey identifies whose time a browser observation may subtract: one

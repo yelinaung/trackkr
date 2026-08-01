@@ -131,6 +131,11 @@ func (h *webHandlers) detailData(w http.ResponseWriter, r *http.Request) (*pageD
 	if win.view == dashboardViewWeek {
 		detail.Days = detailDays(matched, win, entry.Fill)
 	}
+	if kind == detailKindApp {
+		if err := h.populateRecordEditor(r, user.ID, detail, devices, win, name); err != nil {
+			return nil, err
+		}
+	}
 
 	data.Devices = devices
 	data.Detail = detail
@@ -145,6 +150,108 @@ func (h *webHandlers) detailData(w http.ResponseWriter, r *http.Request) (*pageD
 	data.SourceTruncated = activity.SourceTruncated
 
 	return data, nil
+}
+
+func (h *webHandlers) populateRecordEditor(
+	r *http.Request,
+	userID int64,
+	detail *DetailView,
+	devices []db.DeviceRow,
+	win *dashboardWindow,
+	appName string,
+) error {
+	categories, err := h.queries.ListCategories(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	assignments, err := h.queries.ListAppCategoryAssignments(
+		r.Context(), userID, []string{db.CategoryAppKey(appName)},
+	)
+	if err != nil {
+		return err
+	}
+	page, err := h.queries.ListEditableActivityRecords(r.Context(), userID, &db.EditableActivityFilter{
+		CanonicalAppName: appName,
+		Start:            win.start,
+		End:              win.end,
+		DeviceID:         win.deviceID,
+		Before:           editableCursor(r.URL.Query()),
+		Limit:            db.EditableActivityRecordLimit,
+	})
+	if err != nil {
+		return err
+	}
+	names := make(map[int64]string, len(devices))
+	for _, device := range devices {
+		names[device.ID] = device.Name
+	}
+	categoryByID := make(map[int64]db.CategoryRow, len(categories))
+	for _, category := range categories {
+		categoryByID[category.ID] = category.CategoryRow
+	}
+	assignment, hasAssignment := assignments[db.CategoryAppKey(appName)]
+	for i := range page.Records {
+		record := &page.Records[i]
+		from, to, ok := clampToWindow(record, win)
+		if !ok {
+			continue
+		}
+		view := EditableRecordView{
+			ID:          record.ID,
+			DeviceName:  names[record.DeviceID],
+			Start:       from.In(win.start.Location()).Format("2 Jan 15:04"),
+			End:         to.In(win.start.Location()).Format("2 Jan 15:04"),
+			Title:       record.Title,
+			HasOverride: record.CategoryOverridePresent,
+		}
+		switch {
+		case record.CategoryOverridePresent:
+			view.CategoryID = record.CategoryOverrideID
+			view.CategoryName = db.UncategorizedCategoryName
+			if record.CategoryOverrideID != nil {
+				if category, ok := categoryByID[*record.CategoryOverrideID]; ok {
+					view.CategoryName = category.Name
+				}
+			}
+		case hasAssignment:
+			categoryID := assignment.ID
+			view.CategoryID = &categoryID
+			view.CategoryName = assignment.Name
+		default:
+			view.CategoryName = db.UncategorizedCategoryName
+		}
+		detail.EditableRecords = append(detail.EditableRecords, view)
+	}
+	detail.Categories = categories
+	detail.RecordReturnURL = "/activity?" + r.URL.Query().Encode()
+	if page.Next != nil {
+		detail.RecordsNextURL = recordPageURL(r.URL.Query(), page.Next)
+	}
+	return nil
+}
+
+func editableCursor(query url.Values) *db.EditableActivityCursor {
+	endedAt, err := time.Parse(time.RFC3339Nano, query.Get("record_before"))
+	if err != nil {
+		return nil
+	}
+	id, err := strconv.ParseInt(query.Get("record_before_id"), 10, 64)
+	if err != nil || id <= 0 {
+		return nil
+	}
+	return &db.EditableActivityCursor{EndedAt: endedAt, ID: id}
+}
+
+func recordPageURL(query url.Values, cursor *db.EditableActivityCursor) string {
+	next := url.Values{}
+	for key, values := range query {
+		for _, value := range values {
+			next.Add(key, value)
+		}
+	}
+	next.Set("record_before", cursor.EndedAt.UTC().Format(time.RFC3339Nano))
+	next.Set("record_before_id", strconv.FormatInt(cursor.ID, 10))
+	return "/activity?" + next.Encode()
 }
 
 // detailEntry builds the header row, taking its headline number from the same

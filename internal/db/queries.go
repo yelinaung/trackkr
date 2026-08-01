@@ -1,14 +1,19 @@
 package db
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yelinaung/trackkr/internal/icon"
+	"github.com/yelinaung/trackkr/internal/identity"
 )
 
 const (
@@ -16,7 +21,15 @@ const (
 	AppIconUserLimit = 512
 	// SiteIconUserLimit bounds annual favicon cache rows for one user.
 	SiteIconUserLimit = 2048
+	// CategoryUserLimit bounds the category controls and dashboard summary.
+	CategoryUserLimit = 50
+	// KnownApplicationLimit bounds one category management page.
+	KnownApplicationLimit = 500
+	// EditableActivityRecordLimit bounds one record-editor page.
+	EditableActivityRecordLimit = 100
 )
+
+var ErrCategoryLimit = errors.New("category limit reached")
 
 type Queries struct {
 	pool *pgxpool.Pool
@@ -24,6 +37,313 @@ type Queries struct {
 
 func NewQueries(pool *pgxpool.Pool) *Queries {
 	return &Queries{pool: pool}
+}
+
+func (q *Queries) ListCategories(ctx context.Context, userID int64) ([]CategorySummaryRow, error) {
+	rows, err := q.pool.Query(ctx,
+		`SELECT c.id, c.user_id, c.name, c.color_key, c.created_at, c.updated_at,
+		        COUNT(a.category_id)
+		 FROM categories c
+		 LEFT JOIN application_category_assignments a ON a.category_id = c.id
+		 WHERE c.user_id = $1
+		 GROUP BY c.id
+		 ORDER BY c.name, c.id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []CategorySummaryRow
+	for rows.Next() {
+		var category CategorySummaryRow
+		if err := rows.Scan(
+			&category.ID,
+			&category.UserID,
+			&category.Name,
+			&category.ColorKey,
+			&category.CreatedAt,
+			&category.UpdatedAt,
+			&category.AssignedAppCount,
+		); err != nil {
+			return nil, err
+		}
+		categories = append(categories, category)
+	}
+	return categories, rows.Err()
+}
+
+// listCategoryRows loads category metadata for aggregation. Unlike the
+// management-page query it deliberately avoids assignment counts.
+func (q *Queries) listCategoryRows(ctx context.Context, userID int64) ([]CategoryRow, error) {
+	rows, err := q.pool.Query(ctx,
+		`SELECT id, user_id, name, color_key, created_at, updated_at
+		 FROM categories
+		 WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var categories []CategoryRow
+	for rows.Next() {
+		var category CategoryRow
+		if err := rows.Scan(
+			&category.ID,
+			&category.UserID,
+			&category.Name,
+			&category.ColorKey,
+			&category.CreatedAt,
+			&category.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		categories = append(categories, category)
+	}
+	return categories, rows.Err()
+}
+
+func (q *Queries) CreateCategory(
+	ctx context.Context,
+	userID int64,
+	name, colorKey string,
+) (*CategoryRow, error) {
+	tx, err := q.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning category transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var lockedUserID int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&lockedUserID); err != nil {
+		return nil, err
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM categories WHERE user_id = $1`, userID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count >= CategoryUserLimit {
+		return nil, ErrCategoryLimit
+	}
+
+	var category CategoryRow
+	err = tx.QueryRow(
+		ctx,
+		`INSERT INTO categories (user_id, name, color_key)
+		 VALUES ($1, $2, $3)
+		 RETURNING id, user_id, name, color_key, created_at, updated_at`,
+		userID, name, colorKey,
+	).Scan(
+		&category.ID,
+		&category.UserID,
+		&category.Name,
+		&category.ColorKey,
+		&category.CreatedAt,
+		&category.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing category transaction: %w", err)
+	}
+	return &category, nil
+}
+
+func (q *Queries) UpdateCategory(
+	ctx context.Context,
+	userID, categoryID int64,
+	name, colorKey string,
+) (*CategoryRow, error) {
+	var category CategoryRow
+	err := q.pool.QueryRow(
+		ctx,
+		`UPDATE categories
+		 SET name = $3, color_key = $4, updated_at = NOW()
+		 WHERE id = $2 AND user_id = $1
+		 RETURNING id, user_id, name, color_key, created_at, updated_at`,
+		userID, categoryID, name, colorKey,
+	).Scan(
+		&category.ID,
+		&category.UserID,
+		&category.Name,
+		&category.ColorKey,
+		&category.CreatedAt,
+		&category.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &category, nil
+}
+
+func (q *Queries) DeleteCategory(ctx context.Context, userID, categoryID int64) error {
+	ct, err := q.pool.Exec(ctx,
+		`DELETE FROM categories WHERE id = $2 AND user_id = $1`, userID, categoryID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (q *Queries) ListAppCategoryAssignments(
+	ctx context.Context,
+	userID int64,
+	appKeys []string,
+) (map[string]CategoryRow, error) {
+	if len(appKeys) == 0 {
+		return map[string]CategoryRow{}, nil
+	}
+
+	rows, err := q.pool.Query(ctx,
+		`SELECT a.app_key, c.id, c.user_id, c.name, c.color_key, c.created_at, c.updated_at
+		 FROM application_category_assignments a
+		 JOIN categories c ON c.id = a.category_id AND c.user_id = a.user_id
+		 WHERE a.user_id = $1 AND a.app_key = ANY($2)`, userID, appKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	assignments := make(map[string]CategoryRow, len(appKeys))
+	for rows.Next() {
+		var appKey string
+		var category CategoryRow
+		if err := rows.Scan(
+			&appKey,
+			&category.ID,
+			&category.UserID,
+			&category.Name,
+			&category.ColorKey,
+			&category.CreatedAt,
+			&category.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		assignments[appKey] = category
+	}
+	return assignments, rows.Err()
+}
+
+func (q *Queries) SetAppCategory(
+	ctx context.Context,
+	userID int64,
+	appKey string,
+	categoryID *int64,
+) error {
+	return setAppCategory(ctx, q.pool, userID, appKey, categoryID)
+}
+
+type categoryAssignmentExecutor interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func setAppCategory(
+	ctx context.Context,
+	executor categoryAssignmentExecutor,
+	userID int64,
+	appKey string,
+	categoryID *int64,
+) error {
+	if categoryID == nil {
+		_, err := executor.Exec(ctx,
+			`DELETE FROM application_category_assignments
+			 WHERE user_id = $1 AND app_key = $2`, userID, appKey)
+		return err
+	}
+
+	var storedKey string
+	err := executor.QueryRow(
+		ctx,
+		`INSERT INTO application_category_assignments (
+		     user_id, app_key, category_id, created_at, updated_at
+		 )
+		 SELECT $1, $2, c.id, NOW(), NOW()
+		 FROM categories c
+		 WHERE c.id = $3 AND c.user_id = $1
+		 ON CONFLICT (user_id, app_key) DO UPDATE SET
+		     category_id = EXCLUDED.category_id,
+		     updated_at = EXCLUDED.updated_at
+		 RETURNING app_key`,
+		userID, appKey, *categoryID,
+	).Scan(&storedKey)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ListKnownApplications returns at most limit recently seen raw application
+// pairs folded to their canonical application identity. The time predicate
+// bounds the history scanned; the result limit bounds the grouped output.
+func (q *Queries) ListKnownApplications(
+	ctx context.Context,
+	userID int64,
+	since time.Time,
+	limit int,
+) ([]KnownApplicationRow, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	if limit > KnownApplicationLimit {
+		limit = KnownApplicationLimit
+	}
+
+	rows, err := q.pool.Query(ctx,
+		`SELECT ar.producer, ar.app_name, MAX(ar.ended_at)
+		 FROM activity_records ar
+		 JOIN devices d ON d.id = ar.device_id
+		 WHERE d.user_id = $1 AND ar.ended_at >= $2
+		 GROUP BY ar.producer, ar.app_name
+		 ORDER BY MAX(ar.ended_at) DESC, ar.producer, ar.app_name
+		 LIMIT $3`,
+		userID, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byKey := make(map[string]KnownApplicationRow)
+	for rows.Next() {
+		var producer identity.Producer
+		var appName string
+		var lastSeen time.Time
+		if err := rows.Scan(&producer, &appName, &lastSeen); err != nil {
+			return nil, err
+		}
+		canonical := canonicalAppName(producer, appName)
+		appKey := CategoryAppKey(canonical)
+		if appKey == "" {
+			continue
+		}
+		row, exists := byKey[appKey]
+		if !exists || lastSeen.After(row.LastSeen) {
+			byKey[appKey] = KnownApplicationRow{
+				AppKey:   appKey,
+				AppName:  canonical,
+				LastSeen: lastSeen,
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]KnownApplicationRow, 0, len(byKey))
+	for _, row := range byKey {
+		result = append(result, row)
+	}
+	slices.SortFunc(result, func(a, b KnownApplicationRow) int {
+		if order := b.LastSeen.Compare(a.LastSeen); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.AppName, b.AppName)
+	})
+	return result, nil
 }
 
 func (q *Queries) InsertActivityRecords(ctx context.Context, records []ActivityRecordRow) (int, error) {
@@ -116,13 +436,69 @@ func (q *Queries) GetActivitySummary(
 		ActivityRecordLimit,
 		activityDedupWorkLimit,
 	)
+	categoryTotals, err := q.getCategoryTotals(ctx, userID, records, deduplicator, start, end)
+	if err != nil {
+		return nil, err
+	}
 	summary := &ActivitySummary{
 		Records:           effective,
 		Totals:            deduplicator.totals(start, end),
+		CategoryTotals:    categoryTotals,
 		TimelineTruncated: sourceTruncated || effectiveTruncated,
 		SourceTruncated:   sourceTruncated,
 	}
 	return summary, nil
+}
+
+func (q *Queries) getCategoryTotals(
+	ctx context.Context,
+	userID int64,
+	records []ActivityRecordRow,
+	deduplicator *activityDeduplicator,
+	start, end time.Time,
+) ([]CategoryTotalRow, error) {
+	if len(records) == 0 {
+		return nil, nil
+	}
+	appKeys := make([]string, 0, len(records))
+	seenKeys := make(map[string]struct{}, len(records))
+	for i := range records {
+		key := CategoryAppKey(CanonicalAppName(&records[i]))
+		if key == "" {
+			continue
+		}
+		if _, exists := seenKeys[key]; !exists {
+			seenKeys[key] = struct{}{}
+			appKeys = append(appKeys, key)
+		}
+	}
+	assignments, err := q.ListAppCategoryAssignments(ctx, userID, appKeys)
+	if err != nil {
+		return nil, err
+	}
+	hasAssignedOverride := false
+	for i := range records {
+		if records[i].CategoryOverridePresent && records[i].CategoryOverrideID != nil {
+			hasAssignedOverride = true
+			break
+		}
+	}
+	if len(assignments) == 0 && !hasAssignedOverride {
+		return nil, nil
+	}
+	categoryRows, err := q.listCategoryRows(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	categories := make(map[int64]CategoryRow, len(categoryRows))
+	for _, category := range categoryRows {
+		categories[category.ID] = category
+	}
+	totals := deduplicator.categoryTotals(start, end, assignments, categories)
+	if len(totals) == 1 && totals[0].CategoryID == nil {
+		return nil, nil
+	}
+	return totals, nil
 }
 
 // queryActivityRecords fetches one probe row past the source limit so callers
@@ -138,18 +514,24 @@ func (q *Queries) queryActivityRecords(
 
 	if deviceID != nil {
 		rows, err = q.pool.Query(ctx,
-			`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
+			`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at,
+			        o.activity_record_id IS NOT NULL, o.category_id
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
+			 LEFT JOIN activity_record_category_overrides o
+			   ON o.activity_record_id = ar.id AND o.user_id = d.user_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2 AND ar.device_id = $4
 			 ORDER BY ar.started_at, ar.device_id, ar.id
 			 LIMIT $5`,
 			userID, start, end, *deviceID, ActivitySourceLimit+1)
 	} else {
 		rows, err = q.pool.Query(ctx,
-			`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at
+			`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at,
+			        o.activity_record_id IS NOT NULL, o.category_id
 			 FROM activity_records ar
 			 JOIN devices d ON d.id = ar.device_id
+			 LEFT JOIN activity_record_category_overrides o
+			   ON o.activity_record_id = ar.id AND o.user_id = d.user_id
 			 WHERE d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2
 			 ORDER BY ar.started_at, ar.device_id, ar.id
 			 LIMIT $4`,
@@ -163,8 +545,7 @@ func (q *Queries) queryActivityRecords(
 	var records []ActivityRecordRow
 	for rows.Next() {
 		var r ActivityRecordRow
-		if err := rows.Scan(&r.ID, &r.DeviceID, &r.RecordID, &r.Producer, &r.AppName, &r.Title, &r.URL,
-			&r.StartedAt, &r.EndedAt, &r.DurationS, &r.CreatedAt); err != nil {
+		if err := scanActivityRecord(rows, &r); err != nil {
 			return nil, false, err
 		}
 		records = append(records, r)
@@ -177,6 +558,203 @@ func (q *Queries) queryActivityRecords(
 		records = records[:ActivitySourceLimit]
 	}
 	return records, sourceTruncated, nil
+}
+
+type activityRecordScanner interface {
+	Scan(...any) error
+}
+
+func scanActivityRecord(row activityRecordScanner, record *ActivityRecordRow) error {
+	return row.Scan(
+		&record.ID,
+		&record.DeviceID,
+		&record.RecordID,
+		&record.Producer,
+		&record.AppName,
+		&record.Title,
+		&record.URL,
+		&record.StartedAt,
+		&record.EndedAt,
+		&record.DurationS,
+		&record.CreatedAt,
+		&record.CategoryOverridePresent,
+		&record.CategoryOverrideID,
+	)
+}
+
+// ListEditableActivityRecords returns raw records for an application's detail
+// page. It intentionally does not reuse the bounded dashboard timeline: every
+// source record in the requested window remains reachable through keyset pages.
+func (q *Queries) ListEditableActivityRecords(
+	ctx context.Context,
+	userID int64,
+	filter *EditableActivityFilter,
+) (*EditableActivityPage, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > EditableActivityRecordLimit {
+		limit = EditableActivityRecordLimit
+	}
+	if !filter.Start.Before(filter.End) {
+		return &EditableActivityPage{}, nil
+	}
+
+	subject, knownFamily := editableActivitySubject(filter.CanonicalAppName)
+	args := []any{userID, filter.Start, filter.End}
+	where := `d.user_id = $1 AND ar.started_at < $3 AND ar.ended_at > $2`
+	if knownFamily {
+		args = append(args, subject.producer, subject.browserProducers, subject.desktopKeys)
+		where += fmt.Sprintf(
+			` AND (ar.producer = $%d OR (ar.producer <> ALL($%d) AND lower(TRIM(regexp_replace(ar.app_name, '[[:space:]]+', ' ', 'g'))) = ANY($%d)))`,
+			len(args)-2, len(args)-1, len(args),
+		)
+	} else {
+		args = append(args, subject.browserProducers, subject.exactName)
+		where += fmt.Sprintf(` AND ar.producer <> ALL($%d) AND ar.app_name = $%d`, len(args)-1, len(args))
+	}
+	if filter.DeviceID != nil {
+		args = append(args, *filter.DeviceID)
+		where += fmt.Sprintf(` AND ar.device_id = $%d`, len(args))
+	}
+	if filter.Before != nil {
+		args = append(args, filter.Before.EndedAt, filter.Before.ID)
+		where += fmt.Sprintf(` AND (ar.ended_at, ar.id) < ($%d, $%d)`, len(args)-1, len(args))
+	}
+	args = append(args, limit+1)
+
+	rows, err := q.pool.Query(ctx,
+		`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at,
+		        o.activity_record_id IS NOT NULL, o.category_id
+		 FROM activity_records ar
+		 JOIN devices d ON d.id = ar.device_id
+		 LEFT JOIN activity_record_category_overrides o
+		   ON o.activity_record_id = ar.id AND o.user_id = d.user_id
+		 WHERE `+where+`
+		 ORDER BY ar.ended_at DESC, ar.id DESC
+		 LIMIT $`+strconv.Itoa(len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	page := &EditableActivityPage{}
+	for rows.Next() {
+		var record ActivityRecordRow
+		if err := scanActivityRecord(rows, &record); err != nil {
+			return nil, err
+		}
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(page.Records) > limit {
+		page.Records = page.Records[:limit]
+		last := page.Records[len(page.Records)-1]
+		page.Next = &EditableActivityCursor{EndedAt: last.EndedAt, ID: last.ID}
+	}
+	return page, nil
+}
+
+// SetActivityRecordCategoryOverride stores an explicit category choice. A nil
+// category means explicit Uncategorized; deleting the row restores inheritance.
+func (q *Queries) SetActivityRecordCategoryOverride(
+	ctx context.Context,
+	userID, recordID int64,
+	categoryID *int64,
+) error {
+	var storedID int64
+	var err error
+	if categoryID == nil {
+		err = q.pool.QueryRow(ctx,
+			`INSERT INTO activity_record_category_overrides (
+			     activity_record_id, user_id, category_id, created_at, updated_at
+			 )
+			 SELECT ar.id, d.user_id, NULL, NOW(), NOW()
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 WHERE ar.id = $2 AND d.user_id = $1
+			 ON CONFLICT (activity_record_id) DO UPDATE SET
+			     user_id = EXCLUDED.user_id,
+			     category_id = EXCLUDED.category_id,
+			     updated_at = EXCLUDED.updated_at
+			 RETURNING activity_record_id`, userID, recordID).Scan(&storedID)
+	} else {
+		err = q.pool.QueryRow(ctx,
+			`INSERT INTO activity_record_category_overrides (
+			     activity_record_id, user_id, category_id, created_at, updated_at
+			 )
+			 SELECT ar.id, d.user_id, c.id, NOW(), NOW()
+			 FROM activity_records ar
+			 JOIN devices d ON d.id = ar.device_id
+			 JOIN categories c ON c.id = $3 AND c.user_id = d.user_id
+			 WHERE ar.id = $2 AND d.user_id = $1
+			 ON CONFLICT (activity_record_id) DO UPDATE SET
+			     user_id = EXCLUDED.user_id,
+			     category_id = EXCLUDED.category_id,
+			     updated_at = EXCLUDED.updated_at
+			 RETURNING activity_record_id`, userID, recordID, *categoryID).Scan(&storedID)
+	}
+	return err
+}
+
+// DeleteActivityRecordCategoryOverride removes an explicit choice so the
+// record inherits its application's current default.
+func (q *Queries) DeleteActivityRecordCategoryOverride(
+	ctx context.Context,
+	userID, recordID int64,
+) error {
+	var deletedID int64
+	err := q.pool.QueryRow(ctx,
+		`WITH owned AS (
+		     SELECT ar.id
+		     FROM activity_records ar
+		     JOIN devices d ON d.id = ar.device_id
+		     WHERE ar.id = $2 AND d.user_id = $1
+		 ), deleted AS (
+		     DELETE FROM activity_record_category_overrides o
+		     USING owned
+		     WHERE o.activity_record_id = owned.id
+		 )
+		 SELECT id FROM owned`, userID, recordID).Scan(&deletedID)
+	return err
+}
+
+// SetActivityRecordApplicationCategory changes the selected record's
+// application default and removes that record's override atomically.
+func (q *Queries) SetActivityRecordApplicationCategory(
+	ctx context.Context,
+	userID, recordID int64,
+	categoryID *int64,
+) error {
+	tx, err := q.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning activity category transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var producer identity.Producer
+	var appName string
+	if err := tx.QueryRow(
+		ctx,
+		`SELECT ar.producer, ar.app_name
+		 FROM activity_records ar
+		 JOIN devices d ON d.id = ar.device_id
+		 WHERE ar.id = $2 AND d.user_id = $1`, userID, recordID,
+	).Scan(&producer, &appName); err != nil {
+		return err
+	}
+	if err := setAppCategory(ctx, tx, userID, CategoryAppKey(canonicalAppName(producer, appName)), categoryID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM activity_record_category_overrides
+		 WHERE activity_record_id = $1`, recordID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing activity category transaction: %w", err)
+	}
+	return nil
 }
 
 // SiteTotalLimit caps how many sites the summary lists.
