@@ -277,6 +277,37 @@ func TestSwayConstructsWithStaleSwaysock(t *testing.T) {
 	}
 }
 
+func TestSwayConstructsWithoutSwaysock(t *testing.T) {
+	clearSessionEnv(t)
+
+	// The ordinary systemd user unit: sway does not export SWAYSOCK to
+	// the service manager, so the daemon starts with WAYLAND_DISPLAY
+	// and nothing else while a live socket sits in the runtime
+	// directory. Requiring SWAYSOCK would refuse to start there.
+	dir := t.TempDir()
+	t.Setenv(envRuntimeDir, dir)
+	t.Setenv(envWaylandDisplay, testDisplay)
+	serveSway(t, swaySocketName(dir, 333), swayHandler(treeOneWindow))
+
+	detector, err := NewWindowDetector(DefaultConfig(), testLogger())
+	if err != nil {
+		t.Fatalf("NewWindowDetector with no SWAYSOCK: %v", err)
+	}
+	t.Cleanup(func() {
+		if closer, ok := detector.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	})
+
+	info, err := detector.ActiveWindow(context.Background())
+	if err != nil {
+		t.Fatalf("ActiveWindow: %v", err)
+	}
+	if info.AppName != appFoot {
+		t.Errorf("AppName = %q, want %s", info.AppName, appFoot)
+	}
+}
+
 func TestSwayFailsWhenNothingIsLive(t *testing.T) {
 	clearSessionEnv(t)
 
