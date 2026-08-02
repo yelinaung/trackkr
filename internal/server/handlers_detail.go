@@ -223,6 +223,7 @@ func (h *webHandlers) populateRecordEditor(
 		detail.EditableRecords = append(detail.EditableRecords, view)
 	}
 	detail.Categories = categories
+	// nosemgrep: gosec.G202-1 -- This builds a local URL, not SQL.
 	detail.RecordReturnURL = "/activity?" + r.URL.Query().Encode()
 	if page.Next != nil {
 		detail.RecordsNextURL = recordPageURL(r.URL.Query(), page.Next)
