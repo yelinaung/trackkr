@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [master, main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
 
   # === QUALITY STAGE ===
@@ -19,6 +26,8 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
@@ -41,6 +50,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # - name: Install gitleaks
       #   run: |
@@ -57,7 +67,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64, playground-ubuntu]
     permissions:
       contents: read
-      security-events: write
+      security-events: write # Upload Semgrep SARIF results to code scanning.
     if: github.actor != 'dependabot[bot]'
     steps:
       # - name: Harden the runner (Audit all outbound calls)
@@ -66,6 +76,8 @@ jobs:
       #     egress-policy: audit
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Install Semgrep
         run: |
@@ -96,6 +108,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Start PostgreSQL
         run: |
@@ -113,10 +126,10 @@ jobs:
           docker run -d --name "${container_name}" \
             ${network_flag} \
             --shm-size=256m \
-            -e POSTGRES_USER=${{ env.POSTGRES_USER }} \
-            -e POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }} \
-            -e POSTGRES_DB=${{ env.POSTGRES_DB }} \
-            -e PGPORT=${{ env.POSTGRES_PORT }} \
+            -e POSTGRES_USER="${POSTGRES_USER}" \
+            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+            -e POSTGRES_DB="${POSTGRES_DB}" \
+            -e PGPORT="${POSTGRES_PORT}" \
             postgres:18-alpine
           echo "Waiting for PostgreSQL..."
           ready=0
@@ -199,6 +212,8 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       # Explicit because this job introduced the first non-Go tools:
       # the runner has Go and golangci-lint already, but not node or
@@ -237,6 +252,8 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Run race detector
         run: mise test-race
@@ -252,6 +269,8 @@ jobs:
           egress-policy: audit
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Test transactional bundle replacement
         run: mise bundle-macos-test
