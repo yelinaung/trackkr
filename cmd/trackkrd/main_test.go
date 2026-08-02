@@ -164,7 +164,7 @@ func TestRunBuildsIdleDetectorWithoutWindowDetector(t *testing.T) {
 
 	path := writeConfig(t, "http://127.0.0.1:1", `extension_enabled = true
 extension_addr = "127.0.0.1:0"
-extension_token = "0123456789abcdef0123456789abcdef"`)
+extension_token = "test-only"`)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
