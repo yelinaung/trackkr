@@ -133,11 +133,15 @@ async function userIsActive() {
     return false;
   }
 
-  if ((await readIdleSource()) === IDLE_SOURCE.DAEMON) {
-    const { usable, endsAt } = await askDaemonIdle();
-    if (usable) {
-      return endsAt === null;
-    }
+  // Probed whatever the current source is. askDaemonIdle is the only
+  // thing that moves the source back to the daemon, and with no segment
+  // open nothing else calls it: no segment means no alarm, no alarm
+  // means no poll. Gating this on the source would make one failed
+  // request permanent, stranding the extension on a browser.idle that
+  // is stuck reporting idle.
+  const { usable, endsAt } = await askDaemonIdle();
+  if (usable) {
+    return endsAt === null;
   }
   return false;
 }

@@ -658,3 +658,21 @@ test("rewriting a segment does not restart the poll countdown", async () => {
   assert.notEqual(h.alarm(IDLE_ALARM), null, "the alarm went missing");
   assert.equal(h.alarmCreates(), created, "the alarm was recreated, resetting its countdown");
 });
+
+test("a recovered daemon is found again after a transient failure", async () => {
+  // askDaemonIdle is the only thing that moves the source back to the
+  // daemon, and with no segment open nothing else calls it: no segment
+  // means no alarm, no alarm means no poll. Gating the probe on the
+  // source made one failed request permanent.
+  const h = twoWindows({
+    idleState: "idle",
+    session: { idleSource: "browser" },
+    respond: () => ({ ok: true, status: 200, json: { idle: false, threshold_s: 300 } }),
+  });
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+
+  assert.notEqual(h.current(), null, "the recovered daemon was never asked");
+  assert.equal(h.idleSource(), "daemon", "the source never came back");
+});

@@ -298,3 +298,41 @@ func TestReplaceEnv(t *testing.T) {
 		t.Errorf("replaceEnv() = %v, want %v", got, want)
 	}
 }
+
+// TestSwayIdleUnavailableWhileRestarting covers the window between one
+// swayidle exiting and its replacement starting. The detector reports
+// zero idle there, which is indistinguishable from a present user, so
+// it has to say it is not watching instead.
+func TestSwayIdleUnavailableWhileRestarting(t *testing.T) {
+	clearSessionEnv(t)
+
+	d := startSwayIdleDetector(time.Minute, testLogger(),
+		scriptCmd("sleep 2; exit 1"))
+	t.Cleanup(d.Close)
+
+	waitFor(t, "the child to start", d.IdleAvailable)
+
+	// The child dies and the supervisor waits before replacing it.
+	waitFor(t, "the restart gap", func() bool { return !d.IdleAvailable() })
+
+	if idleUsable(d) {
+		t.Error("a detector with no child reported usable")
+	}
+}
+
+func TestSwayIdleAvailableWhileWatching(t *testing.T) {
+	clearSessionEnv(t)
+
+	d := startSwayIdleDetector(time.Minute, testLogger(), scriptCmd("sleep 300"))
+	t.Cleanup(d.Close)
+
+	waitFor(t, "the child to start", d.IdleAvailable)
+	if !idleUsable(d) {
+		t.Error("a running detector reported unusable")
+	}
+
+	d.Close()
+	if d.IdleAvailable() {
+		t.Error("a closed detector still reported available")
+	}
+}

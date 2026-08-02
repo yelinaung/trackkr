@@ -61,7 +61,27 @@ type SwayIdleDetector struct {
 
 	mu        sync.Mutex
 	idleSince time.Time
+	running   bool
 	now       func() time.Time
+}
+
+// IdleAvailable reports whether a swayidle child is actually watching.
+//
+// Between one exiting and its replacement starting, this detector has
+// nothing to report, and zero idle with no error is indistinguishable
+// from a present user. Anything serving that answer onward -- the
+// browser extension does -- would keep timing straight through the gap.
+// Saying so lets it fall back to its own reckoning instead.
+func (d *SwayIdleDetector) IdleAvailable() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.running
+}
+
+func (d *SwayIdleDetector) setRunning(running bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.running = running
 }
 
 // NewSwayIdleDetector starts the supervisor. It fails when swayidle is
@@ -204,6 +224,7 @@ func (d *SwayIdleDetector) Close() {
 		case <-time.After(swayIdleStopGrace):
 			d.logger.Warn().Msg("timed out waiting for swayidle to stop")
 		}
+		d.setRunning(false)
 		d.markActive()
 	})
 }
@@ -220,6 +241,9 @@ func (d *SwayIdleDetector) run(ctx context.Context) {
 
 		// The resume marker that would have cleared this died with the
 		// process, so a restart must not carry idle state across it.
+		// Nothing is watching until the replacement starts, and zero
+		// idle would otherwise read as a user who is present.
+		d.setRunning(false)
 		d.markActive()
 		d.logger.Warn().Err(err).Msg("swayidle exited, restarting")
 
@@ -242,6 +266,7 @@ func (d *SwayIdleDetector) runOnce(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting swayidle: %w", err)
 	}
+	d.setRunning(true)
 
 	d.consume(stdout)
 
