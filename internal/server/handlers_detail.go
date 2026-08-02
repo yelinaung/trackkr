@@ -251,6 +251,7 @@ func recordPageURL(query url.Values, cursor *db.EditableActivityCursor) string {
 	}
 	next.Set("record_before", cursor.EndedAt.UTC().Format(time.RFC3339Nano))
 	next.Set("record_before_id", strconv.FormatInt(cursor.ID, 10))
+	// nosemgrep: gosec.G202-1 -- This builds a local URL, not SQL.
 	return "/activity?" + next.Encode()
 }
 

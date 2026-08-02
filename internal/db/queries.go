@@ -621,6 +621,7 @@ func (q *Queries) ListEditableActivityRecords(
 	}
 	args = append(args, limit+1)
 
+	// nosemgrep: gosec.G202-1 -- SQL contains only literals and placeholders.
 	rows, err := q.pool.Query(ctx,
 		`SELECT ar.id, ar.device_id, ar.record_id, ar.producer, ar.app_name, ar.title, ar.url, ar.started_at, ar.ended_at, ar.duration_s, ar.created_at,
 		        o.activity_record_id IS NOT NULL, o.category_id
