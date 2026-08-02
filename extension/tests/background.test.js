@@ -15,6 +15,22 @@ const { createHarness } = require("./harness.js");
 const FOCUSED = 1;
 const BACKGROUND = 2;
 
+const IDLE_ALARM = "trackkr-idle-poll";
+
+// activityRecords picks the uploaded records out of the request log.
+// Idle polls share that log and carry no body, so an index would drift
+// every time one is added.
+function activityRecords(h) {
+  return h.state.requests.filter((r) => r.body && r.body.records).flatMap((r) => r.body.records);
+}
+
+// idleReply answers the idle poll and lets every other request succeed,
+// so a test can say what the daemon thinks without hand-building the
+// whole response sequence.
+function idleReply(json) {
+  return (n) => (n === 1 ? { ok: true, status: 200, json } : { ok: true, status: 200 });
+}
+
 function twoWindows(overrides = {}) {
   return createHarness({
     focusedWindowId: FOCUSED,
@@ -163,7 +179,11 @@ test("going idle backdates the segment to when the user stopped", async () => {
   await h.fire("idle.onStateChanged", "idle");
   await h.settled();
 
-  const record = h.state.requests[0].body.records[0];
+  // An idle event now asks the daemon before believing itself, so the
+  // poll precedes the delivery. This harness answers it with no JSON
+  // body, which is unusable, so the handler falls back to the browser's
+  // own reckoning -- the behaviour this test was written for.
+  const record = activityRecords(h)[0];
   const lengthMs = Date.parse(record.ended_at) - Date.parse(record.started_at);
   // Twenty minutes present minus the five-minute detection interval.
   assert.ok(
@@ -453,5 +473,135 @@ test("finalize rechecks the rules even if the change was never observed", async 
     persisted.includes("focused.example"),
     false,
     "an ignored URL was written to storage before being filtered",
+  );
+});
+
+// The alarm is the only clock that survives Chrome evicting the worker,
+// so its lifecycle is worth asserting directly.
+
+test("the idle poll runs only while a segment is open", async () => {
+  const h = twoWindows();
+
+  assert.equal(h.alarm(IDLE_ALARM), null, "polling before anything is timed");
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  assert.notEqual(h.alarm(IDLE_ALARM), null, "no poll while a segment is open");
+
+  h.state.focusedWindowId = -1;
+  await h.fire("windows.onFocusChanged", -1);
+  await h.settled();
+  assert.equal(h.alarm(IDLE_ALARM), null, "still polling after the segment closed");
+});
+
+test("an alarm belonging to someone else is ignored", async () => {
+  const h = twoWindows();
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.age(10 * 60_000);
+
+  await h.fire("alarms.onAlarm", { name: "somebody-elses-alarm" });
+  await h.settled();
+
+  assert.notEqual(h.current(), null, "a foreign alarm closed the segment");
+  assert.equal(h.state.requests.length, 0, "a foreign alarm talked to the daemon");
+});
+
+test("a worker that lost its alarm recreates it on recovery", async () => {
+  // Chrome promises no alarm survives a restart before 150, and a
+  // segment left running with no poll behind it overcounts silently.
+  const h = twoWindows({
+    session: {
+      current: {
+        recordId: "00000000-0000-4000-8000-000000000001",
+        tabId: 10,
+        windowId: FOCUSED,
+        url: "https://focused.example",
+        title: "Focused",
+        incognito: false,
+        startedAt: Date.now() - 60_000,
+      },
+    },
+  });
+  await h.settled();
+  h.dropAlarm(IDLE_ALARM);
+
+  await h.fire("runtime.onStartup");
+  await h.settled();
+
+  assert.notEqual(h.alarm(IDLE_ALARM), null, "the alarm was not restored");
+});
+
+test("the daemon closes the segment where the user stopped", async () => {
+  const stoppedAt = Date.now() - 8 * 60_000;
+  const h = twoWindows({
+    respond: idleReply({ idle: true, idle_since: new Date(stoppedAt).toISOString() }),
+  });
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.age(20 * 60_000);
+
+  await h.fire("alarms.onAlarm", { name: IDLE_ALARM });
+  await h.settled();
+
+  const records = activityRecords(h);
+  assert.equal(records.length, 1, "the poll did not close the segment");
+  const endedAt = Date.parse(records[0].ended_at);
+  assert.ok(
+    Math.abs(endedAt - stoppedAt) < 2000,
+    `segment ended at ${records[0].ended_at}, want the moment the daemon reported`,
+  );
+});
+
+test("a daemon reporting an active user overrides browser idle", async () => {
+  // The whole point of the arbitration. browser.idle on Wayland fires
+  // late or never, so its word alone must not end a segment.
+  const h = twoWindows({ respond: idleReply({ idle: false, threshold_s: 300 }) });
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.age(20 * 60_000);
+
+  await h.fire("idle.onStateChanged", "idle");
+  await h.settled();
+
+  assert.notEqual(h.current(), null, "the browser closed a segment the daemon kept open");
+  assert.equal(activityRecords(h).length, 0, "a record was written anyway");
+  assert.equal(h.idleSource(), "daemon");
+});
+
+test("an unusable reply hands idle back to the browser", async () => {
+  const h = twoWindows({ respond: () => ({ ok: false, status: 503 }) });
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.age(20 * 60_000);
+
+  await h.fire("idle.onStateChanged", "idle");
+  await h.settled();
+
+  assert.equal(h.idleSource(), "browser", "a 503 left the daemon in charge");
+  assert.equal(h.current(), null, "the fallback did not close the segment");
+});
+
+test("a lock ends the segment at once under either source", async () => {
+  const h = twoWindows({ respond: idleReply({ idle: false, threshold_s: 300 }) });
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  h.age(10 * 60_000);
+
+  await h.fire("idle.onStateChanged", "locked");
+  await h.settled();
+
+  const records = activityRecords(h);
+  assert.equal(records.length, 1, "a lock did not close the segment");
+  // No backdating: the user asked for the lock now.
+  const lengthMs = Date.parse(records[0].ended_at) - Date.parse(records[0].started_at);
+  assert.ok(
+    Math.abs(lengthMs - 10 * 60_000) < 2000,
+    `segment was ${lengthMs}ms, want the full ten minutes`,
   );
 });

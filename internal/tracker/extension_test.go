@@ -50,7 +50,7 @@ func testExtensionServer(t *testing.T) (*ExtensionServer, *fakeEnqueuer) {
 		ExtensionAddr:  defaultExtensionAddr,
 		ExtensionToken: testExtensionToken,
 	}
-	return NewExtensionServer(cfg, nil, queue, &logger), queue
+	return NewExtensionServer(cfg, nil, queue, NopIdleDetector{}, &logger), queue
 }
 
 // activityRequest builds a well-formed request, so each test varies one
@@ -351,7 +351,7 @@ func TestExtensionStatus(t *testing.T) {
 func TestExtensionRejectsEverythingWithoutAConfiguredToken(t *testing.T) {
 	t.Parallel()
 	logger := zerolog.Nop()
-	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, nil, &fakeEnqueuer{}, &logger)
+	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, nil, &fakeEnqueuer{}, NopIdleDetector{}, &logger)
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/extension/status", nil)
 	r.Header.Set("Authorization", "Bearer ")
@@ -377,7 +377,7 @@ func TestExtensionServerServeStopsOnCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenExtension: %v", err)
 	}
-	srv := NewExtensionServer(cfg, ln, &fakeEnqueuer{}, &logger)
+	srv := NewExtensionServer(cfg, ln, &fakeEnqueuer{}, NopIdleDetector{}, &logger)
 
 	if srv.Addr() == cfg.ExtensionAddr {
 		t.Errorf("Addr = %q, want the port the OS actually assigned", srv.Addr())
@@ -458,7 +458,7 @@ func TestExtensionListenReportsBindFailure(t *testing.T) {
 func TestExtensionServeWithoutListen(t *testing.T) {
 	t.Parallel()
 	logger := zerolog.Nop()
-	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, nil, &fakeEnqueuer{}, &logger)
+	srv := NewExtensionServer(&Config{ExtensionAddr: defaultExtensionAddr}, nil, &fakeEnqueuer{}, NopIdleDetector{}, &logger)
 
 	if err := srv.Serve(t.Context()); err == nil {
 		t.Error("Serve succeeded without a listener")
@@ -479,7 +479,7 @@ func TestExtensionServeWaitsForInFlightRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenExtension: %v", err)
 	}
-	srv := NewExtensionServer(cfg, ln, queue, &logger)
+	srv := NewExtensionServer(cfg, ln, queue, NopIdleDetector{}, &logger)
 
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ctx) }()

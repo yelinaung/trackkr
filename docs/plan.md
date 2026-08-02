@@ -300,6 +300,18 @@ so a systemd user unit needs `systemctl --user import-environment` (a sway
 `exec` line inherits them). Both are recovered by scanning
 `$XDG_RUNTIME_DIR` when a restarted compositor moves them.
 
+The browser extension asks the daemon rather than deciding for itself, over
+`GET /extension/idle`. `browser.idle` on Linux reads the same X screensaver
+counter `xprintidle` does, so an extension trusting it keeps timing a tab
+for as long as its user is away — one observed record ran 41 minutes past
+the moment the desktop side correctly stopped. The daemon answers with
+`idle_since`, the moment activity stopped, so a poll arriving late still
+closes the segment in the right place. One source holds authority at a
+time: a request that fails, answers non-2xx, or carries an unusable
+timestamp hands it back to `browser.idle`, and the popup says which is in
+use. A screen lock ends a segment immediately under either source, since
+the user asked for it.
+
 ### Client Config (`os.UserConfigDir()/trackkr/config.toml`)
 
 ```toml

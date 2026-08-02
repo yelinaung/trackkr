@@ -270,7 +270,7 @@ test("the Chrome manifest is a service worker with no Gecko keys", () => {
   assert.equal(manifest.background.service_worker, "background-cr.js");
   assert.equal("scripts" in manifest.background, false, "background.scripts is a Firefox key");
   assert.equal(manifest.minimum_chrome_version, "116");
-  assert.deepEqual([...manifest.permissions].sort(), ["idle", "storage", "tabs"]);
+  assert.deepEqual([...manifest.permissions].sort(), ["alarms", "idle", "storage", "tabs"]);
 
   for (const key of ["browser_specific_settings", "data_collection_permissions"]) {
     assert.equal(key in manifest, false, `${key} is Gecko-only`);

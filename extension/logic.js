@@ -227,6 +227,47 @@
     return state === "idle" ? idleEndedAt(now, idleSeconds) : now;
   }
 
+  // IDLE_SOURCE names who decides that a segment ended.
+  //
+  // One of them holds authority at a time. Letting both end a segment
+  // means whichever speaks first decides, and browser.idle is the one
+  // that speaks wrongly: on Linux it reads the X screensaver counter,
+  // which XWayland maintains from the events XWayland itself receives,
+  // so native Wayland input never touches it.
+  const IDLE_SOURCE = Object.freeze({ DAEMON: "daemon", BROWSER: "browser" });
+
+  // readIdleReply turns a daemon answer into the moment to close the
+  // open segment at, or null to leave it open.
+  //
+  // An unusable reply also returns null, and the caller tells the two
+  // apart through usable: a daemon reporting an active user and a
+  // daemon that could not be reached call for opposite behaviour, the
+  // first ignoring a browser.idle event and the second deferring to it.
+  function readIdleReply(status, body, now = Date.now()) {
+    const unusable = { usable: false, endsAt: null };
+
+    if (!Number.isFinite(status) || status < 200 || status > 299) {
+      return unusable;
+    }
+    if (!body || typeof body !== "object") {
+      return unusable;
+    }
+    if (body.idle !== true) {
+      return { usable: true, endsAt: null };
+    }
+
+    const since = Date.parse(body.idle_since);
+    if (!Number.isFinite(since)) {
+      return unusable;
+    }
+    // A clock skewed forward would end the segment before it started,
+    // and buildRecord would drop the real browsing along with it.
+    if (since > now) {
+      return unusable;
+    }
+    return { usable: true, endsAt: since };
+  }
+
   // trimQueue keeps the newest records when an offline browser has been
   // accumulating for a long time.
   function trimQueue(queue, limit = QUEUE_LIMIT) {
@@ -397,6 +438,8 @@
     queueHasRecord,
     idleEndedAt,
     idleEndsAt,
+    IDLE_SOURCE,
+    readIdleReply,
     trimQueue,
     recordKey,
     removeDelivered,

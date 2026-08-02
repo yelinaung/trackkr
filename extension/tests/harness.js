@@ -65,6 +65,8 @@ function createHarness(options = {}) {
     writes: [],
     // Set by a test to hold a fetch open.
     pendingFetch: null,
+    // Alarms the worker has asked for, by name.
+    alarms: new Map(),
   };
 
   const listeners = new Map();
@@ -180,6 +182,22 @@ function createHarness(options = {}) {
       },
     },
 
+    // Alarms rather than timers, because only alarms survive Chrome
+    // evicting the worker. The fake keeps them in a map so a test can
+    // see one created, see it cleared, and fire it by name.
+    alarms: {
+      onAlarm: event("alarms.onAlarm"),
+      async create(name, info) {
+        state.alarms.set(name, info);
+      },
+      async get(name) {
+        return state.alarms.has(name) ? { name, ...state.alarms.get(name) } : undefined;
+      },
+      async clear(name) {
+        return state.alarms.delete(name);
+      },
+    },
+
     runtime: {
       // Chrome MV3 has no onSuspend. Omitting it is the whole point: the
       // Chrome entrypoint must start without touching a property that does
@@ -197,7 +215,10 @@ function createHarness(options = {}) {
   };
 
   async function fetchImpl(url, init) {
-    state.requests.push({ url, init, body: JSON.parse(init.body) });
+    // The idle poll is a body-less GET, so parsing unconditionally would
+    // throw before the request was ever recorded.
+    const body = init && typeof init.body === "string" ? JSON.parse(init.body) : null;
+    state.requests.push({ url, init, body });
     state.pendingSignal = init && init.signal ? init.signal : null;
     if (state.pendingFetch) {
       // Tell the test the request is genuinely in flight before it
@@ -220,7 +241,18 @@ function createHarness(options = {}) {
     if (result instanceof Error) {
       throw result;
     }
-    return { ok: result.ok, status: result.status };
+    return {
+      ok: result.ok,
+      status: result.status,
+      // Only the idle route reads a body back. Responses without one
+      // reject, matching a daemon that answered with nothing parseable.
+      async json() {
+        if (result.json === undefined) {
+          throw new SyntaxError("no JSON body");
+        }
+        return result.json;
+      },
+    };
   }
 
   const context = vm.createContext({
@@ -316,6 +348,23 @@ function createHarness(options = {}) {
 
     current() {
       return state.session.current || null;
+    },
+
+    // alarm reports what the worker asked for under a name, so a test
+    // can assert one exists after a segment opens and is gone after it
+    // closes.
+    alarm(name) {
+      return state.alarms.get(name) || null;
+    },
+
+    // dropAlarm reproduces Chrome losing an alarm across a worker
+    // restart, which it does not promise to preserve before 150.
+    dropAlarm(name) {
+      state.alarms.delete(name);
+    },
+
+    idleSource() {
+      return state.session.idleSource || null;
     },
 
     // registered reports whether a listener exists, without firing it.

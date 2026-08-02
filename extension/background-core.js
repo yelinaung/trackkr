@@ -25,6 +25,23 @@
 const CURRENT_KEY = "current";
 const QUEUE_KEY = "queue";
 
+// IDLE_SOURCE_KEY records who is currently trusted to end a segment.
+// It lives in session storage so it survives the worker being evicted
+// but not a browser restart, which is the right lifetime for a fact
+// about whether the daemon is answering.
+const IDLE_SOURCE_KEY = "idleSource";
+
+// IDLE_ALARM wakes the worker to ask the daemon whether the user is
+// still there. A timer cannot: Chrome evicts the worker after roughly
+// thirty seconds idle and takes any setInterval with it.
+const IDLE_ALARM = "trackkr-idle-poll";
+
+// Chrome honours no period below half a minute and may delay one by an
+// arbitrary amount beyond it. Neither bound costs accuracy, because the
+// daemon answers with the moment activity stopped: a poll that arrives
+// late still closes the segment where the user actually stopped.
+const IDLE_POLL_MINUTES = 0.5;
+
 // DELIVERY_TIMEOUT_MS bounds one upload attempt. Delivery runs on the same
 // serialization chain as every tracking event, so this is the ceiling on how
 // long a wedged daemon can stall them.
@@ -62,6 +79,11 @@ async function readCurrent() {
 }
 
 async function writeCurrent(current) {
+  // Poll only while something is being timed. A browser with no open
+  // segment has nothing to close, and waking the worker every half
+  // minute to rediscover that would spend battery for no result.
+  await syncIdlePoll(current);
+
   if (current === null) {
     await api.storage.session.remove(CURRENT_KEY);
     return;
@@ -178,6 +200,81 @@ async function finalize(endedAt = Date.now()) {
   // Only now is the durable copy safe. A failure above propagates with the
   // session copy intact.
   await writeCurrent(null);
+}
+
+// syncIdlePoll keeps the alarm alive exactly while a segment is open.
+//
+// create doubles as the repair path. Chrome makes no promise that an
+// alarm survives the worker being restarted before version 150, and an
+// extension that quietly lost its alarm would behave exactly like the
+// overcounting this poll exists to prevent.
+async function syncIdlePoll(current) {
+  if (current === null) {
+    await api.alarms.clear(IDLE_ALARM);
+    return;
+  }
+  await api.alarms.create(IDLE_ALARM, { periodInMinutes: IDLE_POLL_MINUTES });
+}
+
+async function readIdleSource() {
+  const stored = await api.storage.session.get(IDLE_SOURCE_KEY);
+  return stored[IDLE_SOURCE_KEY] || IDLE_SOURCE.DAEMON;
+}
+
+async function writeIdleSource(source) {
+  await api.storage.session.set({ [IDLE_SOURCE_KEY]: source });
+}
+
+// askDaemonIdle returns the daemon's view of whether the user is still
+// here, and records which source that leaves in charge.
+//
+// A usable answer puts the daemon in charge; anything else hands
+// authority back to browser.idle, which is wrong on Wayland and right
+// everywhere an unreachable daemon is likely to be an old one.
+async function askDaemonIdle() {
+  const { daemonUrl, token } = await getSettings();
+  if (!token || !(await hasHostPermission(daemonUrl))) {
+    await writeIdleSource(IDLE_SOURCE.BROWSER);
+    return { usable: false, endsAt: null };
+  }
+
+  const timeout = new AbortController();
+  const deadline = setTimeout(() => timeout.abort(), DELIVERY_TIMEOUT_MS);
+  let verdict = { usable: false, endsAt: null };
+  try {
+    const resp = await fetch(new URL(IDLE_PATH, daemonUrl), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: timeout.signal,
+    });
+    let body = null;
+    try {
+      body = await resp.json();
+    } catch {
+      body = null;
+    }
+    verdict = readIdleReply(resp.status, body);
+  } catch {
+    verdict = { usable: false, endsAt: null };
+  } finally {
+    clearTimeout(deadline);
+  }
+
+  await writeIdleSource(verdict.usable ? IDLE_SOURCE.DAEMON : IDLE_SOURCE.BROWSER);
+  return verdict;
+}
+
+// pollIdle closes the open segment when the daemon says the user left.
+async function pollIdle() {
+  if ((await readCurrent()) === null) {
+    return;
+  }
+  const { endsAt } = await askDaemonIdle();
+  if (endsAt === null) {
+    return;
+  }
+  await finalize(endsAt);
+  await deliver();
 }
 
 // deliver sends the queue as one batch, mirroring the daemon's own
@@ -315,13 +412,48 @@ globalThis.registerListeners = function registerListeners() {
     }),
   );
 
+  api.alarms.onAlarm.addListener((alarm) =>
+    serialize(async () => {
+      // Someone else's alarm, or one left by an older build.
+      if (!alarm || alarm.name !== IDLE_ALARM) {
+        return;
+      }
+      await pollIdle();
+    }),
+  );
+
   api.idle.onStateChanged.addListener((state) =>
     serialize(async () => {
-      if (state === "idle" || state === "locked") {
-        // Idleness is reported one interval after it began, so that
-        // segment ended then. A lock happens the moment the user asks
-        // for it, and backdating it would end a young segment before it
-        // started -- discarding real browsing.
+      // A lock is an explicit act, so it ends the segment the moment it
+      // arrives whoever is in charge of idle. Backdating it would end a
+      // young segment before it started, discarding real browsing, and
+      // the daemon has nothing better to say about a deliberate act.
+      if (state === "locked") {
+        await finalize(idleEndsAt(state, Date.now()));
+        await deliver();
+        return;
+      }
+
+      if (state === "idle") {
+        // browser.idle on Linux reads the X screensaver counter, which
+        // native Wayland input never touches, so this event fires late
+        // or never. Ask the daemon before believing it.
+        if ((await readIdleSource()) === IDLE_SOURCE.DAEMON) {
+          const { usable, endsAt } = await askDaemonIdle();
+          if (usable) {
+            // The daemon saying the user is still here outranks the
+            // browser saying otherwise; leave the segment open.
+            if (endsAt !== null) {
+              await finalize(endsAt);
+              await deliver();
+            }
+            return;
+          }
+        }
+
+        // No daemon worth trusting. Its own reckoning beats nothing:
+        // idleness is reported one interval after it began, so the
+        // segment ended then.
         await finalize(idleEndsAt(state, Date.now()));
         await deliver();
         return;
@@ -432,6 +564,12 @@ async function resume() {
   await deliver();
 
   if (keepCurrent) {
+    // Chrome makes no promise the alarm survived whatever restarted this
+    // worker, and a segment left running with no poll behind it is the
+    // overcounting this phase exists to remove.
+    if ((await api.alarms.get(IDLE_ALARM)) === undefined) {
+      await syncIdlePoll(current);
+    }
     // Still the tab the user is looking at: keep its original start time
     // rather than restarting the clock on a visit already in progress.
     return;

@@ -86,6 +86,20 @@ type statusResponse struct {
 	Browsers []string `json:"browsers"`
 }
 
+// idleResponse tells the extension when the user stopped, not merely
+// whether they have.
+//
+// A boolean would tie the end of a browser segment to how soon the
+// extension happened to ask. A timestamp lets it close the segment at
+// the moment activity stopped whenever it learns, so a slow or deferred
+// poll costs latency in writing the record and never accuracy in what
+// the record says.
+type idleResponse struct {
+	Idle       bool       `json:"idle"`
+	IdleSince  *time.Time `json:"idle_since,omitempty"`
+	ThresholdS int        `json:"threshold_s"`
+}
+
 // enqueuer is the slice of Reporter the listener needs.
 type enqueuer interface {
 	Enqueue(rec *Record)
@@ -95,11 +109,13 @@ type enqueuer interface {
 // loopback and feeds it into the reporter queue, which already handles
 // batching, retry, and on-disk persistence.
 type ExtensionServer struct {
-	server   *http.Server
-	listener net.Listener
-	reporter enqueuer
-	token    string
-	logger   *zerolog.Logger
+	server    *http.Server
+	listener  net.Listener
+	reporter  enqueuer
+	idle      IdleDetector
+	threshold time.Duration
+	token     string
+	logger    *zerolog.Logger
 }
 
 // ListenExtension binds the configured address.
@@ -132,13 +148,16 @@ func NewExtensionServer(
 	cfg *Config,
 	ln net.Listener,
 	reporter enqueuer,
+	idle IdleDetector,
 	logger *zerolog.Logger,
 ) *ExtensionServer {
 	e := &ExtensionServer{
-		listener: ln,
-		reporter: reporter,
-		token:    cfg.ExtensionToken,
-		logger:   logger,
+		listener:  ln,
+		reporter:  reporter,
+		idle:      idle,
+		threshold: cfg.IdleThreshold.Duration,
+		token:     cfg.ExtensionToken,
+		logger:    logger,
 	}
 
 	mux := http.NewServeMux()
@@ -150,6 +169,7 @@ func NewExtensionServer(
 	mux.HandleFunc("/extension/activity", e.activityHandler(identity.ProducerFirefox, extensionAppName))
 	mux.HandleFunc("/extension/activity/chrome", e.activityHandler(identity.ProducerChrome, chromeAppName))
 	mux.HandleFunc("/extension/status", e.handleStatus)
+	mux.HandleFunc("/extension/idle", e.handleIdle)
 
 	e.server = &http.Server{
 		Addr:              cfg.ExtensionAddr,
@@ -229,6 +249,44 @@ func (e *ExtensionServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		OK:       true,
 		Browsers: []string{string(identity.ProducerFirefox), string(identity.ProducerChrome)},
 	})
+}
+
+// handleIdle reports when the user stopped, for a browser extension
+// that cannot find out for itself.
+//
+// browser.idle on Linux reads the X screensaver counter, which XWayland
+// maintains from the events XWayland receives, so native Wayland input
+// never touches it. An extension trusting that counter keeps timing a
+// tab for as long as its user is away.
+func (e *ExtensionServer) handleIdle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	if !e.authorized(w, r) {
+		return
+	}
+
+	idleFor, err := e.idle.IdleTime(r.Context())
+	if err != nil {
+		// Never answer a broken detector with idle:false. The extension
+		// would hold its segment open for as long as the detector stayed
+		// broken, which is the overcounting this route exists to stop.
+		// A 503 sends it back to its own idle source instead.
+		e.logger.Warn().Err(err).Msg("idle detection failed, telling the extension to fall back")
+		http.Error(w, `{"error":"idle detection unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	resp := idleResponse{ThresholdS: int(e.threshold.Seconds())}
+	if idleFor >= e.threshold {
+		since := time.Now().Add(-idleFor)
+		resp.Idle = true
+		resp.IdleSince = &since
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (e *ExtensionServer) activityHandler(

@@ -101,10 +101,35 @@ async function refresh() {
   const message = MESSAGES[state];
   if (message) {
     const [text, detail] = message(daemonUrl);
-    show(state, text, detail);
+    show(state, text, detail === daemonUrl ? await withIdleSource(detail) : detail);
     return;
   }
   show(STATUS.HTTP_ERROR, `Daemon returned ${probe.status}`, daemonUrl);
+}
+
+// withIdleSource says who is deciding that a visit ended.
+//
+// Falling back is not visibly different from working, and on Wayland it
+// is the difference between a correct timeline and one that counts the
+// hours a user spent away from the machine. Saying so here beats
+// discovering it in a 41-minute record.
+async function withIdleSource(detail) {
+  // A missing or unreadable session store is not worth losing the whole
+  // connection display over. The source is a note on a line that is
+  // useful without it.
+  let source = null;
+  try {
+    source = (await api.storage.session.get("idleSource")).idleSource;
+  } catch {
+    return detail;
+  }
+  if (!source) {
+    return detail;
+  }
+  if (source === IDLE_SOURCE.BROWSER) {
+    return `${detail} — idle from this browser, which overcounts on Wayland`;
+  }
+  return `${detail} — idle from the daemon`;
 }
 
 grantEl.addEventListener("click", async () => {

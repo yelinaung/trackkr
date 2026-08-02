@@ -23,7 +23,7 @@ LOOPBACK_ORIGINS = {"http://127.0.0.1/*", "http://localhost/*", "http://[::1]/*"
 # Keys Firefox needs and Chrome must never see.
 GECKO_ONLY_KEYS = ("browser_specific_settings", "data_collection_permissions")
 
-REQUIRED_PERMISSIONS = ["idle", "storage", "tabs"]
+REQUIRED_PERMISSIONS = ["alarms", "idle", "storage", "tabs"]
 
 
 def problems_with(manifest: dict) -> list[str]:

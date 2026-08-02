@@ -135,6 +135,52 @@ func TestRunWithoutWindowDetector(t *testing.T) {
 	}
 }
 
+// closableIdle counts Close calls. The real Wayland detector owns a
+// swayidle child, so two readers must not become two Close calls.
+type closableIdle struct {
+	closes atomic.Int32
+}
+
+func (c *closableIdle) IdleTime(context.Context) (time.Duration, error) { return 0, nil }
+
+func (c *closableIdle) Close() { c.closes.Add(1) }
+
+// TestRunBuildsIdleDetectorWithoutWindowDetector covers the daemon the
+// browser depends on most: no window detector, extension enabled. The
+// extension serves idle from this detector, so building it only
+// alongside a tracker would leave that route with nothing behind it.
+func TestRunBuildsIdleDetectorWithoutWindowDetector(t *testing.T) {
+	idle := &closableIdle{}
+	built := 0
+	d := detectors{
+		newWindow: func(*tracker.Config, *zerolog.Logger) (tracker.WindowDetector, error) {
+			return nil, tracker.ErrNoActiveWindow
+		},
+		newIdle: func(*tracker.Config, *zerolog.Logger) tracker.IdleDetector {
+			built++
+			return idle
+		},
+	}
+
+	path := writeConfig(t, "http://127.0.0.1:1", `extension_enabled = true
+extension_addr = "127.0.0.1:0"
+extension_token = "0123456789abcdef0123456789abcdef"`)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	logger := zerolog.Nop()
+	if err := run(ctx, &logger, path, d); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if built != 1 {
+		t.Errorf("idle detector built %d times, want 1", built)
+	}
+	if got := idle.closes.Load(); got != 1 {
+		t.Errorf("idle detector closed %d times, want exactly 1", got)
+	}
+}
+
 func TestRunPassesConfigToDetectors(t *testing.T) {
 	path := writeConfig(t, "http://127.0.0.1:1", `macos_read_titles = false
 macos_prompt_for_accessibility = true`)

@@ -136,17 +136,25 @@ func run(
 	client := &http.Client{Timeout: httpTimeout}
 	reporter := tracker.NewReporter(cfg, client, logger)
 
-	// The idle detector can own a child process -- swayidle, on
-	// Wayland -- so it needs closing as deliberately as the window
-	// detector does. Building it only alongside a tracker keeps a
-	// daemon with no window detection from starting one it would never
-	// read.
+	// One idle detector, two readers. The tracker uses it to close its
+	// own segments, and the extension listener serves it to the browser
+	// so both producers cut their records on the same signal.
+	//
+	// It is built unconditionally because the extension is the reader
+	// that survives a missing window detector. A Wayland compositor the
+	// daemon cannot read windows from still runs the listener, and that
+	// is exactly when the browser most needs an idle source better than
+	// its own.
+	//
+	// It can own a child process -- swayidle, on Wayland -- so it needs
+	// closing as deliberately as the window detector does, and closing
+	// once however many readers it has.
+	idle := d.newIdle(cfg, logger)
+	closeIdle := closerFor(idle)
+	defer closeIdle()
+
 	var trk *tracker.Tracker
-	closeIdle := func() {}
 	if window != nil {
-		idle := d.newIdle(cfg, logger)
-		closeIdle = closerFor(idle)
-		defer closeIdle()
 		trk = tracker.NewTracker(cfg, window, idle, reporter, logger)
 	}
 
@@ -163,7 +171,7 @@ func run(
 	// feature the config asked for.
 	listenerErr := make(chan error, 1)
 	if extListener != nil {
-		ext := tracker.NewExtensionServer(cfg, extListener, reporter, logger)
+		ext := tracker.NewExtensionServer(cfg, extListener, reporter, idle, logger)
 		wg.Go(func() {
 			if err := ext.Serve(ctx); err != nil {
 				listenerErr <- err

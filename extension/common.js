@@ -18,6 +18,11 @@ globalThis.ACTIVITY_PATH =
     ? "/extension/activity/chrome"
     : "/extension/activity";
 
+// IDLE_PATH is the same either way. The daemon reports when the user
+// stopped touching the machine, which has nothing to do with which
+// browser is asking.
+globalThis.IDLE_PATH = "/extension/idle";
+
 // The pure helpers -- DEFAULT_DAEMON_URL, normalizeDaemonUrl, originFor
 // -- live in logic.js, which loads first. What is left here needs the
 // browser.
