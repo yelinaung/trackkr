@@ -1,6 +1,6 @@
 # The base image drops to a non-root user via its own entrypoint;
 # root is only used here for build-time package installation.
-FROM myoung34/github-runner:ubuntu-jammy@sha256:fd2fe2c70ca80c3ae92ac6af134e0094d1f13ce50b10da015779b6f6b184499d
+FROM myoung34/github-runner:ubuntu-jammy@sha256:41be4b798930517be5b52aa5a2049749fbf25db4949e969b0aa259358434b15b
 
 # renovate: datasource=golang-version depName=go versioning=semver
 ARG GO_VERSION=1.26.5
