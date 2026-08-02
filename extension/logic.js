@@ -252,8 +252,15 @@
     if (!body || typeof body !== "object") {
       return unusable;
     }
-    if (body.idle !== true) {
+    // Only a literal false means the user is here. A missing, null, or
+    // string idle field is a daemon that answered something other than
+    // this route's shape, and treating it as "active" would switch off
+    // the browser fallback on the strength of a reply nobody parsed.
+    if (body.idle === false) {
       return { usable: true, endsAt: null };
+    }
+    if (body.idle !== true) {
+      return unusable;
     }
 
     const since = Date.parse(body.idle_since);

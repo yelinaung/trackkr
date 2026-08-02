@@ -71,3 +71,17 @@ test("the two idle sources are named", () => {
   assert.equal(IDLE_SOURCE.DAEMON, "daemon");
   assert.equal(IDLE_SOURCE.BROWSER, "browser");
 });
+
+// Only a literal false means the user is present. Anything else is a
+// daemon that answered something other than this route's shape, and
+// reading it as "active" would switch off the browser fallback on the
+// strength of a reply nobody parsed.
+test("a body without a usable idle field is unusable", () => {
+  for (const body of [{}, { idle: null }, { idle: "false" }, { idle: 0 }, { threshold_s: 300 }]) {
+    assert.deepEqual(
+      readIdleReply(200, body, NOW),
+      { usable: false, endsAt: null },
+      `body ${JSON.stringify(body)}`,
+    );
+  }
+});

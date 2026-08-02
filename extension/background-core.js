@@ -115,8 +115,31 @@ async function userState() {
   }
 }
 
+// userIsActive decides whether a new segment may start, and asks the
+// daemon before accepting the one answer the browser gets wrong.
+//
+// "active" means the browser saw input, which is true wherever it is
+// reported. "locked" is an explicit act. Only "idle" is a claim
+// browser.idle cannot support on Wayland, and believing it is
+// self-sustaining: no segment starts, so no alarm exists, so nothing
+// polls the daemon, so nothing ever corrects it. Tracking would stop
+// for the rest of the session.
 async function userIsActive() {
-  return (await userState()) === "active";
+  const state = await userState();
+  if (state === "active") {
+    return true;
+  }
+  if (state === "locked") {
+    return false;
+  }
+
+  if ((await readIdleSource()) === IDLE_SOURCE.DAEMON) {
+    const { usable, endsAt } = await askDaemonIdle();
+    if (usable) {
+      return endsAt === null;
+    }
+  }
+  return false;
 }
 
 // isFocused reports whether a window currently has the user's
@@ -208,9 +231,23 @@ async function finalize(endedAt = Date.now()) {
 // alarm survives the worker being restarted before version 150, and an
 // extension that quietly lost its alarm would behave exactly like the
 // overcounting this poll exists to prevent.
+// syncIdlePoll starts the poll when a segment opens and leaves it
+// running otherwise. pollIdle stops it once there is nothing to time.
+//
+// Creating an alarm that already exists cancels and replaces it,
+// restarting its countdown, so this only ever creates a missing one.
+// Clearing here would be worse still: every switch finalizes before it
+// starts, so a page that rewrites its title every few seconds -- a chat
+// window carrying an unread count -- would tear the alarm down and
+// build it again ahead of each deadline, and it would never fire.
+//
+// Create doubles as the repair path for a worker restart, which Chrome
+// does not promise an alarm survives before version 150.
 async function syncIdlePoll(current) {
   if (current === null) {
-    await api.alarms.clear(IDLE_ALARM);
+    return;
+  }
+  if (await api.alarms.get(IDLE_ALARM)) {
     return;
   }
   await api.alarms.create(IDLE_ALARM, { periodInMinutes: IDLE_POLL_MINUTES });
@@ -264,9 +301,15 @@ async function askDaemonIdle() {
   return verdict;
 }
 
-// pollIdle closes the open segment when the daemon says the user left.
+// pollIdle closes the open segment when the daemon says the user left,
+// and stops the poll once there is no segment to close.
+//
+// Stopping here rather than at the moment tracking ends is what keeps
+// the alarm intact across a switch, which finalizes and restarts in one
+// step. The cost is one stray wake after the last segment closes.
 async function pollIdle() {
   if ((await readCurrent()) === null) {
+    await api.alarms.clear(IDLE_ALARM);
     return;
   }
   const { endsAt } = await askDaemonIdle();

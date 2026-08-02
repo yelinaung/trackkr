@@ -491,7 +491,14 @@ test("the idle poll runs only while a segment is open", async () => {
   h.state.focusedWindowId = -1;
   await h.fire("windows.onFocusChanged", -1);
   await h.settled();
-  assert.equal(h.alarm(IDLE_ALARM), null, "still polling after the segment closed");
+
+  // The alarm outlives the segment on purpose. Every switch finalizes
+  // before it starts, so tearing it down here would rebuild it ahead of
+  // each deadline and it would never fire. It stops itself on the next
+  // poll instead, costing one stray wake.
+  await h.fire("alarms.onAlarm", { name: IDLE_ALARM });
+  await h.settled();
+  assert.equal(h.alarm(IDLE_ALARM), null, "the poll did not stop itself");
 });
 
 test("an alarm belonging to someone else is ignored", async () => {
@@ -604,4 +611,50 @@ test("a lock ends the segment at once under either source", async () => {
     Math.abs(lengthMs - 10 * 60_000) < 2000,
     `segment was ${lengthMs}ms, want the full ten minutes`,
   );
+});
+
+// Regressions from review. Each fails against the version that shipped
+// the arbitration without it.
+
+test("a stale browser idle does not block a new segment", async () => {
+  // The self-sustaining failure: browser.idle wrongly reports idle on
+  // Wayland, so no segment starts, so no alarm exists, so nothing polls
+  // the daemon, so nothing ever corrects it. Tracking stops for good.
+  const h = twoWindows({
+    idleState: "idle",
+    respond: () => ({ ok: true, status: 200, json: { idle: false, threshold_s: 300 } }),
+  });
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+
+  assert.notEqual(h.current(), null, "the daemon said active and no segment started");
+  assert.equal(h.current().url, "https://focused.example");
+  assert.notEqual(h.alarm(IDLE_ALARM), null, "no poll to recover with");
+});
+
+test("rewriting a segment does not restart the poll countdown", async () => {
+  // Creating an alarm over an existing name cancels and replaces it. A
+  // title that changes every few seconds -- a chat window carrying an
+  // unread count -- would push the poll past every deadline it had.
+  const h = twoWindows();
+
+  await h.fire("tabs.onActivated", { tabId: 10, windowId: FOCUSED });
+  await h.settled();
+  const created = h.alarmCreates();
+
+  for (let i = 0; i < 5; i += 1) {
+    const tab = {
+      id: 10,
+      windowId: FOCUSED,
+      active: true,
+      url: "https://focused.example",
+      title: `Focused (${i})`,
+    };
+    await h.fire("tabs.onUpdated", 10, { title: tab.title }, tab);
+    await h.settled();
+  }
+
+  assert.notEqual(h.alarm(IDLE_ALARM), null, "the alarm went missing");
+  assert.equal(h.alarmCreates(), created, "the alarm was recreated, resetting its countdown");
 });

@@ -156,3 +156,37 @@ func TestExtensionIdleRejectsUnauthorized(t *testing.T) {
 		})
 	}
 }
+
+// TestExtensionIdleUnavailableDetector covers the daemon a Wayland user
+// without swayidle actually runs. NewIdleDetectorOrNop hands back a
+// NopIdleDetector there, and it reports zero idle with no error --
+// indistinguishable from a present user. Serving that as idle:false
+// would keep the browser's segment open for as long as swayidle stayed
+// missing, which is worse than the bug this route was added to fix.
+func TestExtensionIdleUnavailableDetector(t *testing.T) {
+	t.Parallel()
+
+	srv := idleTestServer(t, NopIdleDetector{})
+
+	w := httptest.NewRecorder()
+	srv.handleIdle(w, idleRequest(t, http.MethodGet, testExtensionToken))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 so the extension falls back", w.Code)
+	}
+}
+
+func TestIdleUsable(t *testing.T) {
+	t.Parallel()
+
+	if idleUsable(nil) {
+		t.Error("a nil detector reported usable")
+	}
+	if idleUsable(NopIdleDetector{}) {
+		t.Error("NopIdleDetector reported usable")
+	}
+	// A detector without the method measures something; every real one does.
+	if !idleUsable(fakeIdleDetector{idle: time.Minute}) {
+		t.Error("a real detector reported unusable")
+	}
+}

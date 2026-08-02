@@ -67,6 +67,7 @@ function createHarness(options = {}) {
     pendingFetch: null,
     // Alarms the worker has asked for, by name.
     alarms: new Map(),
+    alarmCreates: 0,
   };
 
   const listeners = new Map();
@@ -188,6 +189,10 @@ function createHarness(options = {}) {
     alarms: {
       onAlarm: event("alarms.onAlarm"),
       async create(name, info) {
+        // Counted, because creating over an existing name cancels and
+        // replaces it. A test needs to see that happen, and the stored
+        // value alone looks identical either way.
+        state.alarmCreates += 1;
         state.alarms.set(name, info);
       },
       async get(name) {
@@ -361,6 +366,10 @@ function createHarness(options = {}) {
     // restart, which it does not promise to preserve before 150.
     dropAlarm(name) {
       state.alarms.delete(name);
+    },
+
+    alarmCreates() {
+      return state.alarmCreates;
     },
 
     idleSource() {

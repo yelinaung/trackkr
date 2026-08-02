@@ -267,6 +267,15 @@ func (e *ExtensionServer) handleIdle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A detector that measures nothing reports zero idle and no error,
+	// which reads as a present user. Serving that would keep the
+	// browser's segment open for as long as swayidle or xprintidle
+	// stayed missing.
+	if !idleUsable(e.idle) {
+		http.Error(w, `{"error":"idle detection unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
 	idleFor, err := e.idle.IdleTime(r.Context())
 	if err != nil {
 		// Never answer a broken detector with idle:false. The extension
