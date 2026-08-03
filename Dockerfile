@@ -37,6 +37,7 @@ RUN apk --no-cache add ca-certificates tzdata \
 WORKDIR /app
 COPY --from=builder /app/trackkr-server ./trackkr-server
 COPY Procfile ./Procfile
+COPY app.json ./app.json
 
 USER appuser
 EXPOSE 8080

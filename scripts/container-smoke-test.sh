@@ -27,6 +27,10 @@ if [ "$(docker run --rm "${image_name}" version)" != "version=smoke commit=smoke
   echo "image version metadata did not reach the binary" >&2
   exit 1
 fi
+if ! docker run --rm --entrypoint /bin/sh "${image_name}" -c 'test -f /app/app.json'; then
+  echo "image does not contain app.json for Dokku deployment checks" >&2
+  exit 1
+fi
 docker network create "${network_name}" >/dev/null
 docker run -d --name "${database_name}" --network "${network_name}" --network-alias db \
   --env POSTGRES_DB=trackkr \
