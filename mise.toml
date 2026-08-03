@@ -122,6 +122,10 @@ run = [
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build -o trackkrd ./cmd/trackkrd",
 ]
 
+[tasks.container-smoke]
+description = "Build the server image and verify migrate plus readiness against PostgreSQL"
+run = ["bash ./scripts/container-smoke-test.sh"]
+
 [tasks.run-daemon]
 description = "Run the trackkrd daemon"
 run = [

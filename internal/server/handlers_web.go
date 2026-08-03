@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 	"unicode"
@@ -85,16 +86,17 @@ type WebQuerier interface {
 
 // webHandlers carries what every dashboard handler needs.
 type webHandlers struct {
-	queries     WebQuerier
-	icons       appIconReader
-	siteIcons   siteIconStore
-	siteRefresh siteIconRefreshQueue
-	templates   *templates
-	codec       *sessionCodec
-	limiter     *attemptLimiter
-	loc         *time.Location
-	logger      *zerolog.Logger
-	allowReg    bool
+	queries        WebQuerier
+	icons          appIconReader
+	siteIcons      siteIconStore
+	siteRefresh    siteIconRefreshQueue
+	templates      *templates
+	codec          *sessionCodec
+	limiter        *attemptLimiter
+	loc            *time.Location
+	logger         *zerolog.Logger
+	allowReg       bool
+	trustedProxies []netip.Prefix
 }
 
 // ensureCSRF reuses the request's token or mints one. Every page that
@@ -142,7 +144,7 @@ func (h *webHandlers) handleLoginForm() http.HandlerFunc {
 
 func (h *webHandlers) handleLogin() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		host := clientHost(r)
+		host := clientHost(r, h.trustedProxies)
 		now := time.Now()
 
 		// Claim the attempt before doing any work: reserving up front
@@ -231,7 +233,7 @@ func (h *webHandlers) handleRegister() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Registration hashes with bcrypt too, so it needs the same
 		// throttle as login or it becomes the cheaper CPU target.
-		host := clientHost(r)
+		host := clientHost(r, h.trustedProxies)
 		if !h.limiter.reserve(host, time.Now()) {
 			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
 			return

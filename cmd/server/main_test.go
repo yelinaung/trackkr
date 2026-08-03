@@ -10,6 +10,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const argumentExtra = "extra"
+
 func TestServeUntilShutdownWaitsForDrain(t *testing.T) {
 	t.Parallel()
 
@@ -63,6 +65,54 @@ func TestServeUntilShutdownForceClosesAfterDeadline(t *testing.T) {
 			t.Fatal("server was not force-closed after the shutdown deadline")
 		}
 	})
+}
+
+func TestCommandFor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{name: "bare invocation serves", args: []string{serverBinary}, want: commandServe},
+		{name: commandServe, args: []string{serverBinary, commandServe}, want: commandServe},
+		{name: commandMigrate, args: []string{serverBinary, commandMigrate}, want: commandMigrate},
+		{name: commandMigrationStatus, args: []string{serverBinary, commandMigrationStatus}, want: commandMigrationStatus},
+		{name: commandMigrationForce, args: []string{serverBinary, commandMigrationForce, "1"}, want: commandMigrationForce},
+		{name: commandVersion, args: []string{serverBinary, commandVersion}, want: commandVersion},
+		{name: "create user", args: []string{serverBinary, commandCreateUser, "alice", "password"}, want: commandCreateUser},
+		{name: "create device", args: []string{serverBinary, commandCreateDevice, "alice", "laptop"}, want: commandCreateDevice},
+		{name: "unknown command", args: []string{serverBinary, "status"}, wantErr: true},
+		{name: "serve arguments", args: []string{serverBinary, commandServe, argumentExtra}, wantErr: true},
+		{name: "migrate arguments", args: []string{serverBinary, commandMigrate, argumentExtra}, wantErr: true},
+		{name: "migration status arguments", args: []string{serverBinary, commandMigrationStatus, argumentExtra}, wantErr: true},
+		{name: "migration force without version", args: []string{serverBinary, commandMigrationForce}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := commandFor(tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("commandFor(%q) error = %v, wantErr %v", tt.args, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("commandFor(%q) = %q, want %q", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVersionReport(t *testing.T) {
+	t.Parallel()
+
+	const want = "version=dev commit=none build_date=unknown"
+	if got := versionReport(); got != want {
+		t.Errorf("versionReport() = %q, want %q", got, want)
+	}
 }
 
 type blockingHTTPServer struct {

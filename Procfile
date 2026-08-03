@@ -1,0 +1,2 @@
+release: migrate
+web: serve

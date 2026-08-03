@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -29,14 +30,21 @@ type APIQuerier interface {
 	ListDevicesByUser(ctx context.Context, userID int64) ([]db.DeviceRow, error)
 }
 
+type databasePinger interface {
+	Ping(context.Context) error
+}
+
 type Server struct {
 	config *Config
 	router *chi.Mux
 	logger *zerolog.Logger
 
+	trustedProxies []netip.Prefix
+
 	// Narrow dependencies rather than one wide interface, so a test
 	// populates only the fields whose routes it exercises.
 	api              APIQuerier
+	database         databasePinger
 	sessions         SessionQuerier
 	web              WebQuerier
 	iconRead         appIconReader
@@ -65,6 +73,10 @@ func New(cfg *Config, pool *pgxpool.Pool, logger *zerolog.Logger) (*Server, erro
 	if err != nil {
 		return nil, err
 	}
+	trustedProxies, err := cfg.Server.TrustedProxies()
+	if err != nil {
+		return nil, err
+	}
 
 	tmpl, err := parseTemplates()
 	if err != nil {
@@ -81,7 +93,9 @@ func New(cfg *Config, pool *pgxpool.Pool, logger *zerolog.Logger) (*Server, erro
 	s := &Server{
 		config:           cfg,
 		logger:           logger,
+		trustedProxies:   trustedProxies,
 		api:              queries,
+		database:         pool,
 		sessions:         queries,
 		web:              queries,
 		iconRead:         queries,
@@ -103,7 +117,9 @@ func newRouter(s *Server) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
-	r.Use(SecurityHeaders)
+	r.Use(SecurityHeaders(s.config.Server.SecureCookies))
+	r.Get("/healthz", handleHealth)
+	r.Get("/readyz", s.handleReady)
 
 	// API routes (API key auth — ingest and device listing)
 	r.Route("/api/v1", func(api chi.Router) {
@@ -115,16 +131,17 @@ func newRouter(s *Server) *chi.Mux {
 	})
 
 	h := &webHandlers{
-		queries:     s.web,
-		icons:       s.iconRead,
-		siteIcons:   s.siteIcons,
-		siteRefresh: s.siteRefresh,
-		templates:   s.templates,
-		codec:       s.codec,
-		limiter:     s.limiter,
-		loc:         s.loc,
-		logger:      s.logger,
-		allowReg:    s.config.Auth.AllowRegistration,
+		queries:        s.web,
+		icons:          s.iconRead,
+		siteIcons:      s.siteIcons,
+		siteRefresh:    s.siteRefresh,
+		templates:      s.templates,
+		codec:          s.codec,
+		limiter:        s.limiter,
+		loc:            s.loc,
+		logger:         s.logger,
+		allowReg:       s.config.Auth.AllowRegistration,
+		trustedProxies: s.trustedProxies,
 	}
 
 	// Static assets are public: gating them would load the login page

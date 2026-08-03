@@ -202,6 +202,18 @@ jobs:
           container_name="test-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           docker rm -f "${container_name}" 2>/dev/null || true
 
+  container-smoke:
+    name: Container Smoke Test
+    runs-on: [self-hosted, Linux, X64, playground-ubuntu]
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build and smoke-test the server image
+        run: mise container-smoke
+
   extension:
     name: Extension (lint + logic tests)
     runs-on: [self-hosted, Linux, X64, playground-ubuntu]

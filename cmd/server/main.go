@@ -8,62 +8,144 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
 	"github.com/yelinaung/trackkr/internal/server"
 	"golang.org/x/crypto/bcrypt"
 )
 
+const (
+	serverBinary           = "trackkr-server"
+	commandServe           = "serve"
+	commandMigrate         = "migrate"
+	commandCreateUser      = "create-user"
+	commandCreateDevice    = "create-device"
+	commandMigrationStatus = "migration-status"
+	commandMigrationForce  = "migration-force"
+	commandVersion         = "version"
+)
+
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+)
+
 func main() {
 	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).
 		With().Timestamp().Logger()
+
+	command, err := commandFor(os.Args)
+	if err != nil {
+		logger.Fatal().Err(err).
+			Msg("usage: trackkr-server [serve|migrate|migration-status|migration-force VERSION|create-user|create-device|version]")
+	}
+	if command == commandVersion {
+		fmt.Println(versionReport())
+		return
+	}
 
 	configPath := "config.toml"
 	if v := os.Getenv("TRACKKR_CONFIG"); v != "" {
 		configPath = v
 	}
 
-	cfg, err := server.LoadConfig(configPath)
+	cfg, err := server.LoadConfigOrDefault(configPath)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to load config")
 	}
-
-	// Run database migrations
-	logger.Info().Msg("running database migrations")
-	if err := db.RunMigrations(cfg.Database.DSN()); err != nil {
-		logger.Fatal().Err(err).Msg("failed to run migrations")
-	}
-
-	// Connect to database
-	ctx := context.Background()
-	pool, err := db.NewPool(ctx, cfg.Database.DSN())
+	dsn, err := cfg.Database.DSN()
 	if err != nil {
-		logger.Fatal().Err(err).Msg("failed to connect to database")
+		logger.Fatal().Err(err).Msg("invalid database configuration")
 	}
-	defer pool.Close()
 
-	queries := db.NewQueries(pool)
-
-	// Handle subcommands
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "create-user":
-			runCreateUser(ctx, queries, &logger)
-			return
-		case "create-device":
-			runCreateDevice(ctx, queries, &logger)
-			return
-		default:
-			logger.Fatal().
-				Str("command", os.Args[1]).
-				Msg("unknown command; usage: trackkr-server [create-user|create-device]")
+	ctx := context.Background()
+	switch command {
+	case commandMigrate:
+		logger.Info().Msg("running database migrations")
+		if err := db.RunMigrations(dsn); err != nil {
+			logger.Fatal().Err(err).Msg("failed to run migrations")
 		}
+	case commandMigrationStatus:
+		state, err := db.GetMigrationStatus(dsn)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("failed to inspect migration status")
+		}
+		fmt.Printf("version=%d dirty=%t applied=%t\n", state.Version, state.Dirty, state.Applied)
+	case commandMigrationForce:
+		version, err := strconv.Atoi(os.Args[2])
+		if err != nil {
+			logger.Fatal().Err(err).Msg("migration version must be an integer")
+		}
+		if err := db.ForceMigrationVersion(dsn, version); err != nil {
+			logger.Fatal().Err(err).Msg("failed to force migration version")
+		}
+		logger.Warn().Int("version", version).Msg("migration version forced")
+	case commandCreateUser, commandCreateDevice:
+		pool, err := db.NewPool(ctx, dsn)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("failed to connect to database")
+		}
+		defer pool.Close()
+
+		queries := db.NewQueries(pool)
+		switch command {
+		case commandCreateUser:
+			runCreateUser(ctx, queries, &logger)
+		case commandCreateDevice:
+			runCreateDevice(ctx, queries, &logger)
+		}
+	case commandServe:
+		pool, err := db.NewPool(ctx, dsn)
+		if err != nil {
+			logger.Fatal().Err(err).Msg("failed to connect to database")
+		}
+		defer pool.Close()
+
+		runServe(ctx, cfg, pool, &logger)
+	}
+}
+
+func commandFor(args []string) (string, error) {
+	if len(args) < 2 {
+		return commandServe, nil
 	}
 
-	srv, err := server.New(cfg, pool, &logger)
+	command := args[1]
+	switch command {
+	case commandServe, commandMigrate, commandMigrationStatus, commandVersion:
+		if len(args) != 2 {
+			return "", fmt.Errorf("%s does not accept arguments", command)
+		}
+		return command, nil
+	case commandMigrationForce:
+		if len(args) != 3 {
+			return "", fmt.Errorf("%s requires a version", command)
+		}
+		return command, nil
+	case commandCreateUser, commandCreateDevice:
+		return command, nil
+	default:
+		return "", fmt.Errorf("unknown command %q", command)
+	}
+}
+
+func versionReport() string {
+	return fmt.Sprintf("version=%s commit=%s build_date=%s", version, commit, buildDate)
+}
+
+func runServe(
+	ctx context.Context,
+	cfg *server.Config,
+	pool *pgxpool.Pool,
+	logger *zerolog.Logger,
+) {
+	srv, err := server.New(cfg, pool, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to start server")
 	}
@@ -79,7 +161,7 @@ func main() {
 	defer stop()
 
 	logger.Info().Str("addr", cfg.Server.Addr()).Msg("starting server")
-	if err := serveUntilShutdown(shutdownCtx, httpServer, &logger); err != nil {
+	if err := serveUntilShutdown(shutdownCtx, httpServer, logger); err != nil {
 		logger.Fatal().Err(err).Msg("server error")
 	}
 }

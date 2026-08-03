@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -192,30 +193,51 @@ func TestRequireSessionUsesHXRedirectForHTMX(t *testing.T) {
 
 func TestSecurityHeaders(t *testing.T) {
 	t.Parallel()
-	rec := httptest.NewRecorder()
-	SecurityHeaders(okHandler()).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
 
-	got := rec.Header().Get("Content-Security-Policy")
-	for _, want := range []string{
-		"default-src 'self'",
-		"script-src 'self'",
-		"style-src 'self'",
-		"frame-ancestors 'none'",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("CSP %q missing %q", got, want)
-		}
+	tests := []struct {
+		name          string
+		secureCookies bool
+		wantHSTS      bool
+	}{
+		{name: "secure cookies", secureCookies: true, wantHSTS: true},
+		{name: "local HTTP", secureCookies: false},
 	}
-	// No nonce anywhere: the design deliberately avoids inline styles.
-	if strings.Contains(got, "nonce") || strings.Contains(got, "unsafe-inline") {
-		t.Errorf("CSP should need neither nonce nor unsafe-inline: %q", got)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
-		t.Error("missing nosniff")
-	}
-	if rec.Header().Get("X-Frame-Options") != "DENY" {
-		t.Error("missing X-Frame-Options")
+			rec := httptest.NewRecorder()
+			SecurityHeaders(tt.secureCookies)(okHandler()).ServeHTTP(
+				rec,
+				httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil),
+			)
+
+			got := rec.Header().Get("Content-Security-Policy")
+			for _, want := range []string{
+				"default-src 'self'",
+				"script-src 'self'",
+				"style-src 'self'",
+				"frame-ancestors 'none'",
+			} {
+				if !strings.Contains(got, want) {
+					t.Errorf("CSP %q missing %q", got, want)
+				}
+			}
+			// No nonce anywhere: the design deliberately avoids inline styles.
+			if strings.Contains(got, "nonce") || strings.Contains(got, "unsafe-inline") {
+				t.Errorf("CSP should need neither nonce nor unsafe-inline: %q", got)
+			}
+
+			if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Error("missing nosniff")
+			}
+			if rec.Header().Get("X-Frame-Options") != "DENY" {
+				t.Error("missing X-Frame-Options")
+			}
+			if gotHSTS := rec.Header().Get("Strict-Transport-Security") != ""; gotHSTS != tt.wantHSTS {
+				t.Errorf("HSTS present = %t, want %t", gotHSTS, tt.wantHSTS)
+			}
+		})
 	}
 }
 
@@ -335,9 +357,10 @@ func TestAttemptLimiterWindowExpiresAndEvicts(t *testing.T) {
 // every request its own bucket and never throttle anything.
 func TestClientHostStripsPort(t *testing.T) {
 	t.Parallel()
+	const peerAddr = "10.0.0.1:54321"
 
 	tests := []struct{ addr, want string }{
-		{"10.0.0.1:54321", testLimiterIP},
+		{peerAddr, testLimiterIP},
 		{"10.0.0.1:65000", testLimiterIP},
 		{"[2001:db8::1]:443", "2001:db8::1"},
 		{"malformed", "malformed"},
@@ -346,20 +369,52 @@ func TestClientHostStripsPort(t *testing.T) {
 	for _, tt := range tests {
 		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testLoginPath, nil)
 		r.RemoteAddr = tt.addr
-		if got := clientHost(r); got != tt.want {
+		if got := clientHost(r, nil); got != tt.want {
 			t.Errorf("clientHost(%q) = %q, want %q", tt.addr, got, tt.want)
 		}
 	}
 }
 
-// A header must never influence the limiter key.
-func TestClientHostIgnoresForwardedFor(t *testing.T) {
+func TestClientHostUsesForwardedForFromTrustedProxy(t *testing.T) {
 	t.Parallel()
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testLoginPath, nil)
-	r.RemoteAddr = "10.0.0.1:54321"
-	r.Header.Set("X-Forwarded-For", "1.2.3.4")
+	trustedProxy := netip.MustParsePrefix("10.0.0.0/24")
+	const peerAddr = "10.0.0.1:54321"
 
-	if got := clientHost(r); got != testLimiterIP {
-		t.Errorf("clientHost = %q, want 10.0.0.1 (X-Forwarded-For must be ignored)", got)
+	tests := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		want       string
+	}{
+		{
+			name:       "trusted peer uses the rightmost forwarded hop",
+			remoteAddr: peerAddr,
+			forwarded:  "198.51.100.1, 198.51.100.2",
+			want:       "198.51.100.2",
+		},
+		{
+			name:       "untrusted peer cannot spoof a client",
+			remoteAddr: "10.0.1.1:54321",
+			forwarded:  "198.51.100.2",
+			want:       "10.0.1.1",
+		},
+		{
+			name:       "invalid forwarded address falls back to peer",
+			remoteAddr: peerAddr,
+			forwarded:  "not-an-address",
+			want:       testLimiterIP,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testLoginPath, nil)
+			r.RemoteAddr = tt.remoteAddr
+			r.Header.Set("X-Forwarded-For", tt.forwarded)
+			if got := clientHost(r, []netip.Prefix{trustedProxy}); got != tt.want {
+				t.Errorf("clientHost() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

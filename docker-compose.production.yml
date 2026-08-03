@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-trackkr}
+      POSTGRES_USER: ${POSTGRES_USER:-trackkr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "9001:5432"
+    volumes:
+      # Postgres 18+ stores data in a major-version subdirectory and
+      # refuses to start when the mount is at .../data instead.
+      - trackkr-postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - trackkr-db
+
+networks:
+  trackkr-db:
+    name: trackkr-db
+
+volumes:
+  trackkr-postgres:

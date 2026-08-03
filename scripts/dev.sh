@@ -160,8 +160,8 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-# Written before the server starts so it can read the port; migrations
-# run automatically on server start.
+# Written before the migration and server commands start so both use the
+# same local database and HTTP configuration.
 cat > "$DEV_DIR/server.toml" <<EOF
 [server]
 host = "127.0.0.1"
@@ -181,6 +181,9 @@ sslmode = "disable"
 allow_registration = false
 EOF
 export TRACKKR_CONFIG="$DEV_DIR/server.toml"
+
+say "running database migrations"
+go run ./cmd/server migrate
 
 # The account survives between runs; a duplicate is not an error here.
 say "ensuring the $DEV_USER account exists"

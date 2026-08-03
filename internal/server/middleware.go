@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,15 +98,20 @@ func redirectToLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // SecurityHeaders sets the same policy on every response.
-func SecurityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("Content-Security-Policy", csp)
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("Referrer-Policy", "same-origin")
-		h.Set("X-Frame-Options", "DENY")
-		next.ServeHTTP(w, r)
-	})
+func SecurityHeaders(secureCookies bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("Content-Security-Policy", csp)
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("Referrer-Policy", "same-origin")
+			h.Set("X-Frame-Options", "DENY")
+			if secureCookies {
+				h.Set("Strict-Transport-Security", "max-age=31536000")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // RequireCSRF rejects state-changing requests without a matching token.
@@ -211,14 +218,36 @@ func (l *attemptLimiter) sweep(now time.Time) {
 	}
 }
 
-// clientHost strips the ephemeral source port from RemoteAddr. Keying on
-// the raw value would give every request its own bucket. X-Forwarded-For
-// is deliberately ignored: chi's RealIP was dropped from this router as
-// spoofable, and a header-derived key is the same bypass in disguise.
-func clientHost(r *http.Request) string {
+// clientHost trusts the rightmost X-Forwarded-For hop only when the immediate
+// peer belongs to a configured proxy network. Every other request uses the
+// socket peer, so clients cannot choose their own rate-limit bucket.
+func clientHost(r *http.Request, trustedProxies []netip.Prefix) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
-	return host
+	peer, err := netip.ParseAddr(host)
+	if err != nil || !isTrustedProxy(peer, trustedProxies) {
+		return host
+	}
+
+	forwarded := r.Header.Get("X-Forwarded-For")
+	if forwarded == "" {
+		return host
+	}
+	hops := strings.Split(forwarded, ",")
+	client, err := netip.ParseAddr(strings.TrimSpace(hops[len(hops)-1]))
+	if err != nil {
+		return host
+	}
+	return client.String()
+}
+
+func isTrustedProxy(peer netip.Addr, trustedProxies []netip.Prefix) bool {
+	for _, prefix := range trustedProxies {
+		if prefix.Contains(peer) {
+			return true
+		}
+	}
+	return false
 }

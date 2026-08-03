@@ -139,12 +139,16 @@ port for documentation, while the process must still honor Dokku's `PORT`.
 Add a root `Procfile`:
 
 ```text
-release: /app/trackkr-server migrate
-web: /app/trackkr-server serve
+release: migrate
+web: serve
 ```
 
 Explicit `serve` and `migrate` commands make process intent clear and prevent
 ad-hoc administrative commands from unexpectedly starting HTTP.
+
+The image declares `trackkr-server` as its entrypoint. Dokku passes each
+Procfile command to that entrypoint, so the Procfile contains subcommands, not
+the binary path.
 
 The command bootstrap must load configuration and then dispatch explicitly.
 `create-user` and `create-device` already exist and should retain their current
