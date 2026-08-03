@@ -137,14 +137,31 @@ container-smoke:
   services:
   - name: docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659
     alias: docker
+    command: ["--tls=false"]
   variables:
-    DOCKER_HOST: tcp://docker:2375
     DOCKER_TLS_CERTDIR: ""
   needs:
   - job: lint
   before_script:
   - apk add --no-cache bash openssl
-  - docker info
+  - |
+    docker_host=""
+    for attempt in $(seq 1 30); do
+      for candidate in tcp://docker:2375 tcp://localhost:2375 unix:///var/run/docker.sock; do
+        if DOCKER_HOST="${candidate}" docker info >/dev/null 2>&1; then
+          docker_host="${candidate}"
+          break 2
+        fi
+      done
+      sleep 1
+    done
+    if [ -z "${docker_host}" ]; then
+      echo "Docker daemon unavailable. Configure the runner with privileged Docker-in-Docker or mount /var/run/docker.sock." >&2
+      exit 1
+    fi
+    export DOCKER_HOST="${docker_host}"
+    echo "Using Docker endpoint: ${DOCKER_HOST}"
+    docker info
   script:
   - bash ./scripts/container-smoke-test.sh
 
@@ -156,6 +173,7 @@ extension:
   needs:
   - job: lint
   before_script:
+  - apt-get update && apt-get install --yes --no-install-recommends zip unzip
   - npm install --global web-ext@10.5.0
   script:
   - web-ext lint --source-dir extension --warnings-as-errors --ignore-files 'tests/**' 'manifest.chrome.json' 'background-cr.js'
@@ -218,6 +236,7 @@ check_sast:
 
 deploy:
   stage: deploy
+  when: on_success
   image: alpine:3.24.1
   tags:
   - playground-bravo
@@ -226,9 +245,14 @@ deploy:
     GIT_STRATEGY: clone
     DOKKU_APP: trackkr
   needs:
-  - job: test
+  - job: check_secrets
   - job: check_sast
   - job: lint
+  - job: test
+  - job: test-race
+  - job: container-smoke
+  - job: extension
+  - job: portability
   before_script:
   - apk add --no-cache git openssh-client
   - eval $(ssh-agent -s)
@@ -238,7 +262,7 @@ deploy:
   - echo "$DOKKU_HOST_KEY" >> ~/.ssh/known_hosts
   script:
   - git remote add dokku "dokku@$DOKKU_HOST:$DOKKU_APP"
-  - git push dokku "HEAD:main"
+  - git push dokku "HEAD:refs/heads/main"
   rules:
   - if: $CI_COMMIT_BRANCH == "master"
 
