@@ -1,7 +1,7 @@
 stages:
 - security
-- test
 - validate
+- test
 - deploy
 - observability
 
