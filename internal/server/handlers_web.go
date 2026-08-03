@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"time"
 	"unicode"
@@ -336,6 +337,7 @@ func (h *webHandlers) handleTimeline() http.HandlerFunc {
 		}
 
 		data.Partial = true
+		pushFilterURL(w, "/", nil, h.parseWindow(r))
 		if err := h.templates.renderPartial(w, partialTimeline, data); err != nil {
 			h.fail(w, err, "rendering timeline")
 		}
@@ -363,7 +365,7 @@ func (h *webHandlers) parseWindow(r *http.Request) *dashboardWindow {
 		view:     view,
 		start:    start,
 		end:      end,
-		deviceID: parseDeviceID(r.URL.Query().Get("device")),
+		deviceID: parseDeviceID(r.URL.Query().Get(deviceParam)),
 	}
 }
 
@@ -383,6 +385,32 @@ func (h *webHandlers) applyWindow(data *pageData, win *dashboardWindow) {
 	data.Today = time.Now().In(h.loc).Format(dateLayout)
 	data.DateLabel = win.label()
 	data.View = win.view
+}
+
+// pushFilterURL puts the filter state a partial was rendered for into the
+// address bar.
+//
+// Without it the controls and the content drift apart. The partial swaps the
+// chart but leaves the URL on the period the page was first loaded with, so a
+// reload re-renders that stale period while the browser restores the controls
+// the user last set: the switch reads "Day" above a week of bars. Pushing the
+// state also makes a filtered view linkable.
+func pushFilterURL(w http.ResponseWriter, path string, query url.Values, win *dashboardWindow) {
+	w.Header().Set("HX-Push-Url", path+"?"+filterQuery(query, win).Encode())
+}
+
+// filterQuery adds the period and device a window stands for to query, so a
+// link and a pushed URL describe the same state the same way.
+func filterQuery(query url.Values, win *dashboardWindow) url.Values {
+	if query == nil {
+		query = url.Values{}
+	}
+	query.Set(dateParam, win.day.Format(dateLayout))
+	query.Set(viewParam, win.view)
+	if win.deviceID != nil {
+		query.Set(deviceParam, strconv.FormatInt(*win.deviceID, 10))
+	}
+	return query
 }
 
 // timelineData gathers the selected day or week for the signed-in user.

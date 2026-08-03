@@ -1362,3 +1362,54 @@ func TestRegisterRejectsSixEmojiConsistently(t *testing.T) {
 		t.Error("rejection does not restate the policy")
 	}
 }
+
+// Switching the period swaps the chart but not the address bar, so without a
+// pushed URL a reload re-renders the period the page was opened with while the
+// browser restores the controls the user last set: "Day" selected above a week
+// of bars.
+func TestFilterPartialsPushTheSelectedPeriod(t *testing.T) {
+	t.Parallel()
+
+	day := time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC)
+	device := int64(7)
+
+	cases := []struct {
+		name  string
+		path  string
+		query url.Values
+		win   *dashboardWindow
+		want  string
+	}{
+		{
+			name: "day",
+			path: "/",
+			win:  &dashboardWindow{day: day, view: dashboardViewDay},
+			want: "/?date=2026-08-03&view=day",
+		},
+		{
+			name: "week with a device filter",
+			path: "/",
+			win:  &dashboardWindow{day: day, view: dashboardViewWeek, deviceID: &device},
+			want: "/?date=2026-08-03&device=7&view=week",
+		},
+		{
+			name:  "detail keeps its subject",
+			path:  "/activity",
+			query: url.Values{"kind": {"app"}, "name": {"Google Chrome"}},
+			win:   &dashboardWindow{day: day, view: dashboardViewDay},
+			want:  "/activity?date=2026-08-03&kind=app&name=Google+Chrome&view=day",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+			pushFilterURL(rec, tc.path, tc.query, tc.win)
+
+			if got := rec.Header().Get("HX-Push-Url"); got != tc.want {
+				t.Errorf("HX-Push-Url = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

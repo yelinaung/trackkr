@@ -29,10 +29,15 @@ const (
 	// detailBarSpan is the viewBox width the breakdown bars are drawn in.
 	detailBarSpan = 100.0
 
-	// dateParam and viewParam are the filter names the dashboard and the
-	// detail page both read and both link with.
-	dateParam = "date"
-	viewParam = "view"
+	// dateParam, viewParam and deviceParam are the filter names the
+	// dashboard and the detail page both read and both link with.
+	dateParam   = "date"
+	viewParam   = "view"
+	deviceParam = "device"
+
+	// kindParam and nameParam name the detail page's subject.
+	kindParam = "kind"
+	nameParam = "name"
 )
 
 // errDetailUnknown marks a request naming neither an application nor a site.
@@ -64,6 +69,13 @@ func (h *webHandlers) handleActivityPanel() http.HandlerFunc {
 		}
 
 		data.Partial = true
+		// The subject travels as hidden fields, so it has to be carried
+		// into the pushed URL or a reload lands on a detail page for
+		// nothing in particular.
+		subject := url.Values{}
+		subject.Set(kindParam, data.Detail.Kind)
+		subject.Set(nameParam, data.Detail.Entry.AppName)
+		pushFilterURL(w, "/activity", subject, h.parseWindow(r))
 		if err := h.templates.renderPartial(w, partialDetail, data); err != nil {
 			h.fail(w, err, "rendering activity detail")
 		}
@@ -87,8 +99,8 @@ func (h *webHandlers) detailData(w http.ResponseWriter, r *http.Request) (*pageD
 		return nil, errors.New("activity detail requested without a session")
 	}
 
-	kind := r.URL.Query().Get("kind")
-	name := r.URL.Query().Get("name")
+	kind := r.URL.Query().Get(kindParam)
+	name := r.URL.Query().Get(nameParam)
 	if (kind != detailKindApp && kind != detailKindSite) || name == "" {
 		return nil, errDetailUnknown
 	}
@@ -456,28 +468,15 @@ func sharePercent(seconds int64, totals []db.AppTotalRow) int {
 // detailURL links a summary row to its own page, carrying the period the
 // reader was already looking at.
 func detailURL(kind, name string, win *dashboardWindow) string {
-	query := url.Values{
-		"kind":    {kind},
-		"name":    {name},
-		dateParam: {win.day.Format(dateLayout)},
-		viewParam: {win.view},
-	}
-	if win.deviceID != nil {
-		query.Set("device", strconv.FormatInt(*win.deviceID, 10))
-	}
-	return "/activity?" + query.Encode()
+	return "/activity?" + filterQuery(url.Values{
+		kindParam: {kind},
+		nameParam: {name},
+	}, win).Encode()
 }
 
 // dashboardURL is the way back, with the same filters still applied.
 func dashboardURL(win *dashboardWindow) string {
-	query := url.Values{
-		dateParam: {win.day.Format(dateLayout)},
-		viewParam: {win.view},
-	}
-	if win.deviceID != nil {
-		query.Set("device", strconv.FormatInt(*win.deviceID, 10))
-	}
-	return "/?" + query.Encode()
+	return "/?" + filterQuery(nil, win).Encode()
 }
 
 // detailKindLabel names the subject in prose.
