@@ -60,8 +60,7 @@ lint:
   - golangci-lint run --timeout=5m ./...
 
 
-test:
-  stage: validate
+.go-test:
   image: golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
   tags:
   - playground-bravo
@@ -78,8 +77,6 @@ test:
     # scanning reports on every pipeline.
     POSTGRES_HOST: postgres
     POSTGRES_PORT: "5432"
-  needs:
-  - job: check_secrets
   cache:
     key: go-mod-cache
     paths:
@@ -99,8 +96,92 @@ test:
       fi
       sleep 1
     done
+
+test:
+  extends: .go-test
+  stage: test
+  needs:
+  - job: check_secrets
+  - job: lint
   script:
-  - go test -v ./...
+  - go test -v -coverprofile=coverage.out -covermode=atomic ./...
+  - |
+    coverage=$(go tool cover -func=coverage.out | awk '/^total:/ { sub(/%$/, "", $3); print $3 }')
+    threshold=70
+    echo "Coverage: ${coverage}% (threshold: ${threshold}%)"
+    if [ "$(awk "BEGIN {print (${coverage} < ${threshold})}")" = "1" ]; then
+      echo "Coverage ${coverage}% is below threshold ${threshold}%!" >&2
+      exit 1
+    fi
+  artifacts:
+    when: always
+    paths:
+    - coverage.out
+
+test-race:
+  extends: .go-test
+  stage: test
+  needs:
+  - job: check_secrets
+  - job: lint
+  script:
+  - go test -v -race ./...
+
+container-smoke:
+  stage: test
+  image:
+    name: docker:29.6.2-cli@sha256:be132a9f282288de4afaf63379dff75711fda0147c6b72a9df44e51841402144
+    entrypoint: [""]
+  tags:
+  - playground-bravo
+  services:
+  - name: docker:29.6.2-dind@sha256:bfec1f5159c63a81ca6fdedbd81404d2c0e16378ed0feec3bb3fbf3998847659
+    alias: docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  needs:
+  - job: lint
+  before_script:
+  - apk add --no-cache bash openssl
+  - docker info
+  script:
+  - bash ./scripts/container-smoke-test.sh
+
+extension:
+  stage: test
+  image: node:24.18.0-bookworm@sha256:5711a0d445a1af54af9589066c646df387d1831a608226f4cd694fc59e745059
+  tags:
+  - playground-bravo
+  needs:
+  - job: lint
+  before_script:
+  - npm install --global web-ext@10.5.0
+  script:
+  - web-ext lint --source-dir extension --warnings-as-errors --ignore-files 'tests/**' 'manifest.chrome.json' 'background-cr.js'
+  - node --test 'extension/tests/*.test.js'
+  - ./scripts/build-chrome.sh
+  - ./scripts/validate-chrome-package.sh
+
+portability:
+  stage: test
+  image: golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
+  tags:
+  - playground-bravo
+  needs:
+  - job: lint
+  cache:
+    key: go-mod-cache
+    paths:
+    - .cache/go-build
+    - .cache/go-mod
+  before_script:
+  - export GOCACHE="$(pwd)/.cache/go-build"
+  - export GOMODCACHE="$(pwd)/.cache/go-mod"
+  script:
+  - bash ./scripts/bundle-macos_test.sh
+  - CGO_ENABLED=0 GOOS=darwin go build ./...
+  - CGO_ENABLED=0 GOOS=windows go build ./...
 
 semgrep-sast:
   stage: security
@@ -135,31 +216,31 @@ check_sast:
   - if: $CI_COMMIT_BRANCH == "master"
   - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-# deploy:
-#   stage: deploy
-#   image: alpine:3.24.1
-#   tags:
-#   - playground-bravo
-#   variables:
-#     GIT_DEPTH: 0
-#     GIT_STRATEGY: clone
-#     DOKKU_APP: trackkr
-#   needs:
-#   - job: test
-#   - job: check_sast
-#   - job: lint
-#   before_script:
-#   - apk add --no-cache git openssh-client
-#   - eval $(ssh-agent -s)
-#   - echo "$DOKKU_SSH_PRIVATE_KEY_B64" | base64 -d | tr -d '\r' | ssh-add -
-#   - mkdir -p ~/.ssh
-#   - chmod 700 ~/.ssh
-#   - echo "$DOKKU_HOST_KEY" >> ~/.ssh/known_hosts
-#   script:
-#   - git remote add dokku "dokku@$DOKKU_HOST:$DOKKU_APP"
-#   - git push dokku "HEAD:main"
-#   rules:
-#   - if: $CI_COMMIT_BRANCH == "master"
+deploy:
+  stage: deploy
+  image: alpine:3.24.1
+  tags:
+  - playground-bravo
+  variables:
+    GIT_DEPTH: 0
+    GIT_STRATEGY: clone
+    DOKKU_APP: trackkr
+  needs:
+  - job: test
+  - job: check_sast
+  - job: lint
+  before_script:
+  - apk add --no-cache git openssh-client
+  - eval $(ssh-agent -s)
+  - echo "$DOKKU_SSH_PRIVATE_KEY_B64" | base64 -d | tr -d '\r' | ssh-add -
+  - mkdir -p ~/.ssh
+  - chmod 700 ~/.ssh
+  - echo "$DOKKU_HOST_KEY" >> ~/.ssh/known_hosts
+  script:
+  - git remote add dokku "dokku@$DOKKU_HOST:$DOKKU_APP"
+  - git push dokku "HEAD:main"
+  rules:
+  - if: $CI_COMMIT_BRANCH == "master"
 
 # === OBSERVABILITY STAGE ===
 # Export the whole pipeline as an OpenTelemetry trace to ClickStack.
