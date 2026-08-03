@@ -8,7 +8,9 @@ server_name="${smoke_id}-server"
 image_name="trackkr-server:smoke"
 postgres_image="postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
 alpine_image="alpine@sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f"
-database_url="postgres://trackkr:trackkr@db:5432/trackkr"
+database_password="$(openssl rand -hex 24)"
+database_url="postgres://trackkr"
+database_url+=":${database_password}@db:5432/trackkr"
 
 cleanup() {
   docker rm -f "${server_name}" "${database_name}" >/dev/null 2>&1 || true
@@ -29,7 +31,7 @@ docker network create "${network_name}" >/dev/null
 docker run -d --name "${database_name}" --network "${network_name}" --network-alias db \
   --env POSTGRES_DB=trackkr \
   --env POSTGRES_USER=trackkr \
-  --env POSTGRES_PASSWORD=trackkr \
+  --env POSTGRES_PASSWORD="${database_password}" \
   "${postgres_image}" >/dev/null
 
 for _ in $(seq 1 30); do
