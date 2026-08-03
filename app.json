@@ -1,0 +1,15 @@
+{
+  "healthchecks": {
+    "web": [
+      {
+        "name": "readiness",
+        "type": "readiness",
+        "path": "/readyz",
+        "port": 8080,
+        "attempts": 3,
+        "timeout": 5,
+        "wait": 2
+      }
+    ]
+  }
+}
