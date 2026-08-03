@@ -2,8 +2,8 @@
   "healthchecks": {
     "web": [
       {
-        "name": "readiness",
-        "type": "readiness",
+        "name": "database readiness",
+        "type": "startup",
         "path": "/readyz",
         "port": 8080,
         "attempts": 3,
