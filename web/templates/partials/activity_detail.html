@@ -31,7 +31,7 @@
 {{$detail := .Detail}}
 {{$fill := $detail.Entry.Fill}}
 
-{{if .Partial}}{{template "detail_back" .}}{{end}}
+{{if .Partial}}{{template "detail_back" .}}{{template "period_date" .}}{{end}}
 
 <p class="detail__period">{{.DateLabel}}</p>
 

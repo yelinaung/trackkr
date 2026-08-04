@@ -63,6 +63,12 @@ type Chart struct {
 	SpanMin     float64
 	HourMarks   []HourMark
 	Lanes       []Lane
+	// Compact drops the chart's minimum drawing width so a short axis fits
+	// the page instead of scrolling. A day is worth scrolling through; a
+	// rolling window is not, and scrolling it would push the newest
+	// activity -- the reason to ask for the last hour at all -- off the
+	// right edge.
+	Compact bool
 }
 
 // HourMark labels one time cell of the axis. The axis is HTML rather
@@ -414,13 +420,39 @@ func layoutFocusWeek(
 	devices []db.DeviceRow,
 	start, end time.Time,
 ) Chart {
+	return layoutFocusRangeWith(all, subject, devices, start, end, dayMarks(start, end), true)
+}
+
+// layoutFocusRange is layoutFocusDay over an explicit span, drawn whole: a
+// rolling window is the span the reader asked for, so trimming its quiet ends
+// would answer a different question.
+func layoutFocusRange(
+	all []db.ActivityRecordRow,
+	subject focus,
+	devices []db.DeviceRow,
+	start, end time.Time,
+	marks []HourMark,
+) Chart {
+	chart := layoutFocusRangeWith(all, subject, devices, start, end, marks, false)
+	chart.Compact = true
+	return chart
+}
+
+func layoutFocusRangeWith(
+	all []db.ActivityRecordRow,
+	subject focus,
+	devices []db.DeviceRow,
+	start, end time.Time,
+	marks []HourMark,
+	showDates bool,
+) Chart {
 	return layoutFocused(
 		mergeAdjacentActivity(all),
 		focus{records: mergeAdjacentActivity(subject.records), fill: subject.fill},
 		devices,
 		start, end,
-		dayMarks(start, end),
-		true,
+		marks,
+		showDates,
 		nil,
 	)
 }
@@ -562,6 +594,19 @@ func hourMarks(start, end time.Time) []HourMark {
 	var marks []HourMark
 	for t := start; t.Before(end); t = t.Add(time.Hour) {
 		marks = append(marks, HourMark{Label: t.Format("15"), SpanHours: 1})
+	}
+	return marks
+}
+
+// tickMarks divides a rolling window into equal cells of step.
+//
+// Unlike hourMarks it labels the minute too: a window ending now starts at
+// 14:20, and an axis of bare hours would put "15" over a cell that begins at
+// 14:20 and mean the wrong thing by forty minutes.
+func tickMarks(start, end time.Time, step time.Duration) []HourMark {
+	var marks []HourMark
+	for t := start; t.Before(end); t = t.Add(step) {
+		marks = append(marks, HourMark{Label: t.Format("15:04"), SpanHours: 1})
 	}
 	return marks
 }

@@ -22,10 +22,13 @@ type pageData struct {
 	AllowRegistration bool
 
 	// Dashboard and devices.
-	Date            string
-	Today           string
-	DateLabel       string
-	View            string
+	Date      string
+	Today     string
+	DateLabel string
+	View      string
+	// Rolling marks a now-relative period, which the date control cannot
+	// move and so is disabled for.
+	Rolling         bool
 	Devices         []db.DeviceRow
 	SelectedDevice  int64
 	Chart           Chart

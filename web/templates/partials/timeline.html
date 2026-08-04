@@ -23,6 +23,7 @@
      already emits it, and repeating it here would duplicate it. */}}
 {{if .Partial}}
 <h1 class="page-title" id="page-title" hx-swap-oob="true">{{.DateLabel}}</h1>
+{{template "period_date" .}}
 {{end}}
 
 {{if .SourceTruncated}}

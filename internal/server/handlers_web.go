@@ -41,10 +41,33 @@ const (
 	flashKindError         = "error"
 	dashboardViewDay       = "day"
 	dashboardViewWeek      = "week"
+	dashboardViewHour1     = "1h"
+	dashboardViewHour6     = "6h"
+	dashboardViewHour12    = "12h"
 	dashboardTotalPageSize = 10
 	// dashboardTotalLimit is two ten-row disclosure batches per column.
 	dashboardTotalLimit = 2 * dashboardTotalPageSize
 )
+
+// rollingView is a window that ends now rather than on a calendar boundary.
+//
+// The tick is the axis cell width, chosen so every span draws four to six
+// cells: an hour split into 24 gridlines is unreadable, and twelve hours drawn
+// as one is not an axis.
+type rollingView struct {
+	span  time.Duration
+	label string
+	tick  time.Duration
+}
+
+// rollingViews are the "last N" periods, keyed by the value the switch
+// submits. Being now-relative, they ignore the date field, which the form
+// disables while one is selected.
+var rollingViews = map[string]rollingView{
+	dashboardViewHour1:  {span: time.Hour, label: "Last hour", tick: 15 * time.Minute},
+	dashboardViewHour6:  {span: 6 * time.Hour, label: "Last 6 hours", tick: time.Hour},
+	dashboardViewHour12: {span: 12 * time.Hour, label: "Last 12 hours", tick: 2 * time.Hour},
+}
 
 // isUniqueViolation reports whether err is a duplicate-key error rather
 // than an operational failure.
@@ -345,7 +368,7 @@ func (h *webHandlers) handleTimeline() http.HandlerFunc {
 }
 
 // dashboardWindow is the period one request selects: the day it names, the
-// day-or-week span that follows from it, and an optional single device.
+// span that follows from it, and an optional single device.
 type dashboardWindow struct {
 	day        time.Time
 	view       string
@@ -353,9 +376,26 @@ type dashboardWindow struct {
 	deviceID   *int64
 }
 
+// rolling returns the now-relative view this window is, if it is one.
+func (w *dashboardWindow) rolling() (rollingView, bool) {
+	roll, ok := rollingViews[w.view]
+	return roll, ok
+}
+
 func (h *webHandlers) parseWindow(r *http.Request) *dashboardWindow {
-	day := h.parseDay(r.URL.Query().Get(dateParam))
 	view := parseDashboardView(r.URL.Query().Get(viewParam))
+	deviceID := parseDeviceID(r.URL.Query().Get(deviceParam))
+
+	// A rolling window ends now, so it takes its day from the clock rather
+	// than the date field: switching back to Day then lands on today
+	// instead of whatever date the URL was last carrying.
+	if roll, ok := rollingViews[view]; ok {
+		end := time.Now().In(h.loc).Truncate(time.Minute)
+		start := end.Add(-roll.span)
+		return &dashboardWindow{day: end, view: view, start: start, end: end, deviceID: deviceID}
+	}
+
+	day := h.parseDay(r.URL.Query().Get(dateParam))
 	start, end := dayBounds(day)
 	if view == dashboardViewWeek {
 		start, end = weekBounds(day)
@@ -365,11 +405,15 @@ func (h *webHandlers) parseWindow(r *http.Request) *dashboardWindow {
 		view:     view,
 		start:    start,
 		end:      end,
-		deviceID: parseDeviceID(r.URL.Query().Get(deviceParam)),
+		deviceID: deviceID,
 	}
 }
 
 func (w *dashboardWindow) label() string {
+	if roll, ok := w.rolling(); ok {
+		return fmt.Sprintf("%s, %s - %s",
+			roll.label, w.start.Format("15:04"), w.end.Format("15:04"))
+	}
 	if w.view == dashboardViewWeek {
 		return weekLabel(w.start, w.end)
 	}
@@ -385,6 +429,7 @@ func (h *webHandlers) applyWindow(data *pageData, win *dashboardWindow) {
 	data.Today = time.Now().In(h.loc).Format(dateLayout)
 	data.DateLabel = win.label()
 	data.View = win.view
+	_, data.Rolling = win.rolling()
 }
 
 // pushFilterURL puts the filter state a partial was rendered for into the
@@ -405,7 +450,11 @@ func filterQuery(query url.Values, win *dashboardWindow) url.Values {
 	if query == nil {
 		query = url.Values{}
 	}
-	query.Set(dateParam, win.day.Format(dateLayout))
+	// A rolling window is anchored to now, so carrying a date would only
+	// invite a stale one to be read back as the anchor.
+	if _, ok := win.rolling(); !ok {
+		query.Set(dateParam, win.day.Format(dateLayout))
+	}
 	query.Set(viewParam, win.view)
 	if win.deviceID != nil {
 		query.Set(deviceParam, strconv.FormatInt(*win.deviceID, 10))
@@ -474,9 +523,16 @@ func (h *webHandlers) timelineData(w http.ResponseWriter, r *http.Request) (*pag
 	data.Totals = views
 	data.Sites = siteViews
 	data.CategoryTotals = activity.CategoryTotals
-	if win.view == dashboardViewWeek {
+	switch roll, rolling := win.rolling(); {
+	case rolling:
+		// The window is already the exact span asked for, so it is drawn
+		// as given rather than trimmed to the hours holding activity.
+		data.Chart = layoutRange(records, devices, win.start, win.end,
+			tickMarks(win.start, win.end, roll.tick), false)
+		data.Chart.Compact = true
+	case win.view == dashboardViewWeek:
 		data.Chart = layoutWeek(records, devices, win.start, win.end)
-	} else {
+	default:
 		data.Chart = layout(records, devices, win.day)
 	}
 	data.Truncated = activity.TimelineTruncated
@@ -594,6 +650,9 @@ func (h *webHandlers) parseDay(raw string) time.Time {
 func parseDashboardView(raw string) string {
 	if raw == dashboardViewWeek {
 		return dashboardViewWeek
+	}
+	if _, ok := rollingViews[raw]; ok {
+		return raw
 	}
 	return dashboardViewDay
 }

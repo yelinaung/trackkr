@@ -1413,3 +1413,56 @@ func TestFilterPartialsPushTheSelectedPeriod(t *testing.T) {
 		})
 	}
 }
+
+// A rolling view is anchored to the clock, not to the date field, so it must
+// ignore whatever date the URL is carrying rather than reading it back as an
+// anchor.
+func TestRollingWindowIgnoresTheDateField(t *testing.T) {
+	t.Parallel()
+
+	h := &webHandlers{loc: time.UTC}
+	before := time.Now().In(time.UTC)
+	win := h.parseWindow(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?date=2020-01-01&view=6h", nil))
+	after := time.Now().In(time.UTC)
+
+	if win.view != dashboardViewHour6 {
+		t.Fatalf("view = %q, want %q", win.view, dashboardViewHour6)
+	}
+	if got := win.end.Sub(win.start); got != 6*time.Hour {
+		t.Errorf("span = %s, want 6h", got)
+	}
+	if win.end.Before(before.Truncate(time.Minute)) || win.end.After(after) {
+		t.Errorf("window ends at %s, want the present", win.end)
+	}
+	if win.day.Year() == 2020 {
+		t.Error("window took its day from the stale date parameter")
+	}
+}
+
+// The date is left out of a rolling URL entirely: a reload of a link written
+// an hour ago should still mean "the last six hours", not six hours ending
+// whenever it was copied.
+func TestRollingFilterURLCarriesNoDate(t *testing.T) {
+	t.Parallel()
+
+	h := &webHandlers{loc: time.UTC}
+	win := h.parseWindow(httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/?view=12h", nil))
+
+	rec := httptest.NewRecorder()
+	pushFilterURL(rec, "/", nil, win)
+
+	if got := rec.Header().Get("HX-Push-Url"); got != "/?view=12h" {
+		t.Errorf("HX-Push-Url = %q, want %q", got, "/?view=12h")
+	}
+}
+
+func TestRollingWindowLabelsTheSpanAndClock(t *testing.T) {
+	t.Parallel()
+
+	end := time.Date(2026, 8, 3, 20, 20, 0, 0, time.UTC)
+	win := &dashboardWindow{view: dashboardViewHour6, start: end.Add(-6 * time.Hour), end: end}
+
+	if got, want := win.label(), "Last 6 hours, 14:20 - 20:20"; got != want {
+		t.Errorf("label() = %q, want %q", got, want)
+	}
+}

@@ -153,9 +153,13 @@ func (h *webHandlers) detailData(w http.ResponseWriter, r *http.Request) (*pageD
 	data.Detail = detail
 	data.TotalSeconds = entry.Seconds
 	subject := focus{records: matched, fill: entry.Fill}
-	if win.view == dashboardViewWeek {
+	switch roll, rolling := win.rolling(); {
+	case rolling:
+		data.Chart = layoutFocusRange(activity.Records, subject, devices, win.start, win.end,
+			tickMarks(win.start, win.end, roll.tick))
+	case win.view == dashboardViewWeek:
 		data.Chart = layoutFocusWeek(activity.Records, subject, devices, win.start, win.end)
-	} else {
+	default:
 		data.Chart = layoutFocusDay(activity.Records, subject, devices, win.day)
 	}
 	data.Truncated = activity.TimelineTruncated

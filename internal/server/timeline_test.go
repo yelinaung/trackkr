@@ -143,10 +143,54 @@ func TestParseDashboardView(t *testing.T) {
 		"month": dashboardViewDay,
 		"week":  dashboardViewWeek,
 		"WEEK":  dashboardViewDay,
+		"1h":    dashboardViewHour1,
+		"6h":    dashboardViewHour6,
+		"12h":   dashboardViewHour12,
+		"24h":   dashboardViewDay,
+		"1H":    dashboardViewDay,
 	} {
 		if got := parseDashboardView(raw); got != want {
 			t.Errorf("parseDashboardView(%q) = %q, want %q", raw, got, want)
 		}
+	}
+}
+
+// Every rolling view has to divide into whole axis cells, or the last cell
+// stands for less time than the ones beside it while being drawn the same
+// width -- the one thing a timeline offers over a list.
+func TestRollingViewsDivideIntoWholeTicks(t *testing.T) {
+	t.Parallel()
+
+	for name, roll := range rollingViews {
+		if roll.tick <= 0 {
+			t.Errorf("%s: tick = %s, want a positive step", name, roll.tick)
+			continue
+		}
+		if roll.span%roll.tick != 0 {
+			t.Errorf("%s: span %s does not divide into %s ticks", name, roll.span, roll.tick)
+		}
+		if cells := roll.span / roll.tick; cells < 4 || cells > 6 {
+			t.Errorf("%s: %d axis cells, want 4 to 6", name, cells)
+		}
+	}
+}
+
+// A rolling window ends now, so its axis starts on a minute that is almost
+// never the top of an hour.
+func TestTickMarksLabelTheMinute(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 8, 3, 14, 20, 0, 0, time.UTC)
+	marks := tickMarks(start, start.Add(6*time.Hour), time.Hour)
+
+	if len(marks) != 6 {
+		t.Fatalf("marks = %d, want 6", len(marks))
+	}
+	if marks[0].Label != "14:20" {
+		t.Errorf("first label = %q, want %q", marks[0].Label, "14:20")
+	}
+	if marks[5].Label != "19:20" {
+		t.Errorf("last label = %q, want %q", marks[5].Label, "19:20")
 	}
 }
 
@@ -580,5 +624,33 @@ func TestChartWindowHandlesDSTDays(t *testing.T) {
 				t.Errorf("hour marks = %d, want %d", got, want)
 			}
 		})
+	}
+}
+
+// The day chart earns its scrolling; a rolling window does not, and letting
+// it scroll would hide the newest activity off the right edge.
+func TestOnlyRollingChartsAreCompact(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 8, 4, 4, 17, 0, 0, time.UTC)
+	end := start.Add(6 * time.Hour)
+	records := []db.ActivityRecordRow{{
+		DeviceID:  7,
+		AppName:   testFirefoxLower,
+		StartedAt: start.Add(time.Hour),
+		EndedAt:   start.Add(90 * time.Minute),
+	}}
+	devices := []db.DeviceRow{{ID: 7, Name: testLaptop}}
+	subject := focus{records: records}
+
+	if !layoutFocusRange(records, subject, devices, start, end,
+		tickMarks(start, end, time.Hour)).Compact {
+		t.Error("rolling detail chart is not compact")
+	}
+	if layoutFocusWeek(records, subject, devices, start, start.AddDate(0, 0, 7)).Compact {
+		t.Error("week chart should keep the minimum drawing width")
+	}
+	if layout(records, devices, start).Compact {
+		t.Error("day chart should keep the minimum drawing width")
 	}
 }

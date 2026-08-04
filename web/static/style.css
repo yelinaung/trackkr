@@ -398,6 +398,13 @@ button:focus-visible,
   padding-bottom: 0.5rem;
 }
 
+/* A rolling window draws four to six cells, so it has no need of the day
+   chart's floor: without this it would scroll, hiding the newest activity
+   off the right edge -- the one part of "the last hour" worth seeing. */
+.timeline--compact {
+  --chart-min: 0;
+}
+
 .timeline__axis {
   display: flex;
   min-width: var(--chart-min);
