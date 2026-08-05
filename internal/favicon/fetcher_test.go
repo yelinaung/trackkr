@@ -16,7 +16,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sergeymakinen/go-ico"
 	"github.com/yelinaung/trackkr/internal/icon"
 )
 
@@ -161,45 +160,6 @@ func TestSafeDialerPinsResolvedAddress(t *testing.T) {
 	}
 }
 
-func TestNormalizeImage(t *testing.T) {
-	t.Parallel()
-
-	source := testImagePNG(t, 32, 16)
-	got, err := normalizeImage(source)
-	if err != nil {
-		t.Fatalf("normalizeImage: %v", err)
-	}
-	details, err := icon.ValidatePNG(got)
-	if err != nil {
-		t.Fatalf("normalized PNG: %v", err)
-	}
-	if details.Width != normalizedDimension || details.Height != normalizedDimension {
-		t.Errorf("dimensions = %dx%d, want 64x64", details.Width, details.Height)
-	}
-}
-
-func TestNormalizeImageAcceptsICO(t *testing.T) {
-	t.Parallel()
-
-	source := image.NewNRGBA(image.Rect(0, 0, 32, 32))
-	var encoded bytes.Buffer
-	if err := ico.Encode(&encoded, source); err != nil {
-		t.Fatalf("encoding ICO fixture: %v", err)
-	}
-	if _, err := normalizeImage(encoded.Bytes()); err != nil {
-		t.Fatalf("normalizeImage(ICO): %v", err)
-	}
-}
-
-func TestNormalizeImageRejectsOversizedDimensions(t *testing.T) {
-	t.Parallel()
-
-	source := testImagePNG(t, maxSourceDimension+1, 1)
-	if _, err := normalizeImage(source); err == nil {
-		t.Fatal("normalizeImage accepted oversized dimensions")
-	}
-}
-
 func TestIconLinksKeepsSafeHTTPSCandidates(t *testing.T) {
 	t.Parallel()
 
@@ -247,9 +207,7 @@ func TestFetcherFallsBackToHTMLIcon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if _, err := icon.ValidatePNG(got); err != nil {
-		t.Fatalf("result: %v", err)
-	}
+	assertNormalized(t, got)
 	if strings.Join(requests, ",") != "/favicon.ico,/favicon.png,,/assets/icon.png" {
 		t.Errorf("requests = %v", requests)
 	}
@@ -283,9 +241,7 @@ func TestFetcherFallsBackToConventionalPNG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
-	if _, err := icon.ValidatePNG(got); err != nil {
-		t.Fatalf("result: %v", err)
-	}
+	assertNormalized(t, got)
 	if strings.Join(requests, ",") != "/favicon.ico,/favicon.png" {
 		t.Errorf("requests = %v", requests)
 	}
@@ -371,4 +327,23 @@ func testImagePNG(t *testing.T, width, height int) []byte {
 		t.Fatalf("encoding PNG fixture: %v", err)
 	}
 	return output.Bytes()
+}
+
+// assertNormalized checks that the fetch path actually normalized its
+// result rather than passing the source bytes through.
+//
+// ValidatePNG alone cannot tell: every fixture here is already a valid
+// PNG, so returning the untouched 24x24 or 32x32 source would satisfy
+// it. Asserting the canvas size is what makes these two tests the
+// regression cover for the normalizer living in another package.
+func assertNormalized(t *testing.T, data []byte) {
+	t.Helper()
+	details, err := icon.ValidatePNG(data)
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if details.Width != icon.NormalizedDimension || details.Height != icon.NormalizedDimension {
+		t.Errorf("result is %dx%d, want %dx%[3]d: the fetch path did not normalize",
+			details.Width, details.Height, icon.NormalizedDimension)
+	}
 }

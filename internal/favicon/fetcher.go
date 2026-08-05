@@ -6,12 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"image"
-	_ "image/gif"
-	_ "image/jpeg"
-	"image/png"
 	"io"
-	"math"
 	"mime"
 	"net/http"
 	"net/netip"
@@ -20,20 +15,14 @@ import (
 	"slices"
 	"strings"
 
-	_ "github.com/sergeymakinen/go-ico"
 	"github.com/yelinaung/trackkr/internal/icon"
-	"golang.org/x/image/draw"
 	"golang.org/x/net/html"
 	"golang.org/x/net/idna"
 )
 
 const (
-	maxSourceBytes          = 256 << 10
 	maxHTMLBytes            = 128 << 10
-	maxSourceDimension      = 1024
-	maxSourcePixels         = 1024 * 1024
 	maxDiscoveredIcons      = 4
-	normalizedDimension     = 64
 	conventionalIconPath    = "/favicon.ico"
 	conventionalPNGIconPath = "/favicon.png"
 )
@@ -253,21 +242,21 @@ func (f *Fetcher) fetchImage(ctx context.Context, target *url.URL) ([]byte, erro
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, statusFailure("favicon", response.StatusCode)
 	}
-	if response.ContentLength > maxSourceBytes {
+	if response.ContentLength > icon.MaxSourceBytes {
 		return nil, definitiveFailure("favicon is too large")
 	}
 	if mediaType, _, parseErr := mime.ParseMediaType(response.Header.Get("Content-Type")); parseErr == nil && mediaType == "image/svg+xml" {
 		return nil, definitiveFailure("SVG favicons are not accepted")
 	}
 
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxSourceBytes+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, icon.MaxSourceBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > maxSourceBytes {
+	if len(data) > icon.MaxSourceBytes {
 		return nil, definitiveFailure("favicon is too large")
 	}
-	normalized, err := normalizeImage(data)
+	normalized, err := icon.Normalize(data)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errDefinitive, err)
 	}
@@ -284,54 +273,6 @@ func validateRemoteURL(target *url.URL) error {
 	}
 	target.Host = canonical
 	return nil
-}
-
-func normalizeImage(data []byte) ([]byte, error) {
-	config, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("decoding favicon configuration: %w", err)
-	}
-	if config.Width < 1 || config.Height < 1 ||
-		config.Width > maxSourceDimension || config.Height > maxSourceDimension ||
-		config.Width*config.Height > maxSourcePixels {
-		return nil, errors.New("favicon dimensions exceed the source limit")
-	}
-
-	source, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("decoding favicon: %w", err)
-	}
-	bounds := source.Bounds()
-	if bounds.Dx() != config.Width || bounds.Dy() != config.Height {
-		return nil, errors.New("favicon dimensions changed during decode")
-	}
-
-	scale := math.Min(
-		float64(normalizedDimension)/float64(bounds.Dx()),
-		float64(normalizedDimension)/float64(bounds.Dy()),
-	)
-	width := max(1, int(math.Round(float64(bounds.Dx())*scale)))
-	height := max(1, int(math.Round(float64(bounds.Dy())*scale)))
-	x := (normalizedDimension - width) / 2
-	y := (normalizedDimension - height) / 2
-	destination := image.NewNRGBA(image.Rect(0, 0, normalizedDimension, normalizedDimension))
-	draw.CatmullRom.Scale(
-		destination,
-		image.Rect(x, y, x+width, y+height),
-		source,
-		bounds,
-		draw.Over,
-		nil,
-	)
-
-	var output bytes.Buffer
-	if err := png.Encode(&output, destination); err != nil {
-		return nil, fmt.Errorf("encoding normalized favicon: %w", err)
-	}
-	if _, err := icon.ValidatePNG(output.Bytes()); err != nil {
-		return nil, err
-	}
-	return output.Bytes(), nil
 }
 
 func faviconPriority(target *url.URL) int {

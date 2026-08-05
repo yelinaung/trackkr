@@ -1,4 +1,11 @@
-// Package icon defines application icon identity and image validation.
+// Package icon defines application icon identity, image validation, and
+// raster normalization shared by the daemon and the server.
+//
+// The package performs no HTTP, database, filesystem, or platform-native
+// work. Decoding and scaling bytes handed to it is pure computation and
+// stays; anything that has to name a URL, a row, or a path belongs in the
+// caller. The freedesktop icon search in internal/tracker takes its roots
+// as arguments for this reason.
 package icon
 
 import (
@@ -17,8 +24,12 @@ const (
 )
 
 var (
-	// ErrInvalid marks an icon that does not satisfy the shared contract.
-	ErrInvalid = errors.New("invalid application icon")
+	// ErrInvalid marks an image that does not satisfy the shared
+	// contract. It says "icon" rather than "application icon" because
+	// Normalize serves site favicons too, and a favicon failure reading
+	// "invalid application icon" sends the next reader looking in the
+	// wrong package.
+	ErrInvalid = errors.New("invalid icon image")
 	pngHeader  = []byte("\x89PNG\r\n\x1a\n")
 )
 

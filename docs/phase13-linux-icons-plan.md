@@ -161,6 +161,8 @@ both argued under "Size selection" below: `Scale` folds into the
 candidate size instead of gating eligibility, and near-miss sizes are
 ranked upward rather than by absolute distance.
 
+The search order itself is unchanged:
+
 1. Base directories in fixed order: `$XDG_DATA_HOME/icons`, `~/.icons`
    for legacy installs, each `$XDG_DATA_DIRS/icons`, then
    `/usr/share/pixmaps` as the unthemed fallback.
@@ -495,7 +497,10 @@ detector through a duck-typed `interface{ Close() }`
   selection, bounded reads.
 - `internal/tracker/icon_xdg_linux_test.go`
 - `internal/icon/raster.go` -- the shared normalizer, with
-  `MaxSourceBytes`.
+  `MaxSourceBytes` and an exported `NormalizedDimension`. The canvas
+  size stops being a literal 64 here: it crosses the package boundary
+  to become the resolver's search target, so "the smallest icon at or
+  above 64" below means at or above that constant.
 - `internal/icon/raster_test.go`
 
 ## Changed Files
@@ -506,7 +511,11 @@ detector through a duck-typed `interface{ Close() }`
   which also gains `Close`; `NewWindowDetector` builds one resolver and
   hands it to whichever detector it returns.
 - `internal/favicon/fetcher.go` -- call `icon.Normalize`, drop the local
-  copy and its constants.
+  copy, its four constants, and the image decoder imports that came with
+  it; `maxSourceBytes` becomes `icon.MaxSourceBytes` at the three fetch
+  call sites.
+- `internal/favicon/fetcher_test.go` -- the three normalizer unit tests
+  move out with the function.
 - `internal/icon/app.go` -- move Phase 6's no-filesystem constraint into
   the package doc comment.
 - `internal/tracker/config.go` -- add the optional `icon_theme` field and
@@ -520,9 +529,13 @@ detector through a duck-typed `interface{ Close() }`
 ## Steps
 
 1. Move the normalizer into `internal/icon/raster.go` and add
-   `MaxSourceBytes`. No behaviour change for favicons beyond the
-   limit moving inward; the existing favicon tests must pass
-   untouched, which is the proof of that.
+   `MaxSourceBytes`. No behaviour change for favicons beyond the limit
+   moving inward.
+
+    The three unit tests move with it, so they are not the proof. What
+    proves it is the fetch path: `TestFetcherFallsBackToHTMLIcon` and
+    `TestFetcherFallsBackToConventionalPNG` drive a whole fetch through
+    `icon.Normalize` and must pass with no edit at all.
 2. Write the INI parser: group-scoped, first value wins, iconstring
    unescaping. It serves `.desktop` and `index.theme` both.
 3. Derive the base directories, with the specification's defaults and
@@ -624,13 +637,33 @@ below, since `t.Setenv` panics in a parallel test.
   and with `HOME` unset no user-level directory is contributed.
 - Source bounds still reject a 2000x2000 PNG and a declared-small,
   actually-large one.
-- Normalizer parity: `TestNormalizeImage`,
-  `TestNormalizeImageAcceptsICO` and
-  `TestNormalizeImageRejectsOversizedDimensions` pass against the
-  moved function with no edit beyond the call site. There is no
-  `internal/favicon/testdata` to compare against -- those tests build
-  their images inline with `png.Encode` -- so they are the parity
-  check rather than a fixture diff.
+- Normalizer parity: the three `normalizeImage` tests move to
+  `internal/icon/raster_test.go` with the function, and lose the now
+  redundant `Image` from their names -- `TestNormalize`,
+  `TestNormalizeAcceptsICO` and
+  `TestNormalizeRejectsOversizedDimensions`. Grepping the old names
+  finds nothing, so the rename is recorded here rather than left to
+  look like a deletion.
+
+    They cannot stay in `internal/favicon` and change only their call
+    site, as an earlier draft of this list assumed: they also read
+    `maxSourceDimension`, which is package-private and moves too.
+    Exporting it to keep three tests in place would widen the package's
+    API for nothing.
+
+    Parity is instead proved by what stays: `TestFetcherFallsBackToHTMLIcon`
+    and `TestFetcherFallsBackToConventionalPNG` run the full fetch path
+    through `icon.Normalize`. There is no `internal/favicon/testdata` to
+    diff against -- every test builds its images inline with
+    `png.Encode` -- so an end-to-end path is the available check.
+
+    Both gain a dimension assertion to be worth anything. They only
+    called `icon.ValidatePNG`, and their fixtures are already valid
+    PNGs, so a fetch path that returned the untouched 24x24 or 32x32
+    source would have passed. Asserting the result is
+    `NormalizedDimension` square is what makes them detect a normalizer
+    that stopped being called: stubbing out `icon.Normalize` fails them
+    with `result is 24x24, want 64x64`.
 - Bounded reads distinguish at the boundary: a file of exactly
   `MaxSourceBytes` normalizes, and one a single byte larger is
   refused. Capping the reader at `MaxSourceBytes` instead of
