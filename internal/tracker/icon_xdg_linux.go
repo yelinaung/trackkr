@@ -553,7 +553,8 @@ func regularFile(path string) bool {
 
 // parseDesktopFile reads the INI dialect shared by .desktop files and
 // index.theme: groups in brackets, key=value beneath, first value
-// winning, and iconstring escapes decoded.
+// winning, and the escapes of the specification's iconstring value
+// type -- the type Icon= carries -- decoded.
 func parseDesktopFile(path string) map[string]map[string]string {
 	file, err := os.Open(path) // nosemgrep // gitlab-advanced-sast-exclude -- path is composed from indexed icon roots.
 	if err != nil {
@@ -690,6 +691,11 @@ func gsettingsTheme(*iconRoots) string {
 func gtkSettingsTheme(roots *iconRoots) string {
 	for _, dir := range roots.configDirs {
 		for _, version := range []string{"gtk-4.0", "gtk-3.0"} {
+			// parseDesktopFile returns nil for a file that is absent or
+			// unreadable, and the chained index below is safe on it:
+			// reading a missing key from a nil map yields the zero value,
+			// so an absent file and a file without a [Settings] group both
+			// arrive here as the empty string.
 			groups := parseDesktopFile(filepath.Join(dir, version, "settings.ini"))
 			if name := strings.TrimSpace(groups["Settings"]["gtk-icon-theme-name"]); name != "" {
 				return name

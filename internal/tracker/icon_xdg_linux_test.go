@@ -971,3 +971,41 @@ func TestResolverHiddenEntryYieldsItsClassToTheNextEntry(t *testing.T) {
 		t.Errorf("shade = %d, want 74: the masked entry kept its class mapping", shade)
 	}
 }
+
+// Reading a missing key from a nil map yields the zero value in Go, so
+// the chained lookup in gtkSettingsTheme is safe when parseDesktopFile
+// returns nil or the file has no [Settings] group. That is subtle
+// enough to be worth pinning rather than re-deriving.
+func TestGtkSettingsThemeSurvivesMissingAndMalformedFiles(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		roots *iconRoots
+	}{
+		{"no roots at all", &iconRoots{}},
+		{"directory with no settings files", &iconRoots{configDirs: []string{t.TempDir()}}},
+		{"directory that does not exist", &iconRoots{configDirs: []string{"/nonexistent-icon-roots"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := gtkSettingsTheme(tc.roots); got != "" {
+				t.Errorf("theme = %q, want empty", got)
+			}
+		})
+	}
+
+	t.Run("files without a Settings group", func(t *testing.T) {
+		t.Parallel()
+		tree := newIconTree(t)
+		tree.write("usr/config/gtk-3.0/settings.ini", "[NotSettings]\ngtk-icon-theme-name=Ignored\n")
+		tree.write("usr/config/gtk-4.0/settings.ini", "this is not ini at all")
+
+		roots := &iconRoots{configDirs: []string{tree.path("usr/config")}}
+		if got := gtkSettingsTheme(roots); got != "" {
+			t.Errorf("theme = %q, want empty: only the [Settings] group counts", got)
+		}
+	})
+}
