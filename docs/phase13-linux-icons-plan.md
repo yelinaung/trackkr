@@ -536,8 +536,10 @@ detector through a duck-typed `interface{ Close() }`
     proves it is the fetch path: `TestFetcherFallsBackToHTMLIcon` and
     `TestFetcherFallsBackToConventionalPNG` drive a whole fetch through
     `icon.Normalize` and must pass with no edit at all.
-2. Write the INI parser: group-scoped, first value wins, iconstring
-   unescaping. It serves `.desktop` and `index.theme` both.
+2. Write the INI parser: group-scoped, first value wins, and unescaping
+   for `iconstring` -- the specification's name for the value type
+   `Icon=` carries, which permits `\s`, `\n`, `\t`, `\r` and `\\`.
+   The parser serves `.desktop` and `index.theme` both.
 3. Derive the base directories, with the specification's defaults and
    the absolute-path filter.
 4. Build the entry index in one post-masking pass: desktop file IDs,
