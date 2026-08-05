@@ -67,6 +67,13 @@ type Config struct {
 
 	MacOSReadTitles             bool `toml:"macos_read_titles"`
 	MacOSPromptForAccessibility bool `toml:"macos_prompt_for_accessibility"`
+
+	// IconTheme names the freedesktop icon theme application icons are
+	// resolved against. Empty means "detect it", which is right almost
+	// always; this exists because detection reads GTK settings and a
+	// desktop that stores the name somewhere else would otherwise leave
+	// every application on a monogram with no way to correct it.
+	IconTheme string `toml:"icon_theme"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -131,6 +138,10 @@ func (c *Config) finalize() error {
 	c.DeviceName = strings.TrimSpace(c.DeviceName)
 	c.ExtensionToken = strings.TrimSpace(c.ExtensionToken)
 	c.ExtensionAddr = strings.TrimSpace(c.ExtensionAddr)
+
+	// A whitespace-only theme name would be treated as configured and
+	// suppress detection, resolving nothing.
+	c.IconTheme = strings.TrimSpace(c.IconTheme)
 
 	return c.Validate()
 }
@@ -231,6 +242,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("TRACKKR_EXTENSION_TOKEN"); v != "" {
 		cfg.ExtensionToken = v
+	}
+	if v := os.Getenv("TRACKKR_ICON_THEME"); v != "" {
+		cfg.IconTheme = v
 	}
 }
 

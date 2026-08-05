@@ -54,6 +54,7 @@ func clearTrackkrEnv(t *testing.T) {
 	t.Setenv("TRACKKR_API_KEY", "")
 	t.Setenv("TRACKKR_DEVICE_NAME", "")
 	t.Setenv("TRACKKR_EXTENSION_TOKEN", "")
+	t.Setenv("TRACKKR_ICON_THEME", "")
 }
 
 func TestLoadConfig(t *testing.T) {
@@ -135,6 +136,74 @@ device_name = "from-file"
 	}
 	if cfg.DeviceName != "env-device" {
 		t.Errorf("DeviceName = %q, want env override", cfg.DeviceName)
+	}
+}
+
+// TestLoadConfigIconTheme pins the precedence the Linux icon resolver
+// reads. An empty theme name means "detect it", so the difference
+// between unset and configured decides whether detection runs at all.
+func TestLoadConfigIconTheme(t *testing.T) {
+	clearTrackkrEnv(t)
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	content := `
+server_url = "https://trackkr.example.com"
+icon_theme = "  Yaru  "
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	load := func(t *testing.T) *Config {
+		t.Helper()
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		return cfg
+	}
+
+	// The file value is trimmed. A whitespace-only name would count as
+	// configured and suppress detection while resolving nothing.
+	if got := load(t).IconTheme; got != "Yaru" {
+		t.Errorf("IconTheme from file = %q, want %q", got, "Yaru")
+	}
+
+	// An empty variable must not blank a configured theme. Exporting
+	// TRACKKR_ICON_THEME= would otherwise disable theme resolution and
+	// put every application back on a monogram.
+	t.Setenv("TRACKKR_ICON_THEME", "")
+	if got := load(t).IconTheme; got != "Yaru" {
+		t.Errorf("IconTheme with empty override = %q, want file value %q", got, "Yaru")
+	}
+
+	t.Setenv("TRACKKR_ICON_THEME", "Adwaita")
+	if got := load(t).IconTheme; got != "Adwaita" {
+		t.Errorf("IconTheme = %q, want env override %q", got, "Adwaita")
+	}
+
+	// A whitespace-only override is an override, then trims to empty,
+	// which is the documented way to force detection back on.
+	t.Setenv("TRACKKR_ICON_THEME", "   ")
+	if got := load(t).IconTheme; got != "" {
+		t.Errorf("IconTheme from blank override = %q, want empty", got)
+	}
+}
+
+func TestLoadConfigIconThemeDefaultsEmpty(t *testing.T) {
+	clearTrackkrEnv(t)
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("server_url = \"https://trackkr.example.com\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.IconTheme != "" {
+		t.Errorf("IconTheme = %q, want empty so detection runs", cfg.IconTheme)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/yelinaung/trackkr/internal/icon"
 )
 
 // Sway speaks the i3 IPC protocol: the magic string, then the payload
@@ -78,6 +79,10 @@ type swayNode struct {
 // a held connection costs nothing next to a process spawn per poll.
 type SwayWindowDetector struct {
 	logger *zerolog.Logger
+
+	// icons resolves application artwork, or nil to report none. It owns
+	// a worker goroutine, so Close must stop it as well as the socket.
+	icons *appIconCache
 
 	// socketPath is mutable because a restarted compositor usually
 	// listens somewhere new. See rediscoverLocked.
@@ -155,11 +160,28 @@ func (s *SwayWindowDetector) ActiveWindow(ctx context.Context) (WindowInfo, erro
 	if node == nil {
 		return WindowInfo{}, ErrNoActiveWindow
 	}
-	return WindowInfo{AppName: swayAppName(node), Title: strings.TrimSpace(node.Name)}, nil
+	appName := swayAppName(node)
+	return WindowInfo{
+		AppName: appName,
+		Title:   strings.TrimSpace(node.Name),
+		AppIcon: s.appIcon(ctx, appName),
+	}, nil
 }
 
-// Close releases the IPC connection.
+// appIcon resolves artwork for a window, or nil when the detector has no
+// cache or the desktop offers nothing usable.
+func (s *SwayWindowDetector) appIcon(ctx context.Context, appName string) *icon.App {
+	if s.icons == nil {
+		return nil
+	}
+	return s.icons.iconForApp(ctx, appInfo{Name: appName})
+}
+
+// Close releases the IPC connection and stops the icon worker.
 func (s *SwayWindowDetector) Close() {
+	if s.icons != nil {
+		s.icons.Close()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dropConnLocked()
