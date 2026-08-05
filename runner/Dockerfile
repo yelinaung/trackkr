@@ -17,7 +17,7 @@ ARG GORELEASER_VERSION=2.17.0
 # renovate: datasource=github-releases depName=gitleaks/gitleaks versioning=semver extractVersion=^v(?<version>.*)$
 ARG GITLEAKS_VERSION=8.30.1
 # renovate: datasource=pypi depName=semgrep versioning=pep440
-ARG SEMGREP_VERSION=1.170.0
+ARG SEMGREP_VERSION=1.170.1
 
 # Use bash with pipefail for RUN steps that use curl|tar pipelines.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
