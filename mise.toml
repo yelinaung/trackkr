@@ -10,7 +10,7 @@ prek = "0.4.11"
 # Mozilla's own validator and is the only thing that checks the manifest
 # and API usage against strict_min_version.
 node = "24.18.0"
-"npm:web-ext" = "10.5.0"
+"npm:web-ext" = "10.6.0"
 rumdl = "latest"
 
 [tasks.test]
