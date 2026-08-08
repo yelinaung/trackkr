@@ -26,9 +26,11 @@ func TestParseIdleMsSurvivesArbitraryText(t *testing.T) {
 		output := hegel.Draw(ht, hegel.Text())
 		idle, err := parseIdleMs(output)
 
-		_, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
-		if (err != nil) != (parseErr != nil) {
-			ht.Fatalf("parseIdleMs(%q) error = %v, but ParseInt error = %v", output, err, parseErr)
+		ms, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+		usable := parseErr == nil && ms >= 0 && ms <= maxIdleMs
+		if usable != (err == nil) {
+			ht.Fatalf("parseIdleMs(%q) error = %v, but the text parses to %d (usable = %v)",
+				output, err, ms, usable)
 		}
 		if err != nil && idle != 0 {
 			ht.Fatalf("parseIdleMs(%q) failed but returned %v", output, idle)
@@ -36,40 +38,41 @@ func TestParseIdleMsSurvivesArbitraryText(t *testing.T) {
 	})
 }
 
-// TestParseIdleMsConvertsExactly checks the conversion against an oracle
-// that is not the implementation.
+// TestParseIdleMsConvertsExactlyOrRefuses runs the whole int64 domain
+// and checks the conversion against an oracle that is not the
+// implementation.
 //
 // Asserting idle == time.Duration(ms) * time.Millisecond would restate
 // the function's own expression, overflow included, and so would agree
 // with it at exactly the inputs worth asking about. math/big does the
-// multiply without wrapping, which makes the failure visible: past
-// math.MaxInt64 / 1e6 milliseconds, roughly 292 years, the production
-// expression wraps and the exact product no longer fits in an int64.
+// multiply without wrapping, so the two disagree wherever the production
+// expression would have wrapped.
 //
-// The draw is bounded to what the conversion can represent, and the
-// bound is the finding. xprintidle reports milliseconds since the last
-// input event, so no real session reaches it, but parseIdleMs accepts
-// any int64 the text spells and wraps silently past the limit rather
-// than refusing it.
-func TestParseIdleMsConvertsExactly(t *testing.T) {
+// This test found parseIdleMs returning -2562047h47m16s for an input of
+// 9223372036855. The function now refuses everything outside the range
+// xprintidle can report, and the property asserts the whole contract:
+// accepted exactly on [0, maxIdleMs], exact within it.
+func TestParseIdleMsConvertsExactlyOrRefuses(t *testing.T) {
 	t.Parallel()
 
-	const maxRepresentableMs = math.MaxInt64 / int64(time.Millisecond)
-
 	hegel.Test(t, func(ht *hegel.T) {
-		ms := hegel.Draw(ht, hegel.Integers(-maxRepresentableMs, maxRepresentableMs))
-
+		ms := hegel.Draw(ht, hegel.Integers[int64](math.MinInt64, math.MaxInt64))
 		idle, err := parseIdleMs(strconv.FormatInt(ms, 10))
+
+		if ms < 0 || ms > maxIdleMs {
+			if err == nil {
+				ht.Fatalf("parseIdleMs(%d) returned %v; a count outside [0, %d] is not an idle time",
+					ms, idle, maxIdleMs)
+			}
+			return
+		}
+
 		if err != nil {
 			ht.Fatalf("parseIdleMs(%d): %v", ms, err)
 		}
-
 		want := new(big.Int).Mul(big.NewInt(ms), big.NewInt(int64(time.Millisecond)))
-		if !want.IsInt64() {
-			ht.Fatalf("%d ms does not fit in an int64 of nanoseconds", ms)
-		}
-		if int64(idle) != want.Int64() {
-			ht.Fatalf("parseIdleMs(%d) = %d ns, want %d ns", ms, int64(idle), want.Int64())
+		if !want.IsInt64() || int64(idle) != want.Int64() {
+			ht.Fatalf("parseIdleMs(%d) = %d ns, want %s ns", ms, int64(idle), want)
 		}
 	})
 }

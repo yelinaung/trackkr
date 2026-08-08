@@ -283,14 +283,26 @@ func (t *templates) renderPartial(w http.ResponseWriter, name string, data *page
 
 // humanDuration renders seconds the way a person reads a day: "3h 12m",
 // "48m", "31s".
+//
+// The arithmetic stays in seconds rather than going through
+// time.Duration, which counts nanoseconds and so overflows above roughly
+// 9.2e9 seconds -- 292 years. That is not the unreachable number it
+// sounds like: a total is the sum of up to ActivitySourceLimit records
+// clipped to the query window, and 25000 records across a week already
+// exceed it. Overflowing there rendered a negative duration on the
+// dashboard.
+//
+// A negative input renders as zero. Totals are sums of non-negative
+// durations, so a negative one means the count above it is already
+// wrong, and printing "-1193h 02m" states that badly.
 func humanDuration(seconds int64) string {
-	d := time.Duration(seconds) * time.Second
+	seconds = max(seconds, 0)
 	switch {
-	case d >= time.Hour:
-		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
-	case d >= time.Minute:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case seconds >= 3600:
+		return fmt.Sprintf("%dh %02dm", seconds/3600, (seconds%3600)/60)
+	case seconds >= 60:
+		return fmt.Sprintf("%dm", seconds/60)
 	default:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
+		return fmt.Sprintf("%ds", seconds)
 	}
 }

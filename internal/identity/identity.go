@@ -10,10 +10,10 @@ package identity
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // Producer names the component that observed the activity. It is assigned by
@@ -59,12 +59,35 @@ func New() (string, error) {
 //
 // Version 8 is the RFC 9562 slot for custom, implementation-defined layouts,
 // which is exactly what a content digest is.
+//
+// Each field is written length-prefixed rather than joined on a separator.
+// Joining on "\x00" made the digest ambiguous, because a part may contain
+// that byte: an application name and a window title that differ only in
+// where a NUL falls produced identical input, so two distinct records
+// derived one identity and the second was discarded as a replay of the
+// first. Nothing sanitizes titles on the way here -- they arrive from the
+// window manager -- so the encoding has to carry the boundaries itself.
 func Derive(producer Producer, parts ...string) string {
+	digest := sha256.New()
+	var header [8]byte
+	write := func(value string) {
+		binary.BigEndian.PutUint64(header[:], uint64(len(value)))
+		_, _ = digest.Write(header[:])
+		_, _ = digest.Write([]byte(value))
+	}
+
 	// The producer is part of the digest input: the same segment observed by
 	// the desktop tracker and by a browser is two records, not one.
-	sum := sha256.Sum256([]byte(string(producer) + "\x00" + strings.Join(parts, "\x00")))
+	write(string(producer))
+	// The count too, so Derive(p) and Derive(p, "") stay distinct.
+	binary.BigEndian.PutUint64(header[:], uint64(len(parts)))
+	_, _ = digest.Write(header[:])
+	for _, part := range parts {
+		write(part)
+	}
+
 	var raw [16]byte
-	copy(raw[:], sum[:16])
+	copy(raw[:], digest.Sum(nil)[:16])
 	raw[6] = (raw[6] & 0x0f) | 0x80 // version 8
 	raw[8] = (raw[8] & 0x3f) | 0x80 // RFC 4122 variant
 	return format(raw)

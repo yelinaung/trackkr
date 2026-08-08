@@ -39,45 +39,17 @@ func TestDeriveAlwaysProducesACanonicalVersion8(t *testing.T) {
 // different inputs must not land on one identity, or a record conflicts
 // as a replay of something it is not and is dropped.
 //
-// The claim holds only inside the shape the one caller uses, and the two
-// restrictions below are the finding rather than housekeeping. Derive
-// hashes `producer + "\x00" + strings.Join(parts, "\x00")` and commits
-// neither the count nor the lengths, so anything that produces the same
-// joined string produces the same ID.
-//
-// Fixed arity. Derive() and Derive("") both join to "", so they collide.
-// Unreachable today: reporter.ensureIdentity always passes exactly five
-// parts.
-//
-// No NUL in a part. At any arity, content can slide across a separator:
-// ("a", "b\x00c", "d") and ("a\x00b", "c", "d") join identically, so an
-// application name and a window title that differ only in where a NUL
-// falls derive one identity, and the second record is discarded as a
-// replay of the first. Titles come from the window manager, which is why
-// this is a restriction and not an axiom.
-//
-// Both disappear if Derive commits the part count and lengths to the
-// digest. That changes every derived ID, so it is a decision about
-// legacy replay stability, not a free fix.
+// Arity and content are both unrestricted, which they could not be while
+// Derive joined its parts on "\x00". That encoding lost the boundaries,
+// so this property held only at fixed arity with no NUL in any part.
 func TestDeriveDistinguishesDifferentContent(t *testing.T) {
 	t.Parallel()
 
-	const partCount = 5 // reporter.ensureIdentity passes exactly this many
-	partGen := hegel.Text().ExcludeCharacters("\x00")
-
-	drawParts := func(ht *hegel.T) []string {
-		parts := make([]string, partCount)
-		for i := range parts {
-			parts[i] = hegel.Draw(ht, partGen)
-		}
-		return parts
-	}
-
 	hegel.Test(t, func(ht *hegel.T) {
 		leftProducer := hegel.Draw(ht, hegel.SampledFrom(testProducers))
-		leftParts := drawParts(ht)
+		leftParts := hegel.Draw(ht, hegel.Lists(hegel.Text()))
 		rightProducer := hegel.Draw(ht, hegel.SampledFrom(testProducers))
-		rightParts := drawParts(ht)
+		rightParts := hegel.Draw(ht, hegel.Lists(hegel.Text()))
 
 		ht.Assume(leftProducer != rightProducer || !slicesEqual(leftParts, rightParts))
 
@@ -88,19 +60,25 @@ func TestDeriveDistinguishesDifferentContent(t *testing.T) {
 	})
 }
 
-// TestDeriveCollidesAcrossNULSeparators records the collision the
-// property above has to exclude, so the restriction is executable rather
-// than a claim in a comment. Delete it if Derive ever commits its part
-// lengths to the digest -- it will start failing, which is the point.
-func TestDeriveCollidesAcrossNULSeparators(t *testing.T) {
+// TestDeriveSeparatesShiftedNULs pins the two collisions that closed,
+// because a generator will not rediscover either: both need a second
+// input whose encoding coincides with the first, which random search
+// does not stumble onto at production arity.
+func TestDeriveSeparatesShiftedNULs(t *testing.T) {
 	t.Parallel()
 
-	shifted := Derive(ProducerDesktop, "a", "b\x00c", "d")
-	unshifted := Derive(ProducerDesktop, "a\x00b", "c", "d")
-	if shifted != unshifted {
-		t.Errorf("Derive no longer collides across a NUL: %q and %q."+
-			" If the digest now commits part lengths, drop this test and"+
-			" widen TestDeriveDistinguishesDifferentContent.", shifted, unshifted)
+	// An application name and a title differing only in where a NUL
+	// falls. Titles arrive unsanitized from the window manager.
+	if Derive(ProducerDesktop, "a", "b\x00c", "d") == Derive(ProducerDesktop, "a\x00b", "c", "d") {
+		t.Error("Derive collides when a NUL shifts across a part boundary")
+	}
+	// No parts against one empty part.
+	if Derive(ProducerDesktop) == Derive(ProducerDesktop, "") {
+		t.Error("Derive collides between no parts and one empty part")
+	}
+	// A part boundary against the same bytes inside one part.
+	if Derive(ProducerDesktop, "ab", "c") == Derive(ProducerDesktop, "abc") {
+		t.Error("Derive collides between two parts and their concatenation")
 	}
 }
 
@@ -116,27 +94,60 @@ func slicesEqual(a, b []string) bool {
 	return true
 }
 
-// TestValidImpliesCanonicalSpelling holds Valid to the doc comment: it
-// accepts one spelling of an ID, so an uppercase or braced variant of an
-// accepted ID must be refused. Accepting several spellings of one ID
-// would let the same segment insert twice.
-func TestValidImpliesCanonicalSpelling(t *testing.T) {
+// drawCanonicalID builds a canonical UUID text form directly, rather
+// than hoping a text generator produces one. Random Unicode never will,
+// which would leave every claim below vacuously true.
+func drawCanonicalID(tc hegel.TestCase) string {
+	digits := hegel.Draw(tc, hegel.Text().Alphabet("0123456789abcdef").MinSize(32).MaxSize(32))
+	return digits[0:8] + "-" + digits[8:12] + "-" + digits[12:16] + "-" +
+		digits[16:20] + "-" + digits[20:32]
+}
+
+// TestValidAcceptsCanonicalIDs is the half that keeps the rejection
+// property honest: every canonical spelling must be accepted, so a Valid
+// that refused everything would fail here.
+func TestValidAcceptsCanonicalIDs(t *testing.T) {
 	t.Parallel()
 
 	hegel.Test(t, func(ht *hegel.T) {
-		id := hegel.Draw(ht, hegel.Text())
+		id := drawCanonicalID(ht)
 		if !Valid(id) {
-			return
+			ht.Fatalf("Valid rejected the canonical id %q", id)
 		}
+	})
+}
 
-		if len(id) != 36 {
-			ht.Fatalf("Valid accepted %q of length %d, want 36", id, len(id))
+// TestValidRejectsNonCanonicalSpellings holds Valid to its doc comment.
+// Accepting several spellings of one ID would let the same segment
+// insert twice, so each perturbation of an accepted ID must be refused.
+func TestValidRejectsNonCanonicalSpellings(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		id := drawCanonicalID(ht)
+
+		variants := map[string]string{
+			"uppercase":    strings.ToUpper(id),
+			"braced":       "{" + id + "}",
+			"urn prefixed": "urn:uuid:" + id,
+			"unhyphenated": strings.ReplaceAll(id, "-", ""),
+			"truncated":    id[:35],
+			"padded":       id + "0",
+			"trailing sp":  id + " ",
+			"leading sp":   " " + id,
 		}
-		if lowered := strings.ToLower(id); lowered != id {
-			ht.Fatalf("Valid accepted %q, which is not lowercase", id)
-		}
-		if upper := strings.ToUpper(id); upper != id && Valid(upper) {
-			ht.Fatalf("Valid accepted both %q and its uppercase spelling", id)
+		// A hyphen moved one place along, and a non-hex digit dropped
+		// into a position that must hold one.
+		variants["hyphen misplaced"] = id[:8] + id[9:] + "-"
+		variants["non-hex digit"] = "g" + id[1:]
+
+		for name, variant := range variants {
+			if variant == id {
+				continue // an all-digit id uppercases to itself
+			}
+			if Valid(variant) {
+				ht.Fatalf("Valid accepted the %s spelling %q of %q", name, variant, id)
+			}
 		}
 	})
 }

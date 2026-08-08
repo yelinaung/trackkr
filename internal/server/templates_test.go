@@ -405,21 +405,19 @@ func TestHumanDuration(t *testing.T) {
 // claims a reader relies on: a longer total never renders as a shorter
 // one, and no total renders as negative time.
 //
-// The draw stops at the largest second count time.Duration can hold,
-// which is the finding rather than a convenience. humanDuration takes an
-// int64 straight from a SQL sum and multiplies it by time.Second
-// (templates.go:287), so past math.MaxInt64 / 1e9 -- about 292 years --
-// the product wraps and a very large total renders as a negative one.
-// Nothing in a per-window aggregate reaches it, and the signature
-// accepts it anyway.
+// The draw covers the whole int64 domain, which is where this found a
+// bug. humanDuration used to multiply its argument by time.Second, and
+// time.Duration counts nanoseconds, so 9223372037 seconds rendered as
+// "-9223372036s". A total is the sum of up to ActivitySourceLimit
+// records clipped to the query window, and 25000 records across a week
+// pass that threshold, so the dashboard could show negative time. The
+// arithmetic now stays in seconds.
 func TestHumanDurationIsMonotonicAndPositive(t *testing.T) {
 	t.Parallel()
 
-	const maxRepresentableSeconds = math.MaxInt64 / int64(time.Second)
-
 	hegel.Test(t, func(ht *hegel.T) {
-		low := hegel.Draw(ht, hegel.Integers(0, maxRepresentableSeconds))
-		high := hegel.Draw(ht, hegel.Integers(0, maxRepresentableSeconds))
+		low := hegel.Draw(ht, hegel.Integers[int64](math.MinInt64, math.MaxInt64))
+		high := hegel.Draw(ht, hegel.Integers[int64](math.MinInt64, math.MaxInt64))
 		if low > high {
 			low, high = high, low
 		}
@@ -432,6 +430,55 @@ func TestHumanDurationIsMonotonicAndPositive(t *testing.T) {
 		if humanDurationSeconds(ht, shorter) > humanDurationSeconds(ht, longer) {
 			ht.Fatalf("humanDuration(%d) = %q reads longer than humanDuration(%d) = %q",
 				low, shorter, high, longer)
+		}
+	})
+}
+
+// TestHumanDurationRendersTheRightQuantity is what stops the monotonic
+// property from being satisfied by a function that always answers "0s".
+// It reads the rendering back and compares against integer arithmetic
+// done independently of the code under test.
+//
+// Rendering truncates rather than rounds, and drops the remainder at
+// each step: 3661 seconds is "1h 01m", not "1h 01m 01s". So the
+// recovered quantity is the input floored to the unit it was rendered
+// in, which is a claim about the display and not a restatement of it.
+func TestHumanDurationRendersTheRightQuantity(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		seconds := hegel.Draw(ht, hegel.Integers[int64](0, math.MaxInt64))
+		rendered := humanDuration(seconds)
+
+		var unit int64 = 1
+		switch {
+		case seconds >= 3600:
+			unit = 60
+		case seconds >= 60:
+			unit = 60
+		}
+		want := seconds / unit * unit
+
+		if got := humanDurationSeconds(ht, rendered); got != want {
+			ht.Fatalf("humanDuration(%d) = %q, which reads as %d seconds, want %d",
+				seconds, rendered, got, want)
+		}
+
+		// The unit itself has to be the one a reader expects, or "90m"
+		// would satisfy the arithmetic above while reading wrong.
+		switch {
+		case seconds >= 3600:
+			if !strings.Contains(rendered, "h ") {
+				ht.Fatalf("humanDuration(%d) = %q, want hours and minutes", seconds, rendered)
+			}
+		case seconds >= 60:
+			if !strings.HasSuffix(rendered, "m") {
+				ht.Fatalf("humanDuration(%d) = %q, want whole minutes", seconds, rendered)
+			}
+		default:
+			if !strings.HasSuffix(rendered, "s") {
+				ht.Fatalf("humanDuration(%d) = %q, want seconds", seconds, rendered)
+			}
 		}
 	})
 }
