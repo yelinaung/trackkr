@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yelinaung/trackkr/internal/db"
+	"hegel.dev/go/hegel"
 )
 
 func scaleDay() time.Time {
@@ -22,6 +23,56 @@ func scaleRecord(app string, fromHour, fromMin, toHour, toMin int) db.ActivityRe
 		StartedAt: day.Add(time.Duration(fromHour)*time.Hour + time.Duration(fromMin)*time.Minute),
 		EndedAt:   day.Add(time.Duration(toHour)*time.Hour + time.Duration(toMin)*time.Minute),
 	}
+}
+
+// TestActiveHourScalePreservesWidths is the central claim of the
+// compressed axis: dropping empty hours moves bars but never resizes
+// them, so the same distance means the same amount of time everywhere on
+// the chart. If it were false, the axis would be lying about durations.
+//
+// minutesAt is also checked for monotonicity. A later instant mapping
+// left of an earlier one would give a bar negative width, and the clamp
+// in toBar would hide it as a dropped bar rather than a wrong one.
+func TestActiveHourScalePreservesWidths(t *testing.T) {
+	t.Parallel()
+
+	loc := newYork(t)
+	hegel.Test(t, func(ht *hegel.T) {
+		day := time.Date(2026, 5, 4, 12, 0, 0, 0, loc)
+		dayStart, dayEnd := dayBounds(day)
+		records := drawDayRecords(ht, dayStart)
+		start, end := chartWindow(records, dayStart, dayEnd)
+
+		scale := newActiveHourScale(records, start, end)
+		// A scale exists only when some hour is empty and some is not;
+		// the linear axis is covered by the properties in timeline_test.
+		ht.Assume(scale != nil)
+
+		for i := range records {
+			from := maxChartTime(records[i].StartedAt, start)
+			to := minChartTime(records[i].EndedAt, end)
+			if !from.Before(to) {
+				continue
+			}
+
+			placed := scale.minutesAt(to, start) - scale.minutesAt(from, start)
+			if want := to.Sub(from).Minutes(); placed != want {
+				ht.Fatalf("record [%s, %s) lasts %f minutes but is drawn %f wide",
+					from, to, want, placed)
+			}
+		}
+
+		// Monotonic across the whole window, sampled every quarter hour
+		// so instants inside dropped runs are included.
+		previous := scale.minutesAt(start, start)
+		for at := start; !at.After(end); at = at.Add(15 * time.Minute) {
+			current := scale.minutesAt(at, start)
+			if current < previous {
+				ht.Fatalf("minutesAt went backwards at %s: %f after %f", at, current, previous)
+			}
+			previous = current
+		}
+	})
 }
 
 func TestLayoutDropsHoursWithoutActivity(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/yelinaung/trackkr/internal/db"
+	"hegel.dev/go/hegel"
 )
 
 // stubSessionQuerier implements only the lookup the auth gate needs.
@@ -417,4 +418,120 @@ func TestClientHostUsesForwardedForFromTrustedProxy(t *testing.T) {
 			}
 		})
 	}
+}
+
+// attemptLimiterMachine drives the login throttle against a multiset of
+// reservation timestamps, over a clock the rules advance themselves.
+//
+// A real clock would make the window untestable: the properties are
+// about what expires and when, and waiting out a fifteen-minute window
+// is not something a test can do.
+type attemptLimiterMachine struct {
+	limiter *attemptLimiter
+	limit   int
+	window  time.Duration
+	now     time.Time
+	// model holds one entry per live reservation per host, in the order
+	// the limiter recorded them.
+	model map[string][]time.Time
+}
+
+func (m *attemptLimiterMachine) hosts() []string {
+	return []string{"10.0.0.1", "10.0.0.2"}
+}
+
+// live drops the model entries the limiter's sweep would have dropped.
+func (m *attemptLimiterMachine) live(host string) []time.Time {
+	cutoff := m.now.Add(-m.window)
+	kept := make([]time.Time, 0, len(m.model[host]))
+	for _, at := range m.model[host] {
+		if at.After(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+	return kept
+}
+
+// RuleReserve claims an attempt, which must succeed exactly while the
+// host is under the limit.
+func (m *attemptLimiterMachine) RuleReserve(tc hegel.TestCase) {
+	host := hegel.Draw(tc, hegel.SampledFrom(m.hosts()))
+	live := m.live(host)
+
+	granted := m.limiter.reserve(host, m.now)
+	if want := len(live) < m.limit; granted != want {
+		tc.Errorf("reserve(%s) = %v with %d live attempts and a limit of %d",
+			host, granted, len(live), m.limit)
+		tc.FailNow()
+	}
+	if granted {
+		live = append(live, m.now)
+	}
+	m.model[host] = live
+}
+
+// RuleRelease hands back the most recent reservation, the way a login
+// that failed for an operational reason does.
+func (m *attemptLimiterMachine) RuleRelease(tc hegel.TestCase) {
+	host := hegel.Draw(tc, hegel.SampledFrom(m.hosts()))
+	m.limiter.release(host)
+
+	if live := m.model[host]; len(live) > 0 {
+		m.model[host] = live[:len(live)-1]
+	}
+}
+
+// RuleReset clears a host's history after a successful login.
+func (m *attemptLimiterMachine) RuleReset(tc hegel.TestCase) {
+	host := hegel.Draw(tc, hegel.SampledFrom(m.hosts()))
+	m.limiter.reset(host)
+	delete(m.model, host)
+}
+
+// RuleAdvance moves the clock, which is how reservations expire.
+func (m *attemptLimiterMachine) RuleAdvance(tc hegel.TestCase) {
+	m.now = m.now.Add(time.Duration(hegel.Draw(tc, hegel.Integers(0, 20))) * time.Minute)
+}
+
+// InvariantRemainingMatches checks the count the limiter reports against
+// the model, which is what an attacker would be probing.
+func (m *attemptLimiterMachine) InvariantRemainingMatches(tc hegel.TestCase) {
+	for _, host := range m.hosts() {
+		want := m.limit - len(m.live(host))
+		if got := m.limiter.remaining(host, m.now); got != want {
+			tc.Errorf("remaining(%s) = %d, want %d", host, got, want)
+			tc.FailNow()
+		}
+	}
+}
+
+// InvariantNeverOverGrants is the security claim: no host ever holds
+// more than limit reservations inside one window.
+func (m *attemptLimiterMachine) InvariantNeverOverGrants(tc hegel.TestCase) {
+	for _, host := range m.hosts() {
+		if live := len(m.live(host)); live > m.limit {
+			tc.Errorf("host %s holds %d live attempts, past the limit of %d", host, live, m.limit)
+			tc.FailNow()
+		}
+	}
+}
+
+// TestAttemptLimiterMatchesAModel exercises the throttle guarding the
+// login form. Reserve, release, reset, and the passage of time interact,
+// and a hand-written sequence only covers the interleavings someone
+// thought to write down.
+func TestAttemptLimiterMatchesAModel(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		limit := hegel.Draw(ht, hegel.Integers(1, 4))
+		window := time.Duration(hegel.Draw(ht, hegel.Integers(1, 30))) * time.Minute
+		hegel.RunStateful(ht, &attemptLimiterMachine{
+			limiter: newAttemptLimiter(limit, window),
+			limit:   limit,
+			window:  window,
+			now:     time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC),
+			model:   make(map[string][]time.Time),
+		})
+	})
 }

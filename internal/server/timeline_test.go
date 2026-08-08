@@ -5,7 +5,120 @@ import (
 	"time"
 
 	"github.com/yelinaung/trackkr/internal/db"
+	"hegel.dev/go/hegel"
 )
+
+// drawDayRecords draws records around one local day, including spans
+// that fall outside it entirely and lists that are empty.
+//
+// Offsets reach a day either side of midnight so the clamping paths run,
+// and durations start at zero so degenerate records reach the layout the
+// way the database can produce them.
+func drawDayRecords(tc hegel.TestCase, dayStart time.Time) []db.ActivityRecordRow {
+	count := hegel.Draw(tc, hegel.Integers(0, 25))
+	records := make([]db.ActivityRecordRow, 0, count)
+	for i := range count {
+		startMin := hegel.Draw(tc, hegel.Integers(-1440, 2880))
+		durationMin := hegel.Draw(tc, hegel.Integers(0, 900))
+		start := dayStart.Add(time.Duration(startMin) * time.Minute)
+		end := start.Add(time.Duration(durationMin) * time.Minute)
+		records = append(records, db.ActivityRecordRow{
+			ID:       int64(i + 1),
+			DeviceID: hegel.Draw(tc, hegel.Integers[int64](1, 2)),
+			AppName:  hegel.Draw(tc, hegel.SampledFrom([]string{"Firefox", testGhosttyApp, "Mail"})),
+			// DurationS agrees with the span, the way an inserted row
+			// does. Leaving it zero would make merge properties fail on
+			// records the merge never touched.
+			StartedAt: start,
+			EndedAt:   end,
+			DurationS: int(end.Sub(start).Seconds()),
+		})
+	}
+	return records
+}
+
+// TestChartWindowStaysInsideTheDay pins the three sequential clamps that
+// close chartWindow, which have exactly the shape of code that holds for
+// the cases someone thought of.
+//
+// Empty lists and records that miss the day entirely are drawn rather
+// than excluded. Both take the recordExtent ok == false path, which
+// returns the whole day: a 23-to-25 hour span clears the minChartWindow
+// floor and the containment clause is vacuous, so one property covers
+// the fallback without a special case.
+func TestChartWindowStaysInsideTheDay(t *testing.T) {
+	t.Parallel()
+
+	loc := newYork(t)
+	hegel.Test(t, func(ht *hegel.T) {
+		// Days either side of both DST transitions, so 23- and 25-hour
+		// days are ordinary inputs here.
+		day := time.Date(2026, 3, 8, 12, 0, 0, 0, loc).
+			AddDate(0, 0, hegel.Draw(ht, hegel.Integers(-1, 250)))
+		dayStart, dayEnd := dayBounds(day)
+		records := drawDayRecords(ht, dayStart)
+
+		start, end := chartWindow(records, dayStart, dayEnd)
+
+		if start.Before(dayStart) || end.After(dayEnd) {
+			ht.Fatalf("window [%s, %s) escapes the day [%s, %s)", start, end, dayStart, dayEnd)
+		}
+		if !start.Before(end) {
+			ht.Fatalf("window [%s, %s) is empty or inverted", start, end)
+		}
+
+		dayLength := dayEnd.Sub(dayStart)
+		if span := end.Sub(start); span < min(minChartWindow, dayLength) {
+			ht.Fatalf("window spans %s, want at least %s of a %s day",
+				span, min(minChartWindow, dayLength), dayLength)
+		}
+
+		// Every record that overlaps the day has to be inside the drawn
+		// range, or the chart omits activity the totals still count.
+		for i := range records {
+			from := maxChartTime(records[i].StartedAt, dayStart)
+			to := minChartTime(records[i].EndedAt, dayEnd)
+			if !from.Before(to) {
+				continue
+			}
+			if from.Before(start) || to.After(end) {
+				ht.Fatalf("record [%s, %s) falls outside the window [%s, %s)", from, to, start, end)
+			}
+		}
+	})
+}
+
+// TestToBarStaysInsideTheChart checks the geometry every bar is drawn
+// with. The minimum-width floor and the trailing clamp interact, and a
+// bar escaping the axis would overlap the lane beside it.
+func TestToBarStaysInsideTheChart(t *testing.T) {
+	t.Parallel()
+
+	loc := newYork(t)
+	hegel.Test(t, func(ht *hegel.T) {
+		day := time.Date(2026, 5, 4, 12, 0, 0, 0, loc)
+		dayStart, dayEnd := dayBounds(day)
+		records := drawDayRecords(ht, dayStart)
+		start, end := chartWindow(records, dayStart, dayEnd)
+		span := end.Sub(start).Minutes()
+
+		for i := range records {
+			bar, ok := toBar(&records[i], start, end, span, i, false, nil)
+			if !ok {
+				continue
+			}
+			if bar.X < 0 {
+				ht.Fatalf("bar %d starts at %f, left of the axis", i, bar.X)
+			}
+			if bar.Width <= 0 {
+				ht.Fatalf("bar %d has width %f", i, bar.Width)
+			}
+			if bar.X+bar.Width > span+1e-9 {
+				ht.Fatalf("bar %d ends at %f, past the %f-minute axis", i, bar.X+bar.Width, span)
+			}
+		}
+	})
+}
 
 // The two DST days name themselves often enough that the linter asks
 // for constants.

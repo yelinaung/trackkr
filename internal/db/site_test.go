@@ -79,6 +79,9 @@ func TestSiteFromURLRecoversAConstructedHost(t *testing.T) {
 	})
 }
 
+// testIPv6Site is the bracketed literal the derivation keeps whole.
+const testIPv6Site = "[::1]"
+
 // siteDerivationCases are shared by the pure test below and the parity test
 // against PostgreSQL, so a case added for one is checked by both.
 var siteDerivationCases = []struct {
@@ -97,7 +100,7 @@ var siteDerivationCases = []struct {
 	{name: "strips only the first userinfo", url: "https://a@b@example.com/x", want: "b@example.com", ok: true},
 	{name: "lowercases", url: "https://EXAMPLE.COM/x", want: testSiteHost, ok: true},
 	{name: "strips root dot", url: "https://example.com./x", want: testSiteHost, ok: true},
-	{name: "keeps ipv6 literal", url: "http://[::1]:8080/x", want: "[::1]", ok: true},
+	{name: "keeps ipv6 literal", url: "http://[::1]:8080/x", want: testIPv6Site, ok: true},
 	{name: "keeps subdomain", url: "https://mail.google.com/u/0", want: "mail.google.com", ok: true},
 	{name: "no query or fragment", url: "https://example.com?a=b#c", want: testSiteHost, ok: true},
 	{name: "uppercase scheme is not matched", url: "HTTPS://example.com/x", want: "", ok: false},
@@ -153,4 +156,75 @@ func TestSiteFromURLMatchesSQL(t *testing.T) {
 			t.Errorf("%s: SQL = %q, Go = %q", tc.name, *sql, got)
 		}
 	}
+}
+
+// drawSiteURL builds URLs compositionally so most cases reach the
+// derivation instead of the drop path.
+//
+// Raw text would almost never match the authority pattern, spending
+// every case proving that nonsense is rejected. A minority of raw draws
+// is mixed in by the caller to cover that path deliberately.
+func drawSiteURL(tc hegel.TestCase) string {
+	scheme := hegel.Draw(tc, hegel.SampledFrom([]string{
+		"http", "https", "ftp", "s3+http",
+		"HTTPS", // uppercase is not matched, so it must be dropped
+	}))
+
+	host := hegel.Draw(tc, hegel.SampledFrom([]string{
+		testSiteHost, "WWW.Example.COM", "www." + testSiteHost,
+		testSiteHost + ".", "sub." + testSiteHost, testIPv6Site, "[2001:db8::1]",
+		"127.0.0.1", "xn--80ak6aa92e.com", "", "a..b",
+	}))
+
+	var url strings.Builder
+	url.WriteString(scheme)
+	url.WriteString("://")
+	if userinfo := hegel.Draw(tc, hegel.SampledFrom([]string{
+		"", "user@", "user:pw@", "a@b@", "@",
+	})); userinfo != "" {
+		url.WriteString(userinfo)
+	}
+	url.WriteString(host)
+	url.WriteString(hegel.Draw(tc, hegel.SampledFrom([]string{"", ":8443", ":0", ":"})))
+	url.WriteString(hegel.Draw(tc, hegel.SampledFrom([]string{
+		"", "/", "/a/b", "?q=1", "#frag", "/x?y=1#z",
+	})))
+	return url.String()
+}
+
+// TestSiteFromURLMatchesSQLOverGeneratedURLs is why the Go derivation is
+// a port of siteExpr rather than a call to net/url. A record the summary
+// groups under one host must be one the detail view counts there, and
+// the only way to know the two agree is to run both.
+//
+// The case count is lowered because every case is a database round trip.
+// CI sets TRACKKR_TEST_DSN, so this does not skip there.
+func TestSiteFromURLMatchesSQLOverGeneratedURLs(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw := drawSiteURL(ht)
+		if hegel.Draw(ht, hegel.Integers(0, 4)) == 0 {
+			raw = hegel.Draw(ht, hegel.Text())
+		}
+
+		var fromSQL *string
+		if err := pool.QueryRow(
+			ctx,
+			`SELECT `+siteExpr+` FROM (VALUES ($1::text)) AS ar(url)`, raw,
+		).Scan(&fromSQL); err != nil {
+			ht.Fatalf("querying siteExpr for %q: %v", raw, err)
+		}
+
+		got, ok := SiteFromURL(raw)
+		switch {
+		case !ok && fromSQL != nil:
+			ht.Fatalf("Go dropped %q, SQL grouped it as %q", raw, *fromSQL)
+		case ok && fromSQL == nil:
+			ht.Fatalf("Go derived %q from %q, SQL dropped it", got, raw)
+		case ok && *fromSQL != got:
+			ht.Fatalf("for %q: SQL = %q, Go = %q", raw, *fromSQL, got)
+		}
+	}, hegel.WithTestCases(200))
 }
