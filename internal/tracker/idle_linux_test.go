@@ -5,11 +5,77 @@ package tracker
 import (
 	"context"
 	"errors"
+	"math"
+	"math/big"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rs/zerolog"
+	"hegel.dev/go/hegel"
 )
+
+// TestParseIdleMsSurvivesArbitraryText covers the half of the contract
+// that holds for any input: xprintidle's output is not trusted, so
+// garbage must come back as an error.
+func TestParseIdleMsSurvivesArbitraryText(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		output := hegel.Draw(ht, hegel.Text())
+		idle, err := parseIdleMs(output)
+
+		ms, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+		usable := parseErr == nil && ms >= 0 && ms <= maxIdleMs
+		if usable != (err == nil) {
+			ht.Fatalf("parseIdleMs(%q) error = %v, but the text parses to %d (usable = %v)",
+				output, err, ms, usable)
+		}
+		if err != nil && idle != 0 {
+			ht.Fatalf("parseIdleMs(%q) failed but returned %v", output, idle)
+		}
+	})
+}
+
+// TestParseIdleMsConvertsExactlyOrRefuses runs the whole int64 domain
+// and checks the conversion against an oracle that is not the
+// implementation.
+//
+// Asserting idle == time.Duration(ms) * time.Millisecond would restate
+// the function's own expression, overflow included, and so would agree
+// with it at exactly the inputs worth asking about. math/big does the
+// multiply without wrapping, so the two disagree wherever the production
+// expression would have wrapped.
+//
+// This test found parseIdleMs returning -2562047h47m16s for an input of
+// 9223372036855. The function now refuses everything outside the range
+// xprintidle can report, and the property asserts the whole contract:
+// accepted exactly on [0, maxIdleMs], exact within it.
+func TestParseIdleMsConvertsExactlyOrRefuses(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		ms := hegel.Draw(ht, hegel.Integers[int64](math.MinInt64, math.MaxInt64))
+		idle, err := parseIdleMs(strconv.FormatInt(ms, 10))
+
+		if ms < 0 || ms > maxIdleMs {
+			if err == nil {
+				ht.Fatalf("parseIdleMs(%d) returned %v; a count outside [0, %d] is not an idle time",
+					ms, idle, maxIdleMs)
+			}
+			return
+		}
+
+		if err != nil {
+			ht.Fatalf("parseIdleMs(%d): %v", ms, err)
+		}
+		want := new(big.Int).Mul(big.NewInt(ms), big.NewInt(int64(time.Millisecond)))
+		if !want.IsInt64() || int64(idle) != want.Int64() {
+			ht.Fatalf("parseIdleMs(%d) = %d ns, want %s ns", ms, int64(idle), want)
+		}
+	})
+}
 
 func TestNopIdleDetector(t *testing.T) {
 	t.Parallel()

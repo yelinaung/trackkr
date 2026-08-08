@@ -26,6 +26,10 @@ dist/
 go.work
 go.work.sum
 
+# Hegel's failing-example database. Written to the test's working
+# directory, so it lands in whichever package ran a property test.
+.hegel/
+
 # Environment variables
 .env
 .env.local

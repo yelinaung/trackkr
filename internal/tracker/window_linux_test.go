@@ -2,7 +2,25 @@
 
 package tracker
 
-import "testing"
+import (
+	"testing"
+
+	"hegel.dev/go/hegel"
+)
+
+// TestParseWMClassAlwaysNamesSomething pins the fallback. The result
+// becomes a record's application name, and an empty one produces a
+// record the server has to reject, so every input must yield a name.
+func TestParseWMClassAlwaysNamesSomething(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		output := hegel.Draw(ht, hegel.Text())
+		if got := parseWMClass(output); got == "" {
+			ht.Fatalf("parseWMClass(%q) returned an empty name", output)
+		}
+	})
+}
 
 func TestParseWMClass(t *testing.T) {
 	t.Parallel()

@@ -5,6 +5,7 @@ package tracker
 import (
 	"context"
 	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -39,10 +40,26 @@ func (x *XIdleDetector) IdleTime(ctx context.Context) (time.Duration, error) {
 
 // parseIdleMs parses xprintidle output (milliseconds as a string)
 // into a time.Duration.
+// maxIdleMs is the largest millisecond count time.Duration can hold.
+// Beyond it the conversion wraps.
+const maxIdleMs = math.MaxInt64 / int64(time.Millisecond)
+
+// parseIdleMs reads xprintidle's milliseconds since the last input
+// event. Anything outside [0, maxIdleMs] is refused rather than
+// converted.
+//
+// Both ends fail the same way and it is the dangerous way. A negative
+// count is not a time xprintidle can report, and a count past maxIdleMs
+// wraps to a negative duration; either sits below every idle threshold,
+// so the tracker would read an unusable number as proof the session is
+// active and keep recording.
 func parseIdleMs(output string) (time.Duration, error) {
 	ms, err := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("parsing idle ms %q: %w", output, err)
+	}
+	if ms < 0 || ms > maxIdleMs {
+		return 0, fmt.Errorf("idle ms %d is not a usable idle time", ms)
 	}
 	return time.Duration(ms) * time.Millisecond, nil
 }

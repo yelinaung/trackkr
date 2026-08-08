@@ -16,28 +16,28 @@ rumdl = "latest"
 [tasks.test]
 description = "Run Go tests"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
-  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go test -v ./...",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod XDG_CACHE_HOME=$PWD/.cache/xdg go test -v ./...",
 ]
 
 [tasks.test-race]
 description = "Run Go tests (with race)"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
-  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go test -v -race ./...",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod XDG_CACHE_HOME=$PWD/.cache/xdg go test -v -race ./...",
 ]
 
 [tasks.test-coverage]
 description = "Run Go tests with coverage"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
-  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go test -v -coverprofile=coverage.out -covermode=atomic ./...",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
+  "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod XDG_CACHE_HOME=$PWD/.cache/xdg go test -v -coverprofile=coverage.out -covermode=atomic ./...",
 ]
 
 [tasks.lint]
 description = "Run golangci-lint with project config"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod golangci-lint run --config .golangci.yml ./...",
 ]
 
@@ -97,28 +97,28 @@ run = ["docker compose up -d db"]
 [tasks.run]
 description = "Run the server"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go run ./cmd/server",
 ]
 
 [tasks.tidy]
 description = "Tidy Go module dependencies"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go mod tidy",
 ]
 
 [tasks.build]
 description = "Build the server binary"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build -o trackkr-backend ./cmd/server",
 ]
 
 [tasks.build-daemon]
 description = "Build the trackkrd daemon binary"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build -o trackkrd ./cmd/trackkrd",
 ]
 
@@ -129,14 +129,14 @@ run = ["bash ./scripts/container-smoke-test.sh"]
 [tasks.run-daemon]
 description = "Run the trackkrd daemon"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
   "GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go run ./cmd/trackkrd",
 ]
 
 [tasks.portability]
 description = "Compile platform fallbacks that CI cannot execute"
 run = [
-  "mkdir -p .cache/go-build .cache/go-mod",
+  "mkdir -p .cache/go-build .cache/go-mod .cache/xdg",
   "CGO_ENABLED=0 GOOS=darwin GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build ./...",
   "CGO_ENABLED=0 GOOS=windows GOCACHE=$PWD/.cache/go-build GOMODCACHE=$PWD/.cache/go-mod go build ./...",
 ]

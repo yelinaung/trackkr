@@ -1,13 +1,106 @@
 package server
 
 import (
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/yelinaung/trackkr/internal/db"
+	"hegel.dev/go/hegel"
 )
 
 const testGhosttyApp = "Ghostty"
+
+// coveredMinutes totals the union of a run's intervals, per device and
+// application, as a naive sweep over sorted copies.
+func coveredMinutes(records []db.ActivityRecordRow) map[string]time.Duration {
+	type lane struct {
+		device int64
+		app    string
+	}
+	byLane := make(map[lane][]db.ActivityRecordRow)
+	for i := range records {
+		key := lane{records[i].DeviceID, records[i].AppName}
+		byLane[key] = append(byLane[key], records[i])
+	}
+
+	covered := make(map[string]time.Duration)
+	for key, group := range byLane {
+		slices.SortFunc(group, func(a, b db.ActivityRecordRow) int {
+			return a.StartedAt.Compare(b.StartedAt)
+		})
+		var total time.Duration
+		var cursor time.Time
+		for i := range group {
+			from, to := group[i].StartedAt, group[i].EndedAt
+			if !to.After(from) {
+				continue
+			}
+			if from.Before(cursor) {
+				from = cursor
+			}
+			if to.After(from) {
+				total += to.Sub(from)
+				cursor = to
+			}
+		}
+		covered[key.app] += total
+	}
+	return covered
+}
+
+// TestMergeAdjacentActivityConservesCoveredTime is the general form of
+// TestMergeAdjacentActivityPreservesCoveredTime: merging is honest only
+// because a merged bar spans exactly what the records it replaced did.
+//
+// The property also holds merging to its limit -- a pause belongs on the
+// chart, so a merged bar may never bridge a gap between two records.
+func TestMergeAdjacentActivityConservesCoveredTime(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		base := time.Date(2026, 7, 29, 9, 0, 0, 0, time.UTC)
+		records := drawDayRecords(ht, base)
+		// mergeAdjacentActivity documents that records arrive sorted by
+		// (StartedAt, DeviceID, ID), and the previous bar for a device
+		// is its only merge candidate.
+		slices.SortFunc(records, func(a, b db.ActivityRecordRow) int {
+			if order := a.StartedAt.Compare(b.StartedAt); order != 0 {
+				return order
+			}
+			return int(a.DeviceID - b.DeviceID)
+		})
+
+		merged := mergeAdjacentActivity(records)
+		if len(merged) > len(records) {
+			ht.Fatalf("merging %d records produced %d", len(records), len(merged))
+		}
+
+		before, after := coveredMinutes(records), coveredMinutes(merged)
+		for app, want := range before {
+			if after[app] != want {
+				ht.Fatalf("application %q covered %s before merging and %s after",
+					app, want, after[app])
+			}
+		}
+		for app, got := range after {
+			if before[app] != got {
+				ht.Fatalf("application %q covered %s after merging and %s before",
+					app, got, before[app])
+			}
+		}
+
+		for i := range merged {
+			if merged[i].EndedAt.Before(merged[i].StartedAt) {
+				ht.Fatalf("merged bar %d runs backwards", i)
+			}
+			if want := int(merged[i].EndedAt.Sub(merged[i].StartedAt).Seconds()); merged[i].DurationS != want {
+				ht.Fatalf("merged bar %d reports %ds over a %ds span",
+					i, merged[i].DurationS, want)
+			}
+		}
+	})
+}
 
 func mergeRecord(id, device int64, app, title string, from, to time.Time) db.ActivityRecordRow {
 	return db.ActivityRecordRow{

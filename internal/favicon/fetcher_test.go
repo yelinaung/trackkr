@@ -17,7 +17,136 @@ import (
 	"testing"
 
 	"github.com/yelinaung/trackkr/internal/icon"
+	"hegel.dev/go/hegel"
 )
+
+// TestCanonicalSiteSurvivesArbitraryText keeps the IDNA path from
+// panicking on text that reached the server as a site parameter.
+func TestCanonicalSiteSurvivesArbitraryText(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw := hegel.Draw(ht, hegel.Text())
+		site, err := CanonicalSite(raw)
+		if err != nil && site != "" {
+			ht.Fatalf("CanonicalSite(%q) failed but returned %q", raw, site)
+		}
+	})
+}
+
+// drawCanonicalizableSite builds a hostname CanonicalSite must accept,
+// then perturbs it in ways canonicalization is supposed to absorb.
+//
+// Drawing arbitrary text instead would make the properties below
+// vacuous: almost nothing random is a hostname, so a CanonicalSite that
+// rejected every input would satisfy them. Every value here has to come
+// back normalized.
+// The length bound is the DNS limit CanonicalSite enforces, not a
+// convenience: hegel.Domains() happily generates names past 253 bytes,
+// and rejecting those is correct behaviour rather than a defect.
+func drawCanonicalizableSite(tc hegel.TestCase) (raw, want string) {
+	host := strings.TrimSuffix(hegel.Draw(tc, hegel.Domains().MaxLength(253)), ".")
+	want = strings.ToLower(host)
+
+	switch hegel.Draw(tc, hegel.Integers(0, 2)) {
+	case 1:
+		return strings.ToUpper(host), want
+	case 2:
+		// Upper-case one label so the fold has to reach past the first
+		// character. Drawing per rune would multiply the draw count by
+		// the host length and make shrinking crawl.
+		labels := strings.Split(host, ".")
+		index := hegel.Draw(tc, hegel.Integers(0, len(labels)-1))
+		labels[index] = strings.ToUpper(labels[index])
+		return strings.Join(labels, "."), want
+	}
+	return host, want
+}
+
+// TestCanonicalSiteAcceptsAndNormalizesHostnames is the half that would
+// otherwise go untested: a real hostname must survive, and the spellings
+// that differ only by case must land on one key.
+func TestCanonicalSiteAcceptsAndNormalizesHostnames(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw, want := drawCanonicalizableSite(ht)
+		got, err := CanonicalSite(raw)
+		if err != nil {
+			ht.Fatalf("CanonicalSite(%q) rejected a hostname: %v", raw, err)
+		}
+		if got != want {
+			ht.Fatalf("CanonicalSite(%q) = %q, want %q", raw, got, want)
+		}
+	})
+}
+
+// TestCanonicalSiteOutputShape checks every exclusion the function
+// promises before any network access happens: no IP literals, no URL
+// delimiters, and a valid DNS label at each position.
+//
+// Half the draws are hostnames that must be accepted, so the property
+// cannot be satisfied by rejecting everything.
+func TestCanonicalSiteOutputShape(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		var raw string
+		if hegel.Draw(ht, hegel.Booleans()) {
+			raw, _ = drawCanonicalizableSite(ht)
+		} else {
+			raw = hegel.Draw(ht, hegel.Text())
+		}
+
+		site, err := CanonicalSite(raw)
+		if err != nil {
+			return
+		}
+
+		if lowered := strings.ToLower(site); lowered != site {
+			ht.Fatalf("CanonicalSite(%q) = %q, which is not lowercase", raw, site)
+		}
+		if strings.ContainsAny(site, "/:@[]") {
+			ht.Fatalf("CanonicalSite(%q) = %q, which kept a URL delimiter", raw, site)
+		}
+		if _, parseErr := netip.ParseAddr(site); parseErr == nil {
+			ht.Fatalf("CanonicalSite(%q) = %q, which is an IP literal", raw, site)
+		}
+		if !strings.Contains(site, ".") {
+			ht.Fatalf("CanonicalSite(%q) = %q, which is a single label", raw, site)
+		}
+		for label := range strings.SplitSeq(site, ".") {
+			if !validDNSLabel(label) {
+				ht.Fatalf("CanonicalSite(%q) = %q, whose label %q is invalid", raw, site, label)
+			}
+		}
+	})
+}
+
+// TestCanonicalSiteIsIdempotent matters because the result is a cache
+// key. Two spellings of one site would mean two rows and two fetches, so
+// a canonical site must canonicalize to itself.
+//
+// The draw is a hostname rather than arbitrary text: idempotence is
+// trivially true for inputs that never succeed.
+func TestCanonicalSiteIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw, _ := drawCanonicalizableSite(ht)
+		once, err := CanonicalSite(raw)
+		if err != nil {
+			ht.Fatalf("CanonicalSite(%q) rejected a hostname: %v", raw, err)
+		}
+		twice, err := CanonicalSite(once)
+		if err != nil {
+			ht.Fatalf("CanonicalSite(%q) = %q, which it then rejected: %v", raw, once, err)
+		}
+		if twice != once {
+			ht.Fatalf("CanonicalSite(%q) = %q, then %q", raw, once, twice)
+		}
+	})
+}
 
 const testSite = "example.com"
 

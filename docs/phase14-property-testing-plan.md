@@ -51,22 +51,27 @@ import hegel.
 ### Setup
 
 1. `go get hegel.dev/go/hegel@v0.6.25`
-2. Nothing else. No `.gitignore` change and no new mise task -- these are
-   `go test` functions in the existing suite.
+2. Add `.hegel/` to `.gitignore`.
+3. Nothing else. No new mise task -- these are `go test` functions in the
+   existing suite.
 
 ### What the dependency costs
 
 Verified against the module in the module cache. The published reference
 is stale on the first point and wrong on two APIs.
 
-- **No runtime download and no repository directory.** Since v0.6.18
-  hegel vendors `libhegel` for all five supported platforms inside the Go
-  module; the changelog says it "no longer downloads libhegel from GitHub
-  at runtime, so builds are self-contained and work offline." First use
-  materializes the matching `.so` into a per-version directory under
-  `os.UserCacheDir()` -- `hegel-go/libhegel/<version>`, created 0700 --
-  and `dlopen`s it. Nothing lands in the repository, so nothing needs
-  ignoring.
+- **No runtime download.** Since v0.6.18 hegel vendors `libhegel` for all
+  five supported platforms inside the Go module; the changelog says it
+  "no longer downloads libhegel from GitHub at runtime, so builds are
+  self-contained and work offline." First use materializes the matching
+  `.so` into a per-version directory under `os.UserCacheDir()` --
+  `hegel-go/libhegel/<version>`, created 0700 -- and `dlopen`s it.
+- **A `.hegel/` directory per tested package.** The failing-example
+  database goes to the test's working directory, which under `go test` is
+  the package directory, so `internal/icon/.hegel/` appeared the first
+  time a property ran there. Grepping the Go wrapper for the path finds
+  nothing, because libhegel chooses it on the Rust side. Ignore `.hegel/`
+  and keep the database: replaying a counterexample is the point of it.
 - **No cgo.** The loader contains no `import "C"`, so `CGO_ENABLED=0`
   builds are unaffected.
 - **About 12 MB of vendored shared objects** in the module cache, one
@@ -530,22 +535,56 @@ on real behavior gets triaged three ways before anything changes: real
 bug, unsound property, or an input genuinely outside the function's
 domain. The third is rarest and needs the comment.
 
-## Expected findings
+## Findings, against the predictions
 
-Predictions, so the batches can be judged against them:
+Four predictions were recorded before the batches ran, so they could be
+judged rather than reconstructed. Three landed and one was impossible.
 
-- `identity.Derive` collides on `("a","b")` versus `("a\x00b")`.
-  Unreachable from today's callers; the open question is whether to fix
-  the digest input anyway.
-- `humanDuration` misbehaves past `math.MaxInt64 / 1e9` seconds, and
-  `parseIdleMs` wraps past `math.MaxInt64 / 1e6` milliseconds. Real data
-  reaches neither, and both signatures accept the input anyway. Expect
-  each argument to be about the contract, not the arithmetic.
-- The `categoryTotals` largest-remainder loop is the likeliest home for a
-  genuine index-out-of-range.
-- `chartWindow`'s sequential clamps and `toBar`'s width floor are the
-  likeliest homes for a genuine off-by-one against real inputs.
+**`identity.Derive` collided, and worse than predicted.** The forecast
+was `("a","b")` against `("a\x00b")`, dismissed as unreachable. The
+generator found `Derive(p)` against `Derive(p, "")` in seconds, and
+reachability turned out to be the wrong dismissal: nothing sanitizes
+window titles, so an application name and a title differing only in
+where a NUL falls derived one identity and the second record was dropped
+as a replay. Each field is now length-prefixed with the part count
+committed.
 
-Should batches 1 and 2 turn up nothing past the first two, the invariants
-still become executable, and the next refactor of `activity_dedup.go`
-works over a net.
+**Both overflow predictions landed, and the reachability argument was
+wrong both times.** `humanDuration(9223372037)` rendered
+`"-9223372036s"`, and a total sums up to `ActivitySourceLimit` records
+clipped to the query window -- 25000 across a week clears the ceiling, so
+the dashboard could show negative time. `parseIdleMs` wrapped past
+`maxIdleMs` and also accepted negatives, either of which reads as an
+active session and keeps the tracker recording. Both are fixed and both
+properties now run the full `int64` domain.
+
+**The `categoryTotals` loop cannot over-index.** `remaining` is
+`round(Σ fractional parts)`, every fraction is under a second, so the sum
+is strictly below the destination count and its rounding can equal that
+count but never exceed it. The property that replaced the prediction
+checks the partition identity instead, which is what a reader sees.
+
+**The timeline geometry holds.** `chartWindow`'s clamps and `toBar`'s
+width floor were the last prediction and neither breaks, including on
+23- and 25-hour DST days. The compressed axis really does preserve bar
+widths, which is the one claim a timeline makes that a list does not.
+
+### What the exercise taught
+
+The properties that found defects were the ones with an oracle
+independent of the implementation: `math/big` against a wrapping
+multiply, a rendered string parsed back by separate arithmetic, a
+quadratic union against a sort-and-sweep, PostgreSQL against its Go port.
+Properties that restate the code agree with it.
+
+Three rounds of review caught properties passing for the wrong reasons,
+and the failure modes are worth naming because they recur. A generator
+bounded just short of a defect documents the defect as intended
+behaviour. A property that draws arbitrary text and returns on error is
+satisfied by an implementation that rejects everything. A conservation
+check is blind to misallocation. Each looked green.
+
+Two mutation tests are the habit that came out of it: break the code,
+confirm the property names the break. That is how the sliding-window
+limiter and the SQL parity test earned their green, and it costs a
+minute.

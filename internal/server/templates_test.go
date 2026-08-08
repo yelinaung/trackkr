@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"net/http/httptest"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/yelinaung/trackkr/internal/db"
 	"github.com/yelinaung/trackkr/web"
+	"hegel.dev/go/hegel"
 )
 
 func mustTemplates(t *testing.T) *templates {
@@ -397,6 +399,110 @@ func TestHumanDuration(t *testing.T) {
 			t.Errorf("humanDuration(%d) = %q, want %q", tt.seconds, got, tt.want)
 		}
 	}
+}
+
+// TestHumanDurationIsMonotonicAndPositive holds the rendering to two
+// claims a reader relies on: a longer total never renders as a shorter
+// one, and no total renders as negative time.
+//
+// The draw covers the whole int64 domain, which is where this found a
+// bug. humanDuration used to multiply its argument by time.Second, and
+// time.Duration counts nanoseconds, so 9223372037 seconds rendered as
+// "-9223372036s". A total is the sum of up to ActivitySourceLimit
+// records clipped to the query window, and 25000 records across a week
+// pass that threshold, so the dashboard could show negative time. The
+// arithmetic now stays in seconds.
+func TestHumanDurationIsMonotonicAndPositive(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		low := hegel.Draw(ht, hegel.Integers[int64](math.MinInt64, math.MaxInt64))
+		high := hegel.Draw(ht, hegel.Integers[int64](math.MinInt64, math.MaxInt64))
+		if low > high {
+			low, high = high, low
+		}
+
+		shorter, longer := humanDuration(low), humanDuration(high)
+		if strings.HasPrefix(shorter, "-") || strings.HasPrefix(longer, "-") {
+			ht.Fatalf("humanDuration rendered negative time: %ds = %q, %ds = %q",
+				low, shorter, high, longer)
+		}
+		if humanDurationSeconds(ht, shorter) > humanDurationSeconds(ht, longer) {
+			ht.Fatalf("humanDuration(%d) = %q reads longer than humanDuration(%d) = %q",
+				low, shorter, high, longer)
+		}
+	})
+}
+
+// TestHumanDurationRendersTheRightQuantity is what stops the monotonic
+// property from being satisfied by a function that always answers "0s".
+// It reads the rendering back and compares against integer arithmetic
+// done independently of the code under test.
+//
+// Rendering truncates rather than rounds, and drops the remainder at
+// each step: 3661 seconds is "1h 01m", not "1h 01m 01s". So the
+// recovered quantity is the input floored to the unit it was rendered
+// in, which is a claim about the display and not a restatement of it.
+func TestHumanDurationRendersTheRightQuantity(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		seconds := hegel.Draw(ht, hegel.Integers[int64](0, math.MaxInt64))
+		rendered := humanDuration(seconds)
+
+		var unit int64 = 1
+		switch {
+		case seconds >= 3600:
+			unit = 60
+		case seconds >= 60:
+			unit = 60
+		}
+		want := seconds / unit * unit
+
+		if got := humanDurationSeconds(ht, rendered); got != want {
+			ht.Fatalf("humanDuration(%d) = %q, which reads as %d seconds, want %d",
+				seconds, rendered, got, want)
+		}
+
+		// The unit itself has to be the one a reader expects, or "90m"
+		// would satisfy the arithmetic above while reading wrong.
+		switch {
+		case seconds >= 3600:
+			if !strings.Contains(rendered, "h ") {
+				ht.Fatalf("humanDuration(%d) = %q, want hours and minutes", seconds, rendered)
+			}
+		case seconds >= 60:
+			if !strings.HasSuffix(rendered, "m") {
+				ht.Fatalf("humanDuration(%d) = %q, want whole minutes", seconds, rendered)
+			}
+		default:
+			if !strings.HasSuffix(rendered, "s") {
+				ht.Fatalf("humanDuration(%d) = %q, want seconds", seconds, rendered)
+			}
+		}
+	})
+}
+
+// humanDurationSeconds reads a rendered duration back into seconds so
+// two renderings can be compared as quantities. It parses the display
+// format independently instead of calling the code under test.
+func humanDurationSeconds(ht *hegel.T, rendered string) int64 {
+	var hours, minutes, seconds int64
+	switch {
+	case strings.Contains(rendered, "h"):
+		if _, err := fmt.Sscanf(rendered, "%dh %dm", &hours, &minutes); err != nil {
+			ht.Fatalf("parsing %q: %v", rendered, err)
+		}
+	case strings.HasSuffix(rendered, "m"):
+		if _, err := fmt.Sscanf(rendered, "%dm", &minutes); err != nil {
+			ht.Fatalf("parsing %q: %v", rendered, err)
+		}
+	default:
+		if _, err := fmt.Sscanf(rendered, "%ds", &seconds); err != nil {
+			ht.Fatalf("parsing %q: %v", rendered, err)
+		}
+	}
+	return hours*3600 + minutes*60 + seconds
 }
 
 func sampleTimelineData() *pageData {

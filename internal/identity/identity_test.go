@@ -3,7 +3,154 @@ package identity
 import (
 	"strings"
 	"testing"
+
+	"hegel.dev/go/hegel"
 )
+
+var testProducers = []Producer{ProducerDesktop, ProducerFirefox, ProducerChrome}
+
+// TestDeriveAlwaysProducesACanonicalVersion8 covers the half of Derive's
+// contract that holds for every input: whatever it is handed, the result
+// is an ID the server will accept as a replay guard.
+func TestDeriveAlwaysProducesACanonicalVersion8(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		producer := hegel.Draw(ht, hegel.SampledFrom(testProducers))
+		parts := hegel.Draw(ht, hegel.Lists(hegel.Text()))
+
+		id := Derive(producer, parts...)
+		if !Valid(id) {
+			ht.Fatalf("Derive(%q, %q) = %q, which is not canonical", producer, parts, id)
+		}
+		if id[14] != '8' {
+			ht.Errorf("Derive returned version %c, want 8: %s", id[14], id)
+		}
+		if v := id[19]; v != '8' && v != '9' && v != 'a' && v != 'b' {
+			ht.Errorf("Derive returned variant %c, want 8-b: %s", v, id)
+		}
+		if again := Derive(producer, parts...); again != id {
+			ht.Fatalf("Derive is not stable: %q then %q", id, again)
+		}
+	})
+}
+
+// TestDeriveDistinguishesDifferentContent is the injectivity claim: two
+// different inputs must not land on one identity, or a record conflicts
+// as a replay of something it is not and is dropped.
+//
+// Arity and content are both unrestricted, which they could not be while
+// Derive joined its parts on "\x00". That encoding lost the boundaries,
+// so this property held only at fixed arity with no NUL in any part.
+func TestDeriveDistinguishesDifferentContent(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		leftProducer := hegel.Draw(ht, hegel.SampledFrom(testProducers))
+		leftParts := hegel.Draw(ht, hegel.Lists(hegel.Text()))
+		rightProducer := hegel.Draw(ht, hegel.SampledFrom(testProducers))
+		rightParts := hegel.Draw(ht, hegel.Lists(hegel.Text()))
+
+		ht.Assume(leftProducer != rightProducer || !slicesEqual(leftParts, rightParts))
+
+		if Derive(leftProducer, leftParts...) == Derive(rightProducer, rightParts...) {
+			ht.Fatalf("Derive(%q, %q) collides with Derive(%q, %q)",
+				leftProducer, leftParts, rightProducer, rightParts)
+		}
+	})
+}
+
+// TestDeriveSeparatesShiftedNULs pins the two collisions that closed,
+// because a generator will not rediscover either: both need a second
+// input whose encoding coincides with the first, which random search
+// does not stumble onto at production arity.
+func TestDeriveSeparatesShiftedNULs(t *testing.T) {
+	t.Parallel()
+
+	// An application name and a title differing only in where a NUL
+	// falls. Titles arrive unsanitized from the window manager.
+	if Derive(ProducerDesktop, "a", "b\x00c", "d") == Derive(ProducerDesktop, "a\x00b", "c", "d") {
+		t.Error("Derive collides when a NUL shifts across a part boundary")
+	}
+	// No parts against one empty part.
+	if Derive(ProducerDesktop) == Derive(ProducerDesktop, "") {
+		t.Error("Derive collides between no parts and one empty part")
+	}
+	// A part boundary against the same bytes inside one part.
+	if Derive(ProducerDesktop, "ab", "c") == Derive(ProducerDesktop, "abc") {
+		t.Error("Derive collides between two parts and their concatenation")
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// drawCanonicalID builds a canonical UUID text form directly, rather
+// than hoping a text generator produces one. Random Unicode never will,
+// which would leave every claim below vacuously true.
+func drawCanonicalID(tc hegel.TestCase) string {
+	digits := hegel.Draw(tc, hegel.Text().Alphabet("0123456789abcdef").MinSize(32).MaxSize(32))
+	return digits[0:8] + "-" + digits[8:12] + "-" + digits[12:16] + "-" +
+		digits[16:20] + "-" + digits[20:32]
+}
+
+// TestValidAcceptsCanonicalIDs is the half that keeps the rejection
+// property honest: every canonical spelling must be accepted, so a Valid
+// that refused everything would fail here.
+func TestValidAcceptsCanonicalIDs(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		id := drawCanonicalID(ht)
+		if !Valid(id) {
+			ht.Fatalf("Valid rejected the canonical id %q", id)
+		}
+	})
+}
+
+// TestValidRejectsNonCanonicalSpellings holds Valid to its doc comment.
+// Accepting several spellings of one ID would let the same segment
+// insert twice, so each perturbation of an accepted ID must be refused.
+func TestValidRejectsNonCanonicalSpellings(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		id := drawCanonicalID(ht)
+
+		variants := map[string]string{
+			"uppercase":    strings.ToUpper(id),
+			"braced":       "{" + id + "}",
+			"urn prefixed": "urn:uuid:" + id,
+			"unhyphenated": strings.ReplaceAll(id, "-", ""),
+			"truncated":    id[:35],
+			"padded":       id + "0",
+			"trailing sp":  id + " ",
+			"leading sp":   " " + id,
+		}
+		// A hyphen moved one place along, and a non-hex digit dropped
+		// into a position that must hold one.
+		variants["hyphen misplaced"] = id[:8] + id[9:] + "-"
+		variants["non-hex digit"] = "g" + id[1:]
+
+		for name, variant := range variants {
+			if variant == id {
+				continue // an all-digit id uppercases to itself
+			}
+			if Valid(variant) {
+				ht.Fatalf("Valid accepted the %s spelling %q of %q", name, variant, id)
+			}
+		}
+	})
+}
 
 func TestNewProducesCanonicalVersion4(t *testing.T) {
 	t.Parallel()

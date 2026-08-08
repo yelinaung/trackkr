@@ -100,6 +100,7 @@ Exception: If working within an existing website or design system, preserve the 
 - **Constants**: Use typed constants with iota for enums, group in const blocks
 - **Testing**: Standard library `testing` only — no testify. Use `t.Parallel()`,
   `t.Setenv()`, and `t.TempDir()` (temp dirs are cleaned up automatically).
+  Property-based tests may import `hegel.dev/go/hegel`; see below.
 - **JSON tags**: Use snake_case for JSON field names
 - **File permissions**: Use octal notation (0o755, 0o644) for file permissions
 - **Comments**: End comments in periods unless comments are at the end of the line.
@@ -107,13 +108,18 @@ Exception: If working within an existing website or design system, preserve the 
 ### Testing
 
 ALWAYS run `mise run test` and `mise run test-race` before committing. Keep total
-coverage at or above 50% — CI fails below that.
+coverage at or above 70% — CI fails below that.
 
 #### Unit Tests
 
 - Standard library `testing` only. Assert with `if got != want { t.Errorf(...) }`;
   use `t.Fatal` when the test cannot continue. The repo has no assertion
   library and should not grow one for a handful of tests.
+- One exception: `hegel.dev/go/hegel` for property-based tests. Hegel
+  generates inputs and shrinks counterexamples; it does not assert, so
+  the rule above still holds inside a `hegel.Test` body. A test that
+  generates no inputs has no reason to import it. See
+  `docs/phase14-property-testing-plan.md`.
 - Use `t.Parallel()` for anything that does not touch the database or the
   environment.
 - Table-driven tests for pure functions (`parseWMClass`, `parseIdleMs`,

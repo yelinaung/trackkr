@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/yelinaung/trackkr/internal/db"
 	"github.com/yelinaung/trackkr/internal/icon"
+	"hegel.dev/go/hegel"
 )
 
 func TestAppIconUpload(t *testing.T) {
@@ -402,4 +404,117 @@ func serverTestPNG(tb testing.TB, fill color.NRGBA) []byte {
 		tb.Fatalf("png.Encode: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// slidingWindowLimiterMachine drives the icon-upload quota against a
+// multiset of hit timestamps, over a clock the rules advance.
+//
+// Two behaviours are pinned here rather than assumed, because refund
+// matches on timestamp equality: two reservations made at one instant
+// are interchangeable, and refunding a reservation the window has
+// already dropped does nothing. The model reproduces both.
+type slidingWindowMachine struct {
+	limiter *slidingWindowLimiter
+	limit   int
+	window  time.Duration
+	now     time.Time
+	// hits mirrors the limiter's own per-key slice, stale entries
+	// included, because refund searches the unfiltered slice.
+	hits map[int64][]time.Time
+}
+
+func (m *slidingWindowMachine) keys() []int64 { return []int64{1, 2} }
+
+func (m *slidingWindowMachine) active(key int64) []time.Time {
+	cutoff := m.now.Add(-m.window)
+	kept := make([]time.Time, 0, len(m.hits[key]))
+	for _, hit := range m.hits[key] {
+		if hit.After(cutoff) {
+			kept = append(kept, hit)
+		}
+	}
+	return kept
+}
+
+// RuleReserve spends one request and checks both the verdict and the
+// wait the caller is told to observe.
+func (m *slidingWindowMachine) RuleReserve(tc hegel.TestCase) {
+	key := hegel.Draw(tc, hegel.SampledFrom(m.keys()))
+	active := m.active(key)
+
+	granted, wait := m.limiter.reserve(key, m.now)
+	if want := len(active) < m.limit; granted != want {
+		tc.Errorf("reserve(%d) = %v with %d active hits and a limit of %d",
+			key, granted, len(active), m.limit)
+		tc.FailNow()
+	}
+
+	if granted {
+		if wait != 0 {
+			tc.Errorf("reserve(%d) granted but asked for a %s wait", key, wait)
+			tc.FailNow()
+		}
+		m.hits[key] = append(active, m.now)
+		return
+	}
+
+	// A refusal has to name a wait the caller can act on, and never a
+	// non-positive one, or a client would retry in a tight loop.
+	if wantWait := max(active[0].Add(m.window).Sub(m.now), time.Second); wait != wantWait {
+		tc.Errorf("reserve(%d) asked for %s, want %s", key, wait, wantWait)
+		tc.FailNow()
+	}
+	m.hits[key] = active
+}
+
+// RuleRefund returns a reservation, sometimes one that was never made.
+func (m *slidingWindowMachine) RuleRefund(tc hegel.TestCase) {
+	key := hegel.Draw(tc, hegel.SampledFrom(m.keys()))
+
+	reservedAt := m.now
+	if recorded := m.hits[key]; len(recorded) > 0 && hegel.Draw(tc, hegel.Booleans()) {
+		reservedAt = recorded[hegel.Draw(tc, hegel.Integers(0, len(recorded)-1))]
+	}
+
+	m.limiter.refund(key, reservedAt)
+	for i, hit := range slices.Backward(m.hits[key]) {
+		if hit.Equal(reservedAt) {
+			m.hits[key] = append(m.hits[key][:i], m.hits[key][i+1:]...)
+			break
+		}
+	}
+}
+
+func (m *slidingWindowMachine) RuleAdvance(tc hegel.TestCase) {
+	m.now = m.now.Add(time.Duration(hegel.Draw(tc, hegel.Integers(0, 90))) * time.Second)
+}
+
+// InvariantNeverOverGrants is the quota claim: no key ever holds more
+// than limit reservations inside one window.
+func (m *slidingWindowMachine) InvariantNeverOverGrants(tc hegel.TestCase) {
+	for _, key := range m.keys() {
+		if active := len(m.active(key)); active > m.limit {
+			tc.Errorf("key %d holds %d active hits, past the limit of %d", key, active, m.limit)
+			tc.FailNow()
+		}
+	}
+}
+
+// TestSlidingWindowLimiterMatchesAModel exercises the upload quota.
+// Reserve, refund, and expiry interact, and refund's identity rule is
+// subtle enough that a hand-written sequence would not probe it.
+func TestSlidingWindowLimiterMatchesAModel(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		limit := hegel.Draw(ht, hegel.Integers(1, 4))
+		window := time.Duration(hegel.Draw(ht, hegel.Integers(1, 5))) * time.Minute
+		hegel.RunStateful(ht, &slidingWindowMachine{
+			limiter: newSlidingWindowLimiter(limit, window),
+			limit:   limit,
+			window:  window,
+			now:     time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC),
+			hits:    make(map[int64][]time.Time),
+		})
+	})
 }
