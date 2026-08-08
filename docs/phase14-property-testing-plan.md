@@ -29,7 +29,7 @@ which parts.
 ## Tool
 
 [Hegel](https://hegel.dev) for Go, `hegel.dev/go/hegel`, pinned at
-v0.6.24. It draws values imperatively -- `hegel.Draw(ht, gen)` anywhere
+v0.6.25. It draws values imperatively -- `hegel.Draw(ht, gen)` anywhere
 in the test body, in loops and under conditions -- and shrinks a failure
 to a minimal counterexample. Tests are ordinary `go test` functions, so
 `mise run test` picks them up with no runner change.
@@ -50,7 +50,7 @@ import hegel.
 
 ### Setup
 
-1. `go get hegel.dev/go/hegel@v0.6.24`
+1. `go get hegel.dev/go/hegel@v0.6.25`
 2. Nothing else. No `.gitignore` change and no new mise task -- these are
    `go test` functions in the existing suite.
 
@@ -72,15 +72,16 @@ is stale on the first point and wrong on two APIs.
 - **About 12 MB of vendored shared objects** in the module cache, one
   platform's worth of which ever loads. That is the real price, and
   `go mod download` pays it.
-- **Frequent patch releases,** mostly libhegel bumps: five in the six
-  weeks before v0.6.24. Pin the version and let Renovate raise them.
+- **Frequent patch releases,** almost all of them libhegel bumps: six in
+  the six weeks up to v0.6.25, two of those on consecutive days. Pin the
+  version and let Renovate raise them.
 
 The runner needs a writable `os.UserCacheDir()`, which the build cache
 already requires. Confirm it on the batch 1 branch; it gates nothing.
 
 ### API notes
 
-Two APIs in the published reference do not exist in v0.6.24, and
+Two APIs in the published reference do not exist in v0.6.25, and
 discovering that at compile time costs an afternoon.
 
 - `WithDatabase` takes a plain path string. A non-empty path persists
