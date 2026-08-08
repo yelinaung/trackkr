@@ -2,8 +2,80 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"hegel.dev/go/hegel"
 )
+
+// TestSiteFromURLSurvivesArbitraryText guards the derivation against the
+// text a URL column can actually hold. It runs on every record the
+// detail view examines, so a panic here takes the page down.
+func TestSiteFromURLSurvivesArbitraryText(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw := hegel.Draw(ht, hegel.Text())
+		site, ok := SiteFromURL(raw)
+		if !ok && site != "" {
+			ht.Fatalf("SiteFromURL(%q) reported failure but returned %q", raw, site)
+		}
+	})
+}
+
+// TestSiteFromURLOutputShape checks what each step of the SQL expression
+// is supposed to have removed by the end.
+//
+// One thing the name suggests is not true: a result can still start with
+// "www.", because only one prefix is stripped, so www.www.example.com
+// derives www.example.com. Asserting otherwise would be asserting a
+// behaviour siteExpr does not have, and the two derivations must agree.
+func TestSiteFromURLOutputShape(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw := hegel.Draw(ht, hegel.Text())
+		site, ok := SiteFromURL(raw)
+		if !ok {
+			return
+		}
+
+		if strings.Contains(site, "@") {
+			ht.Fatalf("SiteFromURL(%q) = %q, which kept userinfo", raw, site)
+		}
+		if lowered := strings.ToLower(site); lowered != site {
+			ht.Fatalf("SiteFromURL(%q) = %q, which is not lowercased", raw, site)
+		}
+		if strings.HasSuffix(site, ".") {
+			ht.Fatalf("SiteFromURL(%q) = %q, which kept the root dot", raw, site)
+		}
+		if strings.ContainsAny(site, "/?#") {
+			ht.Fatalf("SiteFromURL(%q) = %q, which reached past the authority", raw, site)
+		}
+	})
+}
+
+// TestSiteFromURLRecoversAConstructedHost is the round trip: a URL built
+// around a host must group under that host, so a record inserted for one
+// site is one the summary counts there.
+func TestSiteFromURLRecoversAConstructedHost(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		host := hegel.Draw(ht, hegel.Domains())
+		scheme := hegel.Draw(ht, hegel.SampledFrom([]string{"http", "https"}))
+		path := hegel.Draw(ht, hegel.SampledFrom([]string{"", "/", "/a/b", "/x?y=1#z"}))
+
+		want := strings.TrimPrefix(strings.ToLower(host), "www.")
+		got, ok := SiteFromURL(scheme + "://" + host + path)
+		if !ok {
+			ht.Fatalf("SiteFromURL dropped %s://%s%s", scheme, host, path)
+		}
+		if got != want {
+			ht.Fatalf("SiteFromURL(%s://%s%s) = %q, want %q", scheme, host, path, got, want)
+		}
+	})
+}
 
 // siteDerivationCases are shared by the pure test below and the parity test
 // against PostgreSQL, so a case added for one is checked by both.

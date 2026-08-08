@@ -17,7 +17,77 @@ import (
 	"testing"
 
 	"github.com/yelinaung/trackkr/internal/icon"
+	"hegel.dev/go/hegel"
 )
+
+// TestCanonicalSiteSurvivesArbitraryText keeps the IDNA path from
+// panicking on text that reached the server as a site parameter.
+func TestCanonicalSiteSurvivesArbitraryText(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw := hegel.Draw(ht, hegel.Text())
+		site, err := CanonicalSite(raw)
+		if err != nil && site != "" {
+			ht.Fatalf("CanonicalSite(%q) failed but returned %q", raw, site)
+		}
+	})
+}
+
+// TestCanonicalSiteOutputShape checks every exclusion the function
+// promises before any network access happens: no IP literals, no URL
+// delimiters, and a valid DNS label at each position.
+func TestCanonicalSiteOutputShape(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw := hegel.Draw(ht, hegel.Text())
+		site, err := CanonicalSite(raw)
+		if err != nil {
+			return
+		}
+
+		if lowered := strings.ToLower(site); lowered != site {
+			ht.Fatalf("CanonicalSite(%q) = %q, which is not lowercase", raw, site)
+		}
+		if strings.ContainsAny(site, "/:@[]") {
+			ht.Fatalf("CanonicalSite(%q) = %q, which kept a URL delimiter", raw, site)
+		}
+		if _, parseErr := netip.ParseAddr(site); parseErr == nil {
+			ht.Fatalf("CanonicalSite(%q) = %q, which is an IP literal", raw, site)
+		}
+		if !strings.Contains(site, ".") {
+			ht.Fatalf("CanonicalSite(%q) = %q, which is a single label", raw, site)
+		}
+		for label := range strings.SplitSeq(site, ".") {
+			if !validDNSLabel(label) {
+				ht.Fatalf("CanonicalSite(%q) = %q, whose label %q is invalid", raw, site, label)
+			}
+		}
+	})
+}
+
+// TestCanonicalSiteIsIdempotent matters because the result is a cache
+// key. Two spellings of one site would mean two rows and two fetches, so
+// a canonical site must canonicalize to itself.
+func TestCanonicalSiteIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		raw := hegel.Draw(ht, hegel.Text())
+		once, err := CanonicalSite(raw)
+		if err != nil {
+			return
+		}
+		twice, err := CanonicalSite(once)
+		if err != nil {
+			ht.Fatalf("CanonicalSite(%q) = %q, which it then rejected: %v", raw, once, err)
+		}
+		if twice != once {
+			ht.Fatalf("CanonicalSite(%q) = %q, then %q", raw, once, twice)
+		}
+	})
+}
 
 const testSite = "example.com"
 

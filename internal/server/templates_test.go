@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"net/http/httptest"
 	"regexp"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/yelinaung/trackkr/internal/db"
 	"github.com/yelinaung/trackkr/web"
+	"hegel.dev/go/hegel"
 )
 
 func mustTemplates(t *testing.T) *templates {
@@ -397,6 +399,63 @@ func TestHumanDuration(t *testing.T) {
 			t.Errorf("humanDuration(%d) = %q, want %q", tt.seconds, got, tt.want)
 		}
 	}
+}
+
+// TestHumanDurationIsMonotonicAndPositive holds the rendering to two
+// claims a reader relies on: a longer total never renders as a shorter
+// one, and no total renders as negative time.
+//
+// The draw stops at the largest second count time.Duration can hold,
+// which is the finding rather than a convenience. humanDuration takes an
+// int64 straight from a SQL sum and multiplies it by time.Second
+// (templates.go:287), so past math.MaxInt64 / 1e9 -- about 292 years --
+// the product wraps and a very large total renders as a negative one.
+// Nothing in a per-window aggregate reaches it, and the signature
+// accepts it anyway.
+func TestHumanDurationIsMonotonicAndPositive(t *testing.T) {
+	t.Parallel()
+
+	const maxRepresentableSeconds = math.MaxInt64 / int64(time.Second)
+
+	hegel.Test(t, func(ht *hegel.T) {
+		low := hegel.Draw(ht, hegel.Integers(0, maxRepresentableSeconds))
+		high := hegel.Draw(ht, hegel.Integers(0, maxRepresentableSeconds))
+		if low > high {
+			low, high = high, low
+		}
+
+		shorter, longer := humanDuration(low), humanDuration(high)
+		if strings.HasPrefix(shorter, "-") || strings.HasPrefix(longer, "-") {
+			ht.Fatalf("humanDuration rendered negative time: %ds = %q, %ds = %q",
+				low, shorter, high, longer)
+		}
+		if humanDurationSeconds(ht, shorter) > humanDurationSeconds(ht, longer) {
+			ht.Fatalf("humanDuration(%d) = %q reads longer than humanDuration(%d) = %q",
+				low, shorter, high, longer)
+		}
+	})
+}
+
+// humanDurationSeconds reads a rendered duration back into seconds so
+// two renderings can be compared as quantities. It parses the display
+// format independently instead of calling the code under test.
+func humanDurationSeconds(ht *hegel.T, rendered string) int64 {
+	var hours, minutes, seconds int64
+	switch {
+	case strings.Contains(rendered, "h"):
+		if _, err := fmt.Sscanf(rendered, "%dh %dm", &hours, &minutes); err != nil {
+			ht.Fatalf("parsing %q: %v", rendered, err)
+		}
+	case strings.HasSuffix(rendered, "m"):
+		if _, err := fmt.Sscanf(rendered, "%dm", &minutes); err != nil {
+			ht.Fatalf("parsing %q: %v", rendered, err)
+		}
+	default:
+		if _, err := fmt.Sscanf(rendered, "%ds", &seconds); err != nil {
+			ht.Fatalf("parsing %q: %v", rendered, err)
+		}
+	}
+	return hours*3600 + minutes*60 + seconds
 }
 
 func sampleTimelineData() *pageData {
