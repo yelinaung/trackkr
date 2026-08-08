@@ -206,7 +206,13 @@ func TestSiteFromURLMatchesSQLOverGeneratedURLs(t *testing.T) {
 	hegel.Test(t, func(ht *hegel.T) {
 		raw := drawSiteURL(ht)
 		if hegel.Draw(ht, hegel.Integers(0, 4)) == 0 {
-			raw = hegel.Draw(ht, hegel.Text())
+			// NUL is excluded because PostgreSQL text cannot hold it:
+			// the query fails with SQLSTATE 22021 before either
+			// derivation runs, which would make this flaky rather than
+			// informative. A URL containing NUL cannot reach the column
+			// this test compares against, so it is outside the domain
+			// rather than an edge of it.
+			raw = hegel.Draw(ht, hegel.Text().ExcludeCharacters("\x00"))
 		}
 
 		var fromSQL *string
