@@ -2,7 +2,6 @@ package db
 
 import (
 	"cmp"
-	"fmt"
 	"math"
 	"slices"
 	"testing"
@@ -536,7 +535,7 @@ func (m *boundedRecordsMachine) RuleAdd(tc hegel.TestCase) {
 
 // InvariantKeepsTheSmallest checks the heap against the model's own
 // top-k, recomputed from scratch after every rule.
-func (m *boundedRecordsMachine) InvariantKeepsTheSmallest(_ hegel.TestCase) {
+func (m *boundedRecordsMachine) InvariantKeepsTheSmallest(tc hegel.TestCase) {
 	want := slices.Clone(m.model)
 	slices.SortFunc(want, compareActivityRecords)
 	if len(want) > m.limit {
@@ -545,13 +544,14 @@ func (m *boundedRecordsMachine) InvariantKeepsTheSmallest(_ hegel.TestCase) {
 
 	got := m.bounded.sorted()
 	if len(got) != len(want) {
-		panic(fmt.Sprintf("kept %d records, want %d with limit %d after %d adds",
-			len(got), len(want), m.limit, len(m.model)))
+		tc.Errorf("kept %d records, want %d with limit %d after %d adds",
+			len(got), len(want), m.limit, len(m.model))
+		tc.FailNow()
 	}
 	for i := range want {
 		if got[i].ID != want[i].ID {
-			panic(fmt.Sprintf("kept record %d at position %d, want %d",
-				got[i].ID, i, want[i].ID))
+			tc.Errorf("kept record %d at position %d, want %d", got[i].ID, i, want[i].ID)
+			tc.FailNow()
 		}
 	}
 }
@@ -560,10 +560,11 @@ func (m *boundedRecordsMachine) InvariantKeepsTheSmallest(_ hegel.TestCase) {
 // to a zero limit. A limiter built with zero starts out false and only
 // sets the flag inside add, so the invariant has to hold for a fresh
 // machine too -- RunStateful checks it before any rule runs.
-func (m *boundedRecordsMachine) InvariantFlagsRejection(_ hegel.TestCase) {
+func (m *boundedRecordsMachine) InvariantFlagsRejection(tc hegel.TestCase) {
 	if rejected := len(m.model) > m.limit; rejected != m.bounded.truncated {
-		panic(fmt.Sprintf("truncated = %v after %d adds with limit %d",
-			m.bounded.truncated, len(m.model), m.limit))
+		tc.Errorf("truncated = %v after %d adds with limit %d",
+			m.bounded.truncated, len(m.model), m.limit)
+		tc.FailNow()
 	}
 }
 

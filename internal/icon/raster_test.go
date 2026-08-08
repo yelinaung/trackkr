@@ -3,6 +3,7 @@ package icon
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -29,29 +30,40 @@ func drawSourcePNG(tc hegel.TestCase) []byte {
 	width := hegel.Draw(tc, hegel.Integers(1, maxSourceDimension))
 	height := hegel.Draw(tc, hegel.Integers(1, maxSourceDimension))
 
-	return encodeFilled(width, height, color.NRGBA{
+	source, err := encodeFilled(width, height, color.NRGBA{
 		R: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
 		G: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
 		B: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
 		A: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
 	})
+	if err != nil {
+		tc.Errorf("encoding a %dx%d source: %v", width, height, err)
+		tc.FailNow()
+	}
+	return source
 }
 
 // encodeFilled encodes one flat-coloured PNG of the given size, shared
 // by the drawn-source generator and the geometry property.
-func encodeFilled(width, height int, fill color.NRGBA) []byte {
+//
+// One row is filled and copied down the image rather than calling
+// SetNRGBA per pixel: a 1024x1024 source is a million calls, and both
+// properties draw sources that large.
+func encodeFilled(width, height int, fill color.NRGBA) ([]byte, error) {
 	img := image.NewNRGBA(image.Rect(0, 0, width, height))
-	for y := range height {
-		for x := range width {
-			img.SetNRGBA(x, y, fill)
-		}
+	row := img.Pix[:width*4]
+	for x := range width {
+		copy(row[x*4:], []byte{fill.R, fill.G, fill.B, fill.A})
+	}
+	for y := 1; y < height; y++ {
+		copy(img.Pix[y*img.Stride:(y+1)*img.Stride], row)
 	}
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
-		panic("encoding drawn source: " + err.Error())
+		return nil, fmt.Errorf("encoding a %dx%d image: %w", width, height, err)
 	}
-	return buf.Bytes()
+	return buf.Bytes(), nil
 }
 
 func TestNormalize(t *testing.T) {
@@ -145,7 +157,10 @@ func TestNormalizePreservesShapeAndContent(t *testing.T) {
 	hegel.Test(t, func(ht *hegel.T) {
 		width := hegel.Draw(ht, hegel.Integers(1, maxSourceDimension))
 		height := hegel.Draw(ht, hegel.Integers(1, maxSourceDimension))
-		source := encodeFilled(width, height, color.NRGBA{R: 0x20, G: 0x90, B: 0xd0, A: 0xff})
+		source, err := encodeFilled(width, height, color.NRGBA{R: 0x20, G: 0x90, B: 0xd0, A: 0xff})
+		if err != nil {
+			ht.Fatalf("encoding source: %v", err)
+		}
 		ht.Assume(len(source) <= MaxSourceBytes)
 
 		normalized, err := Normalize(source)
