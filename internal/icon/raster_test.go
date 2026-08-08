@@ -29,12 +29,17 @@ func drawSourcePNG(tc hegel.TestCase) []byte {
 	width := hegel.Draw(tc, hegel.Integers(1, maxSourceDimension))
 	height := hegel.Draw(tc, hegel.Integers(1, maxSourceDimension))
 
-	fill := color.NRGBA{
+	return encodeFilled(width, height, color.NRGBA{
 		R: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
 		G: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
 		B: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
 		A: hegel.Draw(tc, hegel.Integers[uint8](0, 255)),
-	}
+	})
+}
+
+// encodeFilled encodes one flat-coloured PNG of the given size, shared
+// by the drawn-source generator and the geometry property.
+func encodeFilled(width, height int, fill color.NRGBA) []byte {
 	img := image.NewNRGBA(image.Rect(0, 0, width, height))
 	for y := range height {
 		for x := range width {
@@ -89,6 +94,105 @@ func TestNormalizeProducesAValidatedSquare(t *testing.T) {
 				details.Width, details.Height, NormalizedDimension, NormalizedDimension)
 		}
 	})
+}
+
+// opaqueBounds returns the rectangle covering every pixel the resample
+// actually painted, ignoring faint ringing.
+//
+// CatmullRom has negative lobes, so a hard edge picks up a fringe of
+// near-transparent pixels either side of where it landed. The threshold
+// keeps that fringe out of the measurement without hiding real content.
+func opaqueBounds(tb testing.TB, encoded []byte) image.Rectangle {
+	tb.Helper()
+
+	decoded, err := png.Decode(bytes.NewReader(encoded))
+	if err != nil {
+		tb.Fatalf("decoding normalized output: %v", err)
+	}
+
+	bounds := image.Rectangle{Min: image.Pt(1<<30, 1<<30), Max: image.Pt(-1, -1)}
+	for y := range NormalizedDimension {
+		for x := range NormalizedDimension {
+			if _, _, _, alpha := decoded.At(x, y).RGBA(); alpha>>8 < 8 {
+				continue
+			}
+			bounds.Min.X = min(bounds.Min.X, x)
+			bounds.Min.Y = min(bounds.Min.Y, y)
+			bounds.Max.X = max(bounds.Max.X, x+1)
+			bounds.Max.Y = max(bounds.Max.Y, y+1)
+		}
+	}
+	return bounds
+}
+
+// TestNormalizePreservesShapeAndContent tests what Normalize is for.
+//
+// The other three properties here check that the output is a valid 64x64
+// PNG, which a function returning one blank canvas for every input would
+// also satisfy. These are the claims the doc comment actually makes:
+// content survives, the aspect ratio is preserved, the result is centred,
+// and it is scaled to fit the canvas rather than left small.
+//
+// Sources are drawn opaque so the painted region is measurable. A
+// tolerance of two pixels absorbs the resampling fringe; the aspect
+// check is skipped where the expected short side is under four pixels,
+// since two pixels of slack there would assert almost nothing.
+func TestNormalizePreservesShapeAndContent(t *testing.T) {
+	t.Parallel()
+
+	const tolerance = 2
+
+	hegel.Test(t, func(ht *hegel.T) {
+		width := hegel.Draw(ht, hegel.Integers(1, maxSourceDimension))
+		height := hegel.Draw(ht, hegel.Integers(1, maxSourceDimension))
+		source := encodeFilled(width, height, color.NRGBA{R: 0x20, G: 0x90, B: 0xd0, A: 0xff})
+		ht.Assume(len(source) <= MaxSourceBytes)
+
+		normalized, err := Normalize(source)
+		if err != nil {
+			ht.Fatalf("Normalize(%dx%d): %v", width, height, err)
+		}
+
+		painted := opaqueBounds(ht, normalized)
+		if painted.Empty() {
+			ht.Fatalf("Normalize(%dx%d) painted nothing; the source was opaque", width, height)
+		}
+
+		// Scaled to fit: the long side reaches the canvas edge.
+		if longest := max(painted.Dx(), painted.Dy()); longest < NormalizedDimension-tolerance {
+			ht.Fatalf("Normalize(%dx%d) painted %dx%d, whose long side falls short of %d",
+				width, height, painted.Dx(), painted.Dy(), NormalizedDimension)
+		}
+
+		// Centred: the margins either side match.
+		if leading, trailing := painted.Min.X, NormalizedDimension-painted.Max.X; abs(leading-trailing) > tolerance {
+			ht.Fatalf("Normalize(%dx%d) left margins %d and %d horizontally",
+				width, height, leading, trailing)
+		}
+		if leading, trailing := painted.Min.Y, NormalizedDimension-painted.Max.Y; abs(leading-trailing) > tolerance {
+			ht.Fatalf("Normalize(%dx%d) left margins %d and %d vertically",
+				width, height, leading, trailing)
+		}
+
+		// Aspect preserved: the short side is the long side scaled by
+		// the source ratio, computed here from the source dimensions
+		// rather than copied from the implementation.
+		shortSide := min(width, height) * NormalizedDimension / max(width, height)
+		if shortSide < 4 {
+			return
+		}
+		if got := min(painted.Dx(), painted.Dy()); abs(got-shortSide) > tolerance {
+			ht.Fatalf("Normalize(%dx%d) painted a short side of %d, want about %d",
+				width, height, got, shortSide)
+		}
+	})
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // TestNormalizeIsStableUnderASecondPass checks that re-normalizing

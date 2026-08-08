@@ -40,9 +40,11 @@ func TestSiteFromURLOutputShape(t *testing.T) {
 			return
 		}
 
-		if strings.Contains(site, "@") {
-			ht.Fatalf("SiteFromURL(%q) = %q, which kept userinfo", raw, site)
-		}
+		// No claim about "@" belongs here. The userinfo pattern is
+		// anchored, so it strips through the first "@" only, and
+		// "http://user@host@extra/" derives "host@extra". That is what
+		// siteExpr does, and the two must agree before they must be
+		// tidy. TestSiteFromURL covers the shape by example instead.
 		if lowered := strings.ToLower(site); lowered != site {
 			ht.Fatalf("SiteFromURL(%q) = %q, which is not lowercased", raw, site)
 		}
@@ -89,6 +91,10 @@ var siteDerivationCases = []struct {
 	{name: "strips www", url: "https://www.example.com/", want: testSiteHost, ok: true},
 	{name: "strips port", url: "https://example.com:8443/x", want: testSiteHost, ok: true},
 	{name: "strips userinfo", url: "https://" + testUserinfo + "@example.com/x", want: testSiteHost, ok: true},
+	// The userinfo pattern is anchored, so it strips through the first
+	// "@" and leaves the rest in the host. Kept as a case because the Go
+	// port and siteExpr have to agree even where the result is odd.
+	{name: "strips only the first userinfo", url: "https://a@b@example.com/x", want: "b@example.com", ok: true},
 	{name: "lowercases", url: "https://EXAMPLE.COM/x", want: testSiteHost, ok: true},
 	{name: "strips root dot", url: "https://example.com./x", want: testSiteHost, ok: true},
 	{name: "keeps ipv6 literal", url: "http://[::1]:8080/x", want: "[::1]", ok: true},

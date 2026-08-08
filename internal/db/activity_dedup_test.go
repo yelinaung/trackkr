@@ -1,6 +1,7 @@
 package db
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"slices"
@@ -617,6 +618,10 @@ func drawCategorizedRecords(tc hegel.TestCase, appNames []string) []ActivityReco
 	return records
 }
 
+// testCategoryApp is one application name the category properties draw
+// records for; the literal is shared so goconst stays quiet.
+const testCategoryApp = "Code"
+
 var testCategoryRows = map[int64]CategoryRow{
 	1: {ID: 1, Name: "Focus", ColorKey: "sky"},
 	2: {ID: 2, Name: "Reading", ColorKey: "amber"},
@@ -631,7 +636,7 @@ func TestCategoryTotalsPartitionOneApplication(t *testing.T) {
 	t.Parallel()
 
 	hegel.Test(t, func(ht *hegel.T) {
-		records := drawCategorizedRecords(ht, []string{"Code"})
+		records := drawCategorizedRecords(ht, []string{testCategoryApp})
 		start, end := testDedupEpoch.Add(-time.Hour), testDedupEpoch.Add(4*time.Hour)
 
 		deduplicator := newActivityDeduplicator(records)
@@ -654,6 +659,106 @@ func TestCategoryTotalsPartitionOneApplication(t *testing.T) {
 	})
 }
 
+// modelCategorySeconds allocates the drawn records independently of the
+// code under test, so the properties can check where time landed rather
+// than only how much of it there was.
+//
+// It reproduces the destination rule -- an override wins, an unknown
+// override falls through to uncategorized -- and then sums whole seconds
+// per destination with the fractional remainders resolved largest first,
+// ties going to the lower category ID. Rounding is per application,
+// which is the level categoryTotals allocates at.
+func modelCategorySeconds(records []ActivityRecordRow) map[int64]int64 {
+	perApp := make(map[string]map[int64]time.Duration)
+	for i := range records {
+		record := &records[i]
+		if !isValidActivityRecord(record) {
+			continue
+		}
+		var destination int64
+		if record.CategoryOverridePresent && record.CategoryOverrideID != nil {
+			if _, known := testCategoryRows[*record.CategoryOverrideID]; known {
+				destination = *record.CategoryOverrideID
+			}
+		}
+		appName := CanonicalAppName(record)
+		if perApp[appName] == nil {
+			perApp[appName] = make(map[int64]time.Duration)
+		}
+		perApp[appName][destination] += record.EndedAt.Sub(record.StartedAt)
+	}
+
+	seconds := make(map[int64]int64)
+	for _, durations := range perApp {
+		type share struct {
+			destination int64
+			remainder   time.Duration
+		}
+		var total time.Duration
+		var whole int64
+		shares := make([]share, 0, len(durations))
+		for destination, duration := range durations {
+			total += duration
+			seconds[destination] += int64(duration / time.Second)
+			whole += int64(duration / time.Second)
+			shares = append(shares, share{destination, duration % time.Second})
+		}
+		slices.SortFunc(shares, func(a, b share) int {
+			if order := cmp.Compare(b.remainder, a.remainder); order != 0 {
+				return order
+			}
+			return cmp.Compare(a.destination, b.destination)
+		})
+		for i := range int64(math.Round(total.Seconds())) - whole {
+			seconds[shares[i].destination]++
+		}
+	}
+	return seconds
+}
+
+// TestCategoryTotalsAllocateToTheRightCategory is what conservation
+// alone cannot catch: the seconds could add up while every record landed
+// under the wrong name. It compares each published row against the model
+// above, destination by destination.
+func TestCategoryTotalsAllocateToTheRightCategory(t *testing.T) {
+	t.Parallel()
+
+	hegel.Test(t, func(ht *hegel.T) {
+		records := drawCategorizedRecords(ht, []string{testCategoryApp, "Mail", "Notes"})
+		start, end := testDedupEpoch.Add(-time.Hour), testDedupEpoch.Add(4*time.Hour)
+
+		want := modelCategorySeconds(records)
+		for _, row := range newActivityDeduplicator(records).categoryTotals(
+			start, end, nil, testCategoryRows,
+		) {
+			var destination int64
+			if row.CategoryID != nil {
+				destination = *row.CategoryID
+			}
+
+			wantName := UncategorizedCategoryName
+			if destination != 0 {
+				wantName = testCategoryRows[destination].Name
+			}
+			if row.Name != wantName {
+				ht.Fatalf("category %d published as %q, want %q", destination, row.Name, wantName)
+			}
+			if row.Seconds != want[destination] {
+				ht.Fatalf("category %q published %d seconds over %d records, model says %d",
+					row.Name, row.Seconds, len(records), want[destination])
+			}
+			delete(want, destination)
+		}
+
+		for destination, seconds := range want {
+			if seconds != 0 {
+				ht.Fatalf("category %d earned %d seconds but was not published",
+					destination, seconds)
+			}
+		}
+	})
+}
+
 // TestCategoryTotalsPartitionEveryApplication is the claim that survives
 // several applications. categoryTotals sums into one row per category
 // across all of them, so a per-application partition is no longer
@@ -664,7 +769,7 @@ func TestCategoryTotalsPartitionEveryApplication(t *testing.T) {
 	t.Parallel()
 
 	hegel.Test(t, func(ht *hegel.T) {
-		records := drawCategorizedRecords(ht, []string{"Code", "Mail", "Notes", "Terminal"})
+		records := drawCategorizedRecords(ht, []string{testCategoryApp, "Mail", "Notes", "Terminal"})
 		start, end := testDedupEpoch.Add(-time.Hour), testDedupEpoch.Add(4*time.Hour)
 
 		deduplicator := newActivityDeduplicator(records)
