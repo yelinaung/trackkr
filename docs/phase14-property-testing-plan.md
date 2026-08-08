@@ -51,22 +51,27 @@ import hegel.
 ### Setup
 
 1. `go get hegel.dev/go/hegel@v0.6.25`
-2. Nothing else. No `.gitignore` change and no new mise task -- these are
-   `go test` functions in the existing suite.
+2. Add `.hegel/` to `.gitignore`.
+3. Nothing else. No new mise task -- these are `go test` functions in the
+   existing suite.
 
 ### What the dependency costs
 
 Verified against the module in the module cache. The published reference
 is stale on the first point and wrong on two APIs.
 
-- **No runtime download and no repository directory.** Since v0.6.18
-  hegel vendors `libhegel` for all five supported platforms inside the Go
-  module; the changelog says it "no longer downloads libhegel from GitHub
-  at runtime, so builds are self-contained and work offline." First use
-  materializes the matching `.so` into a per-version directory under
-  `os.UserCacheDir()` -- `hegel-go/libhegel/<version>`, created 0700 --
-  and `dlopen`s it. Nothing lands in the repository, so nothing needs
-  ignoring.
+- **No runtime download.** Since v0.6.18 hegel vendors `libhegel` for all
+  five supported platforms inside the Go module; the changelog says it
+  "no longer downloads libhegel from GitHub at runtime, so builds are
+  self-contained and work offline." First use materializes the matching
+  `.so` into a per-version directory under `os.UserCacheDir()` --
+  `hegel-go/libhegel/<version>`, created 0700 -- and `dlopen`s it.
+- **A `.hegel/` directory per tested package.** The failing-example
+  database goes to the test's working directory, which under `go test` is
+  the package directory, so `internal/icon/.hegel/` appeared the first
+  time a property ran there. Grepping the Go wrapper for the path finds
+  nothing, because libhegel chooses it on the Rust side. Ignore `.hegel/`
+  and keep the database: replaying a counterexample is the point of it.
 - **No cgo.** The loader contains no `import "C"`, so `CGO_ENABLED=0`
   builds are unaffected.
 - **About 12 MB of vendored shared objects** in the module cache, one
